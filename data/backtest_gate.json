@@ -1,0 +1,71 @@
+{
+  "passed": false,
+  "timestamp": "2026-05-13T19:02:36.265887+00:00",
+  "period_start": "2023-05-14T00:00:00",
+  "period_end": "2026-05-13T00:00:00",
+  "metrics": {
+    "n_trades": 9,
+    "win_rate_pct": 55.55555555555556,
+    "profit_factor": 4.038750036219347,
+    "avg_win": 45.39427022078678,
+    "avg_loss": -14.049603780158712,
+    "total_pnl": 170.77293598329905,
+    "sharpe": -0.2538503106701392,
+    "sortino": -0.39313125128137544,
+    "max_drawdown_pct": 4.8222330783670015,
+    "cagr_pct": 5.116200352702793,
+    "expectancy": 18.974770664811004,
+    "starting_equity": 1000.0,
+    "ending_equity": 1161.3535874317731,
+    "period_days": 1095
+  },
+  "checks": [
+    {
+      "name": "sharpe",
+      "actual": -0.2538503106701392,
+      "threshold": 1.2,
+      "pass_": false,
+      "direction": "ge"
+    },
+    {
+      "name": "max_drawdown_pct",
+      "actual": 4.8222330783670015,
+      "threshold": 15.0,
+      "pass_": true,
+      "direction": "le"
+    },
+    {
+      "name": "win_rate_pct",
+      "actual": 55.55555555555556,
+      "threshold": 45.0,
+      "pass_": true,
+      "direction": "ge"
+    },
+    {
+      "name": "profit_factor",
+      "actual": 4.038750036219347,
+      "threshold": 1.5,
+      "pass_": true,
+      "direction": "ge"
+    },
+    {
+      "name": "n_trades",
+      "actual": 9.0,
+      "threshold": 100.0,
+      "pass_": false,
+      "direction": "ge"
+    }
+  ],
+  "failures": [
+    "sharpe",
+    "n_trades"
+  ],
+  "config": {
+    "min_sharpe": 1.2,
+    "max_drawdown_pct": 15.0,
+    "min_win_rate": 45.0,
+    "min_profit_factor": 1.5,
+    "min_trades": 100,
+    "walk_forward_years": 3
+  }
+}

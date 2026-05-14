@@ -1,0 +1,36 @@
+"""Indicator helpers used by multiple strategies. Pure functions over OHLC DataFrame."""
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+
+def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    high, low, close = df["high"], df["low"], df["close"]
+    tr = pd.concat(
+        [
+            (high - low),
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return tr.rolling(period).mean()
+
+
+def rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    delta = df["close"].diff()
+    gain = delta.where(delta > 0, 0.0).rolling(period).mean()
+    loss = -delta.where(delta < 0, 0.0).rolling(period).mean()
+    rs = gain / loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+
+def bollinger(df: pd.DataFrame, period: int = 20, n_std: float = 2.0):
+    ma = df["close"].rolling(period).mean()
+    sd = df["close"].rolling(period).std()
+    return ma, ma + n_std * sd, ma - n_std * sd
+
+
+def donchian(df: pd.DataFrame, period: int = 20):
+    return df["high"].rolling(period).max(), df["low"].rolling(period).min()

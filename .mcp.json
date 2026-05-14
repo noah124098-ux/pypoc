@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "nse-trading-agent": {
+      "command": "python",
+      "args": ["-m", "mcp_server.server"],
+      "env": {
+        "AGENT_SNAPSHOT_PATH": "data/snapshot.json",
+        "AGENT_SQLITE_PATH": "data/agent.db",
+        "AGENT_CONFIG_PATH": "config/default.yaml"
+      }
+    }
+  }
+}
