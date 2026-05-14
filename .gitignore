@@ -8,7 +8,11 @@ secrets/
 credentials.json
 
 # --- Local tool config ---
-.claude/
+# Track .claude/memory (project-scoped Claude Code memory ships with the repo)
+# but NOT settings.local.json or other per-machine state.
+.claude/*
+!.claude/memory/
+.claude/settings.local.json
 .idea/
 .vscode/
 *.swp

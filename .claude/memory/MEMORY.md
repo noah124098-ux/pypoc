@@ -1,0 +1,6 @@
+- [User profile](user_profile.md) — building an automated NSE stocks trading agent; values robust guardrails and self-deciding behavior
+- [NSE trading agent project](project_nse_trading_agent.md) — design decisions for the trading agent in this working directory
+- [Angel One DATA-ONLY constraint](feedback_angel_one_data_only.md) — Angel One creds are for market data only, never for placing orders
+- [Backtest gate failure analysis](project_gate_failure.md) — gate failed on n_trades and sharpe; root cause is agent barely trading
+- [EC2 deployment](project_ec2_deployment.md) — Windows Server EC2 at 3.239.215.143, dev happens directly on EC2 (no Remote-SSH)
+- [Collaboration preferences](feedback_collab_style.md) — Q&A before big work, concise updates, push back when load-bearing
