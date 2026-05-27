@@ -40,7 +40,7 @@ from core.strategies.base import IStrategy
 from core.strategies.mean_reversion import MeanReversion
 from core.strategies.trend_breakout import TrendBreakout
 from core.strategies.volatility_compression import VolatilityCompression
-from core.types import Candle, OrderType, Regime, Tick
+from core.types import Candle, OrderType, Regime, Side, Tick
 
 log = logging.getLogger("agent.orchestrator")
 
@@ -190,13 +190,28 @@ class Orchestrator:
             ]
         )
 
+        nifty_buy_ok = self._nifty_trend_ok()
         for strat in self.strategies:
             if not strat.supports(self.current_regime.regime):
                 continue
             sig = strat.evaluate(candle.symbol, df, self.current_regime.regime)
             if sig is None:
                 continue
+            if sig.side == Side.BUY and not nifty_buy_ok:
+                log.debug("Nifty trend filter blocked BUY signal for %s (%s)", candle.symbol, strat.name)
+                continue
             self._handle_signal(sig)
+
+    def _nifty_trend_ok(self) -> bool:
+        """Return True if Nifty is above its rising 50-DMA (broad market uptrend)."""
+        df = self.nifty_ohlc_daily
+        if df is None or len(df) < 55:
+            return True  # not enough history -- don't block
+        close = df["close"]
+        dma50 = close.rolling(50).mean()
+        above = close.iloc[-1] > dma50.iloc[-1]
+        rising = dma50.iloc[-1] > dma50.iloc[-5]
+        return bool(above and rising)
 
     def _handle_signal(self, sig) -> None:
         equity = self.broker.equity()

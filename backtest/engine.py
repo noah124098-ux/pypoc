@@ -154,6 +154,19 @@ class BacktestEngine:
                 continue
 
             # 3-5. Generate signals on yesterday's data and submit orders to fill on today's open.
+
+            # Nifty trend filter: only allow BUY signals when Nifty is above its 50-DMA
+            # and that DMA is rising. Blocks entries during broad market corrections.
+            nifty_close = nifty_slice["close"]
+            nifty_dma50 = nifty_close.rolling(50).mean()
+            if len(nifty_dma50.dropna()) >= 5:
+                nifty_above_dma = nifty_close.iloc[-1] > nifty_dma50.iloc[-1]
+                nifty_dma_rising = nifty_dma50.iloc[-1] > nifty_dma50.iloc[-5]
+            else:
+                nifty_above_dma = True   # not enough history — don't block
+                nifty_dma_rising = True
+            nifty_buy_ok = nifty_above_dma and nifty_dma_rising
+
             for symbol, df in symbol_history.items():
                 history = df.loc[:yday]
                 if len(history) < 30:
@@ -171,6 +184,14 @@ class BacktestEngine:
                     signal_count += 1
                     signal_count_by_strategy[strat.name] = signal_count_by_strategy.get(strat.name, 0) + 1
                     signal_count_by_symbol[symbol] = signal_count_by_symbol.get(symbol, 0) + 1
+
+                    # Block long entries when Nifty is below/falling 50-DMA.
+                    if sig.side == Side.BUY and not nifty_buy_ok:
+                        rejected += 1
+                        rejection_breakdown["nifty_trend_filter"] = (
+                            rejection_breakdown.get("nifty_trend_filter", 0) + 1
+                        )
+                        continue
 
                     # Override the signal's entry price to today's open (realistic fill timing).
                     sig.entry_price = float(today_row["open"])
