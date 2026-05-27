@@ -246,6 +246,132 @@ def cmd_walk_forward(args):
         print(f"  Failures: {gate.failures}")
 
 
+def cmd_debug_rejections(args):
+    """Re-run backtest at high capital and print a full diagnostic breakdown.
+
+    Answers: why is the agent generating so few trades? Pinpoints whether the
+    bottleneck is regime filtering, position sizing (qty=0), or a specific
+    guardrail rule.
+    """
+    from datetime import timedelta
+
+    from backtest.data_loader import HistoricalLoader
+    from backtest.engine import BacktestEngine
+    from backtest.metrics import compute_metrics
+    from core.config import load_settings
+    from core.data.universe import resolve_universe
+
+    settings = load_settings(args.config)
+
+    # Override capital to a realistic floor so qty=0 rejections vanish from sizing noise.
+    debug_capital = args.capital
+    settings.capital.initial_inr = debug_capital
+
+    log = setup_logging("WARNING", None)   # suppress INFO spam during debug run
+    days = args.days
+    loader = HistoricalLoader()
+    nifty = loader.load_nifty(days=days + 30)
+    if nifty is None or nifty.empty:
+        print("ERROR: Failed to load Nifty history. Check internet / yfinance.")
+        raise SystemExit(2)
+
+    symbols = resolve_universe(settings.universe.source, settings.universe.symbols)
+    history = loader.load_universe(symbols, days=days + 30)
+
+    end = nifty.index[-1].to_pydatetime()
+    start = end - timedelta(days=days)
+    engine = BacktestEngine(settings)
+    r = engine.run(
+        symbol_history=history,
+        nifty_history=nifty,
+        starting_equity=debug_capital,
+        start_date=start,
+        end_date=end,
+    )
+    m = compute_metrics(
+        trades=r.trades,
+        equity_curve=r.equity_curve,
+        starting_equity=debug_capital,
+        period_days=(r.period_end - r.period_start).days,
+    )
+
+    total_days = sum(r.regime_distribution.values())
+    unknown_days = r.regime_distribution.get("UNKNOWN", 0)
+    trading_days = total_days - unknown_days
+
+    print(f"\n{'='*60}")
+    print(f"  DEBUG REJECTION REPORT  ({r.period_start.date()} -> {r.period_end.date()})")
+    print(f"  Capital: INR {debug_capital:,.0f}")
+    print(f"{'='*60}")
+
+    print(f"\n--- REGIME DISTRIBUTION ({total_days} days) ---")
+    for regime in ["TREND", "RANGE", "VOLATILE", "UNKNOWN"]:
+        count = r.regime_distribution.get(regime, 0)
+        pct = count / total_days * 100 if total_days else 0
+        bar = "█" * int(pct / 2)
+        print(f"  {regime:<10} {count:5d} days  ({pct:5.1f}%)  {bar}")
+    if unknown_days:
+        print(f"  *** {unknown_days} UNKNOWN days = no strategies run on those days ***")
+
+    print(f"\n--- SIGNAL FUNNEL ---")
+    print(f"  Trading days (non-UNKNOWN):  {trading_days}")
+    print(f"  Signals generated:           {r.signal_count}")
+    print(f"  Signals accepted (filled):   {r.accepted_count}  (trades = {m.n_trades})")
+    print(f"  Signals rejected:            {r.rejected_count}")
+    if trading_days:
+        print(f"  Signals/trading day:         {r.signal_count / trading_days:.2f}")
+
+    print(f"\n--- SIGNALS BY STRATEGY ---")
+    for strat, count in sorted(r.signal_count_by_strategy.items(), key=lambda kv: -kv[1]):
+        acc = r.accepted_count_by_strategy.get(strat, 0)
+        rej = count - acc
+        print(f"  {strat:<28}  generated={count:4d}  accepted={acc:3d}  rejected={rej:4d}")
+
+    print(f"\n--- REJECTION BREAKDOWN (all rejections = {r.rejected_count}) ---")
+    if r.rejection_breakdown:
+        for k, v in sorted(r.rejection_breakdown.items(), key=lambda kv: -kv[1]):
+            pct = v / r.rejected_count * 100 if r.rejected_count else 0
+            bar = "█" * int(pct / 3)
+            print(f"  {k:<35}  {v:5d}  ({pct:5.1f}%)  {bar}")
+    else:
+        print("  (no rejections)")
+
+    print(f"\n--- QTY=0 SIZING KILLS (before guardrails) ---")
+    print(f"  qty_zero_count = {r.qty_zero_count}  "
+          f"({'signals killed by sizing alone' if r.qty_zero_count else 'none — sizing is not the bottleneck'})")
+
+    print(f"\n--- TOP SIGNAL-GENERATING SYMBOLS (top 15) ---")
+    top_syms = sorted(r.signal_count_by_symbol.items(), key=lambda kv: -kv[1])[:15]
+    for sym, cnt in top_syms:
+        print(f"  {sym:<20}  {cnt:4d} signals")
+
+    print(f"\n--- METRICS AT INR {debug_capital:,.0f} CAPITAL ---")
+    print(f"  Trades:        {m.n_trades}")
+    print(f"  Win rate:      {m.win_rate_pct:.1f}%")
+    print(f"  Profit factor: {m.profit_factor:.2f}")
+    print(f"  Sharpe:        {m.sharpe:.2f}")
+    print(f"  Max DD:        {m.max_drawdown_pct:.2f}%")
+    print(f"  CAGR:          {m.cagr_pct:.2f}%")
+    print()
+
+    print("--- DIAGNOSIS HINTS ---")
+    unknown_pct = unknown_days / total_days * 100 if total_days else 0
+    if unknown_pct > 50:
+        print(f"  [REGIME] {unknown_pct:.0f}% of days are UNKNOWN — regime thresholds are too strict.")
+        print(f"           Try: adx_trend_threshold: 20  and  bb_width_range_threshold: 0.06")
+    if r.qty_zero_count > r.signal_count * 0.2:
+        print(f"  [SIZING] {r.qty_zero_count} signals ({r.qty_zero_count/r.signal_count*100:.0f}%) "
+              f"killed by qty=0 even at INR {debug_capital:,.0f}.")
+        print(f"           Try: reducing atr_stop_multiplier (e.g. 1.5) or per_trade_risk_pct: 2.0")
+    top_rule = max(r.rejection_breakdown.items(), key=lambda kv: kv[1])[0] if r.rejection_breakdown else None
+    if top_rule and top_rule not in ("qty_zero_sizing", "stop_above_open_after_gap"):
+        print(f"  [GUARDRAIL] Top rejection rule is '{top_rule}' — investigate why it fires so often.")
+    if r.signal_count == 0:
+        print(f"  [SIGNAL] No signals at all — strategies never fire given current regime + data.")
+        print(f"           Run with --days 1825 (5y) to check if there's any historical period that trades.")
+    print()
+
+
 def cmd_check_gate(args):
     from backtest.gate import is_live_allowed, read_gate_result
 
@@ -281,6 +407,17 @@ def main():
     wf.set_defaults(func=cmd_walk_forward)
 
     sub.add_parser("check-gate").set_defaults(func=cmd_check_gate)
+
+    dr = sub.add_parser(
+        "debug-rejections",
+        help="Re-run backtest at high capital and print full rejection breakdown + regime distribution",
+    )
+    dr.add_argument("--days", type=int, default=365, help="Look-back window in calendar days (default 365)")
+    dr.add_argument(
+        "--capital", type=float, default=500_000,
+        help="Capital to use (default 500000 INR — removes qty=0 noise from sizing)",
+    )
+    dr.set_defaults(func=cmd_debug_rejections)
 
     args = parser.parse_args()
     args.func(args)

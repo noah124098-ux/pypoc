@@ -39,7 +39,12 @@ from core.risk.guardrails import (
 )
 from core.risk.sizing import position_size
 from core.strategies.base import IStrategy
+from core.strategies.bb_squeeze import BbSqueeze
+from core.strategies.ema_crossover import EmaCrossover
 from core.strategies.mean_reversion import MeanReversion
+from core.strategies.obv_trend import ObvTrend
+from core.strategies.rsi_momentum import RsiMomentum
+from core.strategies.supertrend import Supertrend
 from core.strategies.trend_breakout import TrendBreakout
 from core.strategies.volatility_compression import VolatilityCompression
 from core.types import OrderType, Position, Regime, Side, Signal
@@ -59,6 +64,21 @@ class BacktestResult:
     rejection_breakdown: dict[str, int]
     period_start: datetime
     period_end: datetime
+    regime_distribution: dict[str, int] = None          # days per regime
+    signal_count_by_strategy: dict[str, int] = None     # signals per strategy
+    accepted_count_by_strategy: dict[str, int] = None   # accepted per strategy
+    qty_zero_count: int = 0                             # signals killed by sizing before guardrails
+    signal_count_by_symbol: dict[str, int] = None       # top signal-generating symbols
+
+    def __post_init__(self):
+        if self.regime_distribution is None:
+            self.regime_distribution = {}
+        if self.signal_count_by_strategy is None:
+            self.signal_count_by_strategy = {}
+        if self.accepted_count_by_strategy is None:
+            self.accepted_count_by_strategy = {}
+        if self.signal_count_by_symbol is None:
+            self.signal_count_by_symbol = {}
 
 
 class BacktestEngine:
@@ -92,8 +112,12 @@ class BacktestEngine:
 
         adv_by_symbol = self._compute_adv(symbol_history)
         equity_records: list[tuple[datetime, float]] = []
-        signal_count = accepted = rejected = 0
+        signal_count = accepted = rejected = qty_zero_count = 0
         rejection_breakdown: dict[str, int] = {}
+        regime_distribution: dict[str, int] = {}
+        signal_count_by_strategy: dict[str, int] = {}
+        accepted_count_by_strategy: dict[str, int] = {}
+        signal_count_by_symbol: dict[str, int] = {}
         last_exit_by_symbol: dict[str, datetime] = {}
         peak_equity = starting_equity
         starting_equity_today = starting_equity
@@ -120,6 +144,7 @@ class BacktestEngine:
             vix_proxy = self._estimate_vix(nifty_slice)
             regime = self.regime_classifier.classify(nifty_slice, vix=vix_proxy).regime
 
+            regime_distribution[regime.value] = regime_distribution.get(regime.value, 0) + 1
             if regime == Regime.UNKNOWN:
                 equity_records.append((date, broker.equity()))
                 last_date = date
@@ -141,6 +166,8 @@ class BacktestEngine:
                     if sig is None:
                         continue
                     signal_count += 1
+                    signal_count_by_strategy[strat.name] = signal_count_by_strategy.get(strat.name, 0) + 1
+                    signal_count_by_symbol[symbol] = signal_count_by_symbol.get(symbol, 0) + 1
 
                     # Override the signal's entry price to today's open (realistic fill timing).
                     sig.entry_price = float(today_row["open"])
@@ -157,6 +184,12 @@ class BacktestEngine:
                         signal=sig,
                         max_position_pct=self.settings.risk.max_position_pct,
                     )
+                    if qty == 0:
+                        qty_zero_count += 1
+                        rejected += 1
+                        rejection_breakdown["qty_zero_sizing"] = rejection_breakdown.get("qty_zero_sizing", 0) + 1
+                        continue
+
                     decision = self._check_guardrails(
                         sig, qty, broker, adv_by_symbol, last_exit_by_symbol,
                         starting_equity_today, peak_equity, date,
@@ -176,6 +209,7 @@ class BacktestEngine:
                     )
                     if order.status.value == "FILLED":
                         accepted += 1
+                        accepted_count_by_strategy[strat.name] = accepted_count_by_strategy.get(strat.name, 0) + 1
                     else:
                         rejected += 1
                         rejection_breakdown[f"broker:{order.rejection_reason}"] = (
@@ -213,6 +247,11 @@ class BacktestEngine:
             rejection_breakdown=rejection_breakdown,
             period_start=common_dates[0],
             period_end=common_dates[-1],
+            regime_distribution=regime_distribution,
+            signal_count_by_strategy=signal_count_by_strategy,
+            accepted_count_by_strategy=accepted_count_by_strategy,
+            qty_zero_count=qty_zero_count,
+            signal_count_by_symbol=signal_count_by_symbol,
         )
 
     # ---------- internals ----------
@@ -220,26 +259,73 @@ class BacktestEngine:
     def _build_strategies(self, settings: Settings) -> list[IStrategy]:
         out: list[IStrategy] = []
         scfg = settings.strategies
+
         if scfg.get("trend_breakout", {}).get("enabled", False):
             cfg = scfg["trend_breakout"]
             out.append(TrendBreakout(
-                donchian_period=cfg.get("donchian_period", 20),
+                donchian_period=cfg.get("donchian_period", 15),
                 atr_period=cfg.get("atr_period", 14),
-                atr_stop_multiplier=cfg.get("atr_stop_multiplier", 2.0),
-                target_r_multiple=cfg.get("target_r_multiple", 2.5),
+                atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
+                target_r_multiple=cfg.get("target_r_multiple", 2.0),
             ))
         if scfg.get("mean_reversion", {}).get("enabled", False):
             cfg = scfg["mean_reversion"]
             out.append(MeanReversion(
                 rsi_period=cfg.get("rsi_period", 14),
-                rsi_oversold=cfg.get("rsi_oversold", 30),
-                rsi_overbought=cfg.get("rsi_overbought", 70),
+                rsi_oversold=cfg.get("rsi_oversold", 35),
+                rsi_overbought=cfg.get("rsi_overbought", 65),
                 bb_period=cfg.get("bb_period", 20),
                 bb_std=cfg.get("bb_std", 2.0),
             ))
         if scfg.get("volatility_compression", {}).get("enabled", False):
             cfg = scfg["volatility_compression"]
             out.append(VolatilityCompression(nr_lookback=cfg.get("nr_lookback", 7)))
+        if scfg.get("ema_crossover", {}).get("enabled", False):
+            cfg = scfg["ema_crossover"]
+            out.append(EmaCrossover(
+                fast_period=cfg.get("fast_period", 9),
+                slow_period=cfg.get("slow_period", 21),
+                atr_period=cfg.get("atr_period", 14),
+                atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
+                target_r_multiple=cfg.get("target_r_multiple", 2.0),
+                volume_confirmation=cfg.get("volume_confirmation", True),
+            ))
+        if scfg.get("rsi_momentum", {}).get("enabled", False):
+            cfg = scfg["rsi_momentum"]
+            out.append(RsiMomentum(
+                rsi_period=cfg.get("rsi_period", 14),
+                rsi_pullback_low=cfg.get("rsi_pullback_low", 40.0),
+                rsi_pullback_high=cfg.get("rsi_pullback_high", 55.0),
+                trend_ema_period=cfg.get("trend_ema_period", 50),
+                atr_period=cfg.get("atr_period", 14),
+                atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
+                target_r_multiple=cfg.get("target_r_multiple", 2.0),
+            ))
+        if scfg.get("bb_squeeze", {}).get("enabled", False):
+            cfg = scfg["bb_squeeze"]
+            out.append(BbSqueeze(
+                bb_period=cfg.get("bb_period", 20),
+                bb_std=cfg.get("bb_std", 2.0),
+                squeeze_lookback=cfg.get("squeeze_lookback", 20),
+                atr_period=cfg.get("atr_period", 14),
+                atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
+                target_r_multiple=cfg.get("target_r_multiple", 2.0),
+            ))
+        if scfg.get("supertrend", {}).get("enabled", False):
+            cfg = scfg["supertrend"]
+            out.append(Supertrend(
+                atr_period=cfg.get("atr_period", 10),
+                multiplier=cfg.get("multiplier", 3.0),
+                target_r_multiple=cfg.get("target_r_multiple", 2.0),
+            ))
+        if scfg.get("obv_trend", {}).get("enabled", False):
+            cfg = scfg["obv_trend"]
+            out.append(ObvTrend(
+                breakout_period=cfg.get("breakout_period", 15),
+                atr_period=cfg.get("atr_period", 14),
+                atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
+                target_r_multiple=cfg.get("target_r_multiple", 2.5),
+            ))
         return out
 
     def _process_intraday_exits(

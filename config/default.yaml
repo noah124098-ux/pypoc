@@ -34,30 +34,78 @@ risk:
 
 regime:
   adx_period: 14
-  adx_trend_threshold: 25            # ADX > 25 => TREND
-  bb_width_range_threshold: 0.04     # bb width < 4% of price => RANGE
+  adx_trend_threshold: 20            # Relaxed from 25 — more TREND days; ADX 20 is standard trend threshold
+  bb_width_range_threshold: 0.06     # Relaxed from 4% — more RANGE days; 6% still means tight consolidation
   vix_volatile_threshold: 20         # VIX > 20 => VOLATILE bias
 
 strategies:
+  # --- Original strategies (retained, parameters relaxed) ---
   trend_breakout:
     enabled: true
     regimes: [TREND]
-    donchian_period: 20
+    donchian_period: 15              # Reduced from 20 — fires on shorter breakouts
     atr_period: 14
-    atr_stop_multiplier: 2.0
-    target_r_multiple: 2.5
+    atr_stop_multiplier: 1.5         # Reduced from 2.0 — wider risk budget, fewer qty=0 kills
+    target_r_multiple: 2.0
   mean_reversion:
     enabled: true
     regimes: [RANGE]
     rsi_period: 14
-    rsi_oversold: 30
-    rsi_overbought: 70
+    rsi_oversold: 35                 # Relaxed from 30 — more signals in ranging market
+    rsi_overbought: 65
     bb_period: 20
     bb_std: 2.0
   volatility_compression:
     enabled: true
     regimes: [VOLATILE]
     nr_lookback: 7
+
+  # --- New strategies ---
+  ema_crossover:
+    enabled: true
+    regimes: [TREND]
+    fast_period: 9
+    slow_period: 21
+    atr_period: 14
+    atr_stop_multiplier: 1.5
+    target_r_multiple: 2.0
+    volume_confirmation: true
+
+  rsi_momentum:
+    enabled: true
+    regimes: [TREND]
+    rsi_period: 14
+    rsi_pullback_low: 40
+    rsi_pullback_high: 55
+    trend_ema_period: 50
+    atr_period: 14
+    atr_stop_multiplier: 1.5
+    target_r_multiple: 2.0
+
+  bb_squeeze:
+    enabled: true
+    regimes: [TREND, RANGE]
+    bb_period: 20
+    bb_std: 2.0
+    squeeze_lookback: 20
+    atr_period: 14
+    atr_stop_multiplier: 1.5
+    target_r_multiple: 2.0
+
+  supertrend:
+    enabled: true
+    regimes: [TREND, VOLATILE]
+    atr_period: 10
+    multiplier: 3.0
+    target_r_multiple: 2.0
+
+  obv_trend:
+    enabled: true
+    regimes: [TREND]
+    breakout_period: 15
+    atr_period: 14
+    atr_stop_multiplier: 1.5
+    target_r_multiple: 2.5
 
 execution:
   slippage_bps: 5            # 5 basis points slippage assumption for paper
