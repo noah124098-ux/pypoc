@@ -26,8 +26,7 @@ class JsonlEventLogger:
             f.write(json.dumps(record, default=str) + "\n")
 
 
-def setup_logging(level: str = "INFO", file: str = "logs/agent.log") -> logging.Logger:
-    Path(file).parent.mkdir(parents=True, exist_ok=True)
+def setup_logging(level: str = "INFO", file: str | None = "logs/agent.log") -> logging.Logger:
     logger = logging.getLogger("agent")
     logger.setLevel(level)
     if logger.handlers:
@@ -35,8 +34,10 @@ def setup_logging(level: str = "INFO", file: str = "logs/agent.log") -> logging.
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     sh = logging.StreamHandler(sys.stdout)
     sh.setFormatter(fmt)
-    fh = logging.FileHandler(file, encoding="utf-8")
-    fh.setFormatter(fmt)
     logger.addHandler(sh)
-    logger.addHandler(fh)
+    if file is not None:
+        Path(file).parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(file, encoding="utf-8")
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
     return logger

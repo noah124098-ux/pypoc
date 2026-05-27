@@ -308,7 +308,7 @@ def cmd_debug_rejections(args):
     for regime in ["TREND", "RANGE", "VOLATILE", "UNKNOWN"]:
         count = r.regime_distribution.get(regime, 0)
         pct = count / total_days * 100 if total_days else 0
-        bar = "█" * int(pct / 2)
+        bar = "#" * int(pct / 2)
         print(f"  {regime:<10} {count:5d} days  ({pct:5.1f}%)  {bar}")
     if unknown_days:
         print(f"  *** {unknown_days} UNKNOWN days = no strategies run on those days ***")
@@ -331,14 +331,14 @@ def cmd_debug_rejections(args):
     if r.rejection_breakdown:
         for k, v in sorted(r.rejection_breakdown.items(), key=lambda kv: -kv[1]):
             pct = v / r.rejected_count * 100 if r.rejected_count else 0
-            bar = "█" * int(pct / 3)
+            bar = "#" * int(pct / 3)
             print(f"  {k:<35}  {v:5d}  ({pct:5.1f}%)  {bar}")
     else:
         print("  (no rejections)")
 
     print(f"\n--- QTY=0 SIZING KILLS (before guardrails) ---")
     print(f"  qty_zero_count = {r.qty_zero_count}  "
-          f"({'signals killed by sizing alone' if r.qty_zero_count else 'none — sizing is not the bottleneck'})")
+          f"({'signals killed by sizing alone' if r.qty_zero_count else 'none -- sizing is not the bottleneck'})")
 
     print(f"\n--- TOP SIGNAL-GENERATING SYMBOLS (top 15) ---")
     top_syms = sorted(r.signal_count_by_symbol.items(), key=lambda kv: -kv[1])[:15]
@@ -357,7 +357,7 @@ def cmd_debug_rejections(args):
     print("--- DIAGNOSIS HINTS ---")
     unknown_pct = unknown_days / total_days * 100 if total_days else 0
     if unknown_pct > 50:
-        print(f"  [REGIME] {unknown_pct:.0f}% of days are UNKNOWN — regime thresholds are too strict.")
+        print(f"  [REGIME] {unknown_pct:.0f}% of days are UNKNOWN -- regime thresholds are too strict.")
         print(f"           Try: adx_trend_threshold: 20  and  bb_width_range_threshold: 0.06")
     if r.qty_zero_count > r.signal_count * 0.2:
         print(f"  [SIZING] {r.qty_zero_count} signals ({r.qty_zero_count/r.signal_count*100:.0f}%) "
@@ -365,9 +365,9 @@ def cmd_debug_rejections(args):
         print(f"           Try: reducing atr_stop_multiplier (e.g. 1.5) or per_trade_risk_pct: 2.0")
     top_rule = max(r.rejection_breakdown.items(), key=lambda kv: kv[1])[0] if r.rejection_breakdown else None
     if top_rule and top_rule not in ("qty_zero_sizing", "stop_above_open_after_gap"):
-        print(f"  [GUARDRAIL] Top rejection rule is '{top_rule}' — investigate why it fires so often.")
+        print(f"  [GUARDRAIL] Top rejection rule is '{top_rule}' -- investigate why it fires so often.")
     if r.signal_count == 0:
-        print(f"  [SIGNAL] No signals at all — strategies never fire given current regime + data.")
+        print(f"  [SIGNAL] No signals at all -- strategies never fire given current regime + data.")
         print(f"           Run with --days 1825 (5y) to check if there's any historical period that trades.")
     print()
 
@@ -415,7 +415,7 @@ def main():
     dr.add_argument("--days", type=int, default=365, help="Look-back window in calendar days (default 365)")
     dr.add_argument(
         "--capital", type=float, default=500_000,
-        help="Capital to use (default 500000 INR — removes qty=0 noise from sizing)",
+        help="Capital to use (default 500000 INR -- removes qty=0 noise from sizing)",
     )
     dr.set_defaults(func=cmd_debug_rejections)
 

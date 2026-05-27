@@ -42,6 +42,10 @@ class PaperBroker(IBroker):
         self._latest_prices: dict[str, float] = {}
         self.trade_log: list[TradeRecord] = []
         self.realized_pnl: float = 0.0
+        self.sim_time: datetime | None = None  # set by backtest engine to override wall-clock
+
+    def _now(self) -> datetime:
+        return self.sim_time if self.sim_time is not None else datetime.utcnow()
 
     # ---------- IBroker API ----------
 
@@ -168,7 +172,7 @@ class PaperBroker(IBroker):
                 stop_loss=stop_loss,
                 target=target,
                 strategy=strategy,
-                opened_at=datetime.utcnow(),
+                opened_at=self._now(),
                 last_price=price,
             )
 
@@ -189,7 +193,7 @@ class PaperBroker(IBroker):
                 charges=charges,
                 strategy=pos.strategy,
                 opened_at=pos.opened_at,
-                closed_at=datetime.utcnow(),
+                closed_at=self._now(),
                 exit_reason=exit_reason,
             )
         )

@@ -136,6 +136,9 @@ class BacktestEngine:
             if last_date is None or date.date() != last_date.date():
                 starting_equity_today = broker.equity()
 
+            # Advance broker's simulated clock so cooldown and opened_at use backtest time.
+            broker.sim_time = datetime.combine(date.date(), time(15, 30))
+
             # 1. Auto-exit existing positions intraday using bar D's H/L (stop checked first).
             self._process_intraday_exits(broker, symbol_history, date)
 
