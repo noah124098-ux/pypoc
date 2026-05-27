@@ -185,8 +185,9 @@ class BacktestEngine:
                     signal_count_by_strategy[strat.name] = signal_count_by_strategy.get(strat.name, 0) + 1
                     signal_count_by_symbol[symbol] = signal_count_by_symbol.get(symbol, 0) + 1
 
-                    # Block long entries when Nifty is below/falling 50-DMA.
-                    if sig.side == Side.BUY and not nifty_buy_ok:
+                    # Block long entries in TREND regime when Nifty is below/falling 50-DMA.
+                    # RANGE/VOLATILE strategies are regime-specific and don't need this filter.
+                    if sig.side == Side.BUY and regime == Regime.TREND and not nifty_buy_ok:
                         rejected += 1
                         rejection_breakdown["nifty_trend_filter"] = (
                             rejection_breakdown.get("nifty_trend_filter", 0) + 1

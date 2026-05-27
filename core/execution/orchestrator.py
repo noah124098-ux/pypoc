@@ -197,7 +197,7 @@ class Orchestrator:
             sig = strat.evaluate(candle.symbol, df, self.current_regime.regime)
             if sig is None:
                 continue
-            if sig.side == Side.BUY and not nifty_buy_ok:
+            if sig.side == Side.BUY and self.current_regime.regime == Regime.TREND and not nifty_buy_ok:
                 log.debug("Nifty trend filter blocked BUY signal for %s (%s)", candle.symbol, strat.name)
                 continue
             self._handle_signal(sig)
