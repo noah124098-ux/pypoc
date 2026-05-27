@@ -26,8 +26,8 @@ class RsiMomentum(IStrategy):
     def __init__(
         self,
         rsi_period: int = 14,
-        rsi_pullback_low: float = 38.0,
-        rsi_pullback_high: float = 58.0,
+        rsi_pullback_low: float = 40.0,
+        rsi_pullback_high: float = 55.0,
         trend_ema_period: int = 50,
         atr_period: int = 14,
         atr_stop_multiplier: float = 1.5,

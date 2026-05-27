@@ -75,8 +75,8 @@ strategies:
     enabled: true
     regimes: [TREND]
     rsi_period: 14
-    rsi_pullback_low: 38              # Widened from 40 -- more pullback entries
-    rsi_pullback_high: 58             # Widened from 55 -- catches shallower pullbacks
+    rsi_pullback_low: 40
+    rsi_pullback_high: 55
     trend_ema_period: 50
     atr_period: 14
     atr_stop_multiplier: 1.5
