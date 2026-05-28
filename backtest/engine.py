@@ -47,9 +47,19 @@ from core.strategies.rsi_momentum import RsiMomentum
 from core.strategies.supertrend import Supertrend
 from core.strategies.trend_breakout import TrendBreakout
 from core.strategies.volatility_compression import VolatilityCompression
+from core.strategies.indicators import adx_value
 from core.types import OrderType, Position, Regime, Side, Signal
 
 log = logging.getLogger("backtest.engine")
+
+
+def _adx_last(df: pd.DataFrame) -> Optional[float]:
+    """Return latest ADX value, or None if not enough data."""
+    try:
+        val = adx_value(df).iloc[-1]
+        return None if pd.isna(val) else float(val)
+    except Exception:
+        return None
 
 
 @dataclass
@@ -184,6 +194,14 @@ class BacktestEngine:
                 if today_row is None:
                     continue
 
+                # Per-stock ADX filter for TREND strategies: require ADX >= 15 to
+                # confirm the stock itself is trending, not just Nifty.
+                if len(history) >= 30:
+                    stock_adx = _adx_last(history)
+                    stock_trend_ok = (stock_adx is None) or (stock_adx >= 15)
+                else:
+                    stock_trend_ok = True
+
                 for strat in self.strategies:
                     if not strat.supports(regime):
                         continue
@@ -205,6 +223,14 @@ class BacktestEngine:
                             )
                             continue
 
+                    # Per-stock ADX filter: TREND strategies need the stock itself trending.
+                    if sig.side == Side.BUY and regime == Regime.TREND and not stock_trend_ok:
+                        rejected += 1
+                        rejection_breakdown["stock_adx_filter"] = (
+                            rejection_breakdown.get("stock_adx_filter", 0) + 1
+                        )
+                        continue
+
                     # Override the signal's entry price to today's open (realistic fill timing).
                     sig.entry_price = float(today_row["open"])
                     if sig.side == Side.BUY and sig.stop_loss >= sig.entry_price:
@@ -219,7 +245,7 @@ class BacktestEngine:
                     if sig.side == Side.BUY and sig.target is not None:
                         reward = sig.target - sig.entry_price
                         risk_amt = sig.entry_price - sig.stop_loss
-                        if risk_amt > 0 and reward / risk_amt < 1.5:
+                        if risk_amt > 0 and reward / risk_amt < 1.2:
                             rejected += 1
                             rejection_breakdown["insufficient_rr_at_open"] = (
                                 rejection_breakdown.get("insufficient_rr_at_open", 0) + 1

@@ -40,3 +40,18 @@ def volume_ratio(df: pd.DataFrame, period: int = 20) -> pd.Series:
     """Latest volume / N-day average volume. > 1.0 means above-average volume."""
     avg = df["volume"].rolling(period).mean()
     return df["volume"] / avg.replace(0, float("nan"))
+
+
+def adx_value(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Compute ADX (Average Directional Index). Returns smoothed ADX series."""
+    high, low, close = df["high"], df["low"], df["close"]
+    up = high.diff()
+    down = -low.diff()
+    plus_dm = up.where((up > down) & (up > 0), 0.0)
+    minus_dm = down.where((down > up) & (down > 0), 0.0)
+    tr = pd.concat([(high - low), (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
+    atr_s = tr.ewm(alpha=1 / period, adjust=False).mean()
+    plus_di = 100 * plus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr_s.replace(0, float("nan"))
+    minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr_s.replace(0, float("nan"))
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, float("nan"))
+    return dx.ewm(alpha=1 / period, adjust=False).mean()
