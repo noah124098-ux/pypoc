@@ -31,6 +31,7 @@ class BbSqueeze(IStrategy):
         atr_period: int = 14,
         atr_stop_multiplier: float = 1.5,
         target_r_multiple: float = 2.0,
+        stock_dma_period: int = 50,
     ):
         self.bb_period = bb_period
         self.bb_std = bb_std
@@ -38,6 +39,7 @@ class BbSqueeze(IStrategy):
         self.atr_period = atr_period
         self.atr_stop_multiplier = atr_stop_multiplier
         self.target_r_multiple = target_r_multiple
+        self.stock_dma_period = stock_dma_period
 
     def evaluate(self, symbol: str, candles: pd.DataFrame, regime: Regime) -> Optional[Signal]:
         if not self.supports(regime):
@@ -47,6 +49,13 @@ class BbSqueeze(IStrategy):
             return None
 
         close = candles["close"]
+
+        # Per-stock trend filter: only buy if stock's 50-DMA is flat or rising.
+        dma = close.rolling(self.stock_dma_period).mean()
+        if not pd.isna(dma.iloc[-1]) and not pd.isna(dma.iloc[-6]):
+            if dma.iloc[-1] < dma.iloc[-6] * 0.99:
+                return None
+
         ma = close.rolling(self.bb_period).mean()
         sd = close.rolling(self.bb_period).std()
         upper = ma + self.bb_std * sd

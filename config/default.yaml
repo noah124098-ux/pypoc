@@ -52,10 +52,11 @@ strategies:
     enabled: true
     regimes: [RANGE]
     rsi_period: 14
-    rsi_oversold: 35                 # Relaxed from 30 — more signals in ranging market
+    rsi_oversold: 35
     rsi_overbought: 65
     bb_period: 20
     bb_std: 2.0
+    stock_dma_period: 50             # Block entries if stock 50-DMA falling >1% in 5 days
   volatility_compression:
     enabled: true
     regimes: [VOLATILE]
@@ -93,6 +94,7 @@ strategies:
     atr_period: 14
     atr_stop_multiplier: 1.5
     target_r_multiple: 2.0
+    stock_dma_period: 50             # Block entries if stock 50-DMA falling >1% in 5 days
 
   supertrend:
     enabled: true

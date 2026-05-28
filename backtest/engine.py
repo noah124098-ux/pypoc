@@ -214,6 +214,18 @@ class BacktestEngine:
                         )
                         continue
 
+                    # Minimum R:R at actual fill price. Gap opens can degrade a 2:1
+                    # signal to 1:1 or worse before we even enter. Reject those.
+                    if sig.side == Side.BUY and sig.target is not None:
+                        reward = sig.target - sig.entry_price
+                        risk_amt = sig.entry_price - sig.stop_loss
+                        if risk_amt > 0 and reward / risk_amt < 1.5:
+                            rejected += 1
+                            rejection_breakdown["insufficient_rr_at_open"] = (
+                                rejection_breakdown.get("insufficient_rr_at_open", 0) + 1
+                            )
+                            continue
+
                     qty = position_size(
                         equity=broker.equity(),
                         per_trade_risk_pct=self.settings.risk.per_trade_risk_pct,
@@ -313,6 +325,7 @@ class BacktestEngine:
                 rsi_overbought=cfg.get("rsi_overbought", 65),
                 bb_period=cfg.get("bb_period", 20),
                 bb_std=cfg.get("bb_std", 2.0),
+                stock_dma_period=cfg.get("stock_dma_period", 50),
             ))
         if scfg.get("volatility_compression", {}).get("enabled", False):
             cfg = scfg["volatility_compression"]
@@ -348,6 +361,7 @@ class BacktestEngine:
                 atr_period=cfg.get("atr_period", 14),
                 atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
                 target_r_multiple=cfg.get("target_r_multiple", 2.0),
+                stock_dma_period=cfg.get("stock_dma_period", 50),
             ))
         if scfg.get("supertrend", {}).get("enabled", False):
             cfg = scfg["supertrend"]

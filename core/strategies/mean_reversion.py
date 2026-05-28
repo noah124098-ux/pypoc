@@ -22,23 +22,33 @@ class MeanReversion(IStrategy):
         rsi_overbought: float = 70,
         bb_period: int = 20,
         bb_std: float = 2.0,
+        stock_dma_period: int = 50,
     ):
         self.rsi_period = rsi_period
         self.rsi_oversold = rsi_oversold
         self.rsi_overbought = rsi_overbought
         self.bb_period = bb_period
         self.bb_std = bb_std
+        self.stock_dma_period = stock_dma_period
 
     def evaluate(self, symbol: str, candles: pd.DataFrame, regime: Regime) -> Optional[Signal]:
         if not self.supports(regime):
             return None
-        if len(candles) < max(self.rsi_period, self.bb_period) + 2:
+        if len(candles) < max(self.rsi_period, self.bb_period, self.stock_dma_period) + 2:
             return None
+
+        # Per-stock trend filter: only buy if stock's own 50-DMA is flat or rising.
+        # A falling 50-DMA means a downtrend -- oversold RSI is continuation, not reversion.
+        close_series = candles["close"]
+        dma = close_series.rolling(self.stock_dma_period).mean()
+        if not pd.isna(dma.iloc[-1]) and not pd.isna(dma.iloc[-6]):
+            if dma.iloc[-1] < dma.iloc[-6] * 0.99:  # DMA falling >1% over 5 days
+                return None
 
         r = rsi(candles, self.rsi_period)
         ma, upper, lower = bollinger(candles, self.bb_period, self.bb_std)
 
-        close = candles["close"].iloc[-1]
+        close = close_series.iloc[-1]
         latest_rsi = r.iloc[-1]
         latest_lower = lower.iloc[-1]
         latest_ma = ma.iloc[-1]
