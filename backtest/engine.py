@@ -303,6 +303,7 @@ class BacktestEngine:
                 atr_period=cfg.get("atr_period", 14),
                 atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
                 target_r_multiple=cfg.get("target_r_multiple", 2.0),
+                volume_confirm_ratio=cfg.get("volume_confirm_ratio", 1.0),
             ))
         if scfg.get("mean_reversion", {}).get("enabled", False):
             cfg = scfg["mean_reversion"]
@@ -336,6 +337,7 @@ class BacktestEngine:
                 atr_period=cfg.get("atr_period", 14),
                 atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
                 target_r_multiple=cfg.get("target_r_multiple", 2.0),
+                volume_confirm_ratio=cfg.get("volume_confirm_ratio", 1.0),
             ))
         if scfg.get("bb_squeeze", {}).get("enabled", False):
             cfg = scfg["bb_squeeze"]

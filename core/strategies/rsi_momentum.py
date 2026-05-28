@@ -15,7 +15,7 @@ from typing import Optional
 import pandas as pd
 
 from core.strategies.base import IStrategy
-from core.strategies.indicators import atr, rsi
+from core.strategies.indicators import atr, rsi, volume_ratio
 from core.types import Regime, Side, Signal
 
 
@@ -32,6 +32,7 @@ class RsiMomentum(IStrategy):
         atr_period: int = 14,
         atr_stop_multiplier: float = 1.5,
         target_r_multiple: float = 2.0,
+        volume_confirm_ratio: float = 1.0,
     ):
         self.rsi_period = rsi_period
         self.rsi_pullback_low = rsi_pullback_low
@@ -40,6 +41,7 @@ class RsiMomentum(IStrategy):
         self.atr_period = atr_period
         self.atr_stop_multiplier = atr_stop_multiplier
         self.target_r_multiple = target_r_multiple
+        self.volume_confirm_ratio = volume_confirm_ratio
 
     def evaluate(self, symbol: str, candles: pd.DataFrame, regime: Regime) -> Optional[Signal]:
         if not self.supports(regime):
@@ -69,6 +71,10 @@ class RsiMomentum(IStrategy):
         prev_rsi = rsi(candles, self.rsi_period).iloc[-2]
         if not pd.isna(prev_rsi) and latest_rsi <= prev_rsi:
             return None  # still falling — wait for upturn
+
+        vr = volume_ratio(candles).iloc[-1]
+        if pd.isna(vr) or vr < self.volume_confirm_ratio:
+            return None
 
         latest_atr = atr(candles, self.atr_period).iloc[-1]
         if pd.isna(latest_atr) or latest_atr <= 0:

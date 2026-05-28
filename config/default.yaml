@@ -43,10 +43,11 @@ strategies:
   trend_breakout:
     enabled: true
     regimes: [TREND]
-    donchian_period: 15              # Reduced from 20 — fires on shorter breakouts
+    donchian_period: 15
     atr_period: 14
-    atr_stop_multiplier: 1.5         # Reduced from 2.0 — wider risk budget, fewer qty=0 kills
+    atr_stop_multiplier: 1.5
     target_r_multiple: 2.0
+    volume_confirm_ratio: 1.2        # Volume must be 20% above 20-day avg to confirm breakout
   mean_reversion:
     enabled: true
     regimes: [RANGE]
@@ -81,6 +82,7 @@ strategies:
     atr_period: 14
     atr_stop_multiplier: 1.5
     target_r_multiple: 2.0
+    volume_confirm_ratio: 1.1        # Volume must be 10% above avg on RSI recovery day
 
   bb_squeeze:
     enabled: true

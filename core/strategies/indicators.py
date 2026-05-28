@@ -34,3 +34,9 @@ def bollinger(df: pd.DataFrame, period: int = 20, n_std: float = 2.0):
 
 def donchian(df: pd.DataFrame, period: int = 20):
     return df["high"].rolling(period).max(), df["low"].rolling(period).min()
+
+
+def volume_ratio(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    """Latest volume / N-day average volume. > 1.0 means above-average volume."""
+    avg = df["volume"].rolling(period).mean()
+    return df["volume"] / avg.replace(0, float("nan"))
