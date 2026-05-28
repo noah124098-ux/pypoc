@@ -12,6 +12,7 @@ across different market regimes within the historical window?
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -63,47 +64,71 @@ def run_walk_forward(
     if window_months < 1:
         raise ValueError("window_months must be >= 1")
 
-    engine = BacktestEngine(settings)
-    windows: list[WalkForwardWindow] = []
+    # Build window date ranges first, then run in parallel.
     cursor = pd.Timestamp(start_date)
     end_ts = pd.Timestamp(end_date)
-
+    date_ranges: list[tuple[pd.Timestamp, pd.Timestamp]] = []
     while cursor < end_ts:
         win_end = min(cursor + pd.DateOffset(months=window_months), end_ts)
-        try:
-            result = engine.run(
-                symbol_history=symbol_history,
-                nifty_history=nifty_history,
-                starting_equity=starting_equity,
-                start_date=cursor.to_pydatetime(),
-                end_date=win_end.to_pydatetime(),
-            )
-        except ValueError as e:
-            log.warning("Skipping window %s..%s: %s", cursor.date(), win_end.date(), e)
-            cursor = win_end
-            continue
-
-        period_days = (win_end - cursor).days
-        m = compute_metrics(
-            trades=result.trades,
-            equity_curve=result.equity_curve,
-            starting_equity=starting_equity,
-            period_days=period_days,
-        )
-        windows.append(WalkForwardWindow(
-            start=cursor.to_pydatetime(),
-            end=win_end.to_pydatetime(),
-            result=result,
-            metrics=m,
-        ))
+        date_ranges.append((cursor, win_end))
         cursor = win_end
 
+    n_workers = min(len(date_ranges), 4)
+    futures_map = {}
+    windows_map: dict[int, WalkForwardWindow] = {}
+
+    with ProcessPoolExecutor(max_workers=n_workers) as pool:
+        for i, (ws, we) in enumerate(date_ranges):
+            f = pool.submit(
+                _run_window,
+                settings, symbol_history, nifty_history,
+                starting_equity, ws.to_pydatetime(), we.to_pydatetime(),
+                (we - ws).days,
+            )
+            futures_map[f] = i
+
+        for f in as_completed(futures_map):
+            i = futures_map[f]
+            ws, we = date_ranges[i]
+            try:
+                windows_map[i] = f.result()
+            except ValueError as e:
+                log.warning("Skipping window %s..%s: %s", ws.date(), we.date(), e)
+
+    windows = [windows_map[i] for i in sorted(windows_map)]
     aggregate = _aggregate(windows, starting_equity)
     return WalkForwardReport(
         windows=windows,
         aggregate_metrics=aggregate,
         starting_equity=starting_equity,
     )
+
+
+def _run_window(
+    settings: Settings,
+    symbol_history: dict[str, pd.DataFrame],
+    nifty_history: pd.DataFrame,
+    starting_equity: float,
+    start: datetime,
+    end: datetime,
+    period_days: int,
+) -> WalkForwardWindow:
+    """Run a single backtest window. Executed in a worker process."""
+    engine = BacktestEngine(settings)
+    result = engine.run(
+        symbol_history=symbol_history,
+        nifty_history=nifty_history,
+        starting_equity=starting_equity,
+        start_date=start,
+        end_date=end,
+    )
+    m = compute_metrics(
+        trades=result.trades,
+        equity_curve=result.equity_curve,
+        starting_equity=starting_equity,
+        period_days=period_days,
+    )
+    return WalkForwardWindow(start=start, end=end, result=result, metrics=m)
 
 
 def _aggregate(windows: list[WalkForwardWindow], starting_equity: float) -> BacktestMetrics:
