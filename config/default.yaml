@@ -5,7 +5,7 @@ mode: paper        # paper | live   (live refuses to start until backtest gate p
 timezone: Asia/Kolkata
 
 capital:
-  initial_inr: 1000        # WARNING: 1000 is below practical floor; set 50000+ for meaningful results
+  initial_inr: 500000      # INR 5 lakh -- practical floor for Nifty 50 paper trading
   currency: INR
 
 market:
