@@ -191,7 +191,7 @@ class Orchestrator:
             ]
         )
 
-        nifty_allow_trend, nifty_allow_range, nifty_allow_any, nifty_strong_trend = self._nifty_market_filter()
+        nifty_allow_trend, nifty_allow_range, nifty_allow_any = self._nifty_market_filter()
         for strat in self.strategies:
             if not strat.supports(self.current_regime.regime):
                 continue
@@ -203,25 +203,22 @@ class Orchestrator:
                     (not nifty_allow_any)
                     or (self.current_regime.regime == Regime.TREND and not nifty_allow_trend)
                     or (self.current_regime.regime in (Regime.RANGE, Regime.VOLATILE) and not nifty_allow_range)
-                    or (sig.strategy in ("trend_breakout", "rsi_momentum") and not nifty_strong_trend)
                 )
                 if blocked:
                     log.debug("Nifty market filter blocked BUY for %s (%s)", candle.symbol, strat.name)
                     continue
             self._handle_signal(sig)
 
-    def _nifty_market_filter(self) -> tuple[bool, bool, bool, bool]:
-        """Return (allow_trend_buys, allow_range_buys, allow_any_buys, nifty_strong_trend).
+    def _nifty_market_filter(self) -> tuple[bool, bool, bool]:
+        """Return (allow_trend_buys, allow_range_buys, allow_any_buys).
 
         allow_any_buys=False when Nifty is below 200-DMA (structural decline).
         allow_range_buys=False when 50-DMA is falling (correction; RANGE longs also suppressed).
         allow_trend_buys=False when Nifty is below or 50-DMA is falling.
-        nifty_strong_trend=True when Nifty ADX >= 20 (required for breakout/momentum strategies).
         """
-        from core.strategies.indicators import adx_value
         df = self.nifty_ohlc_daily
         if df is None or len(df) < 55:
-            return True, True, True, True  # not enough history -- don't block
+            return True, True, True  # not enough history -- don't block
         close = df["close"]
         dma50  = close.rolling(50).mean()
         dma200 = close.rolling(200).mean()
@@ -231,12 +228,7 @@ class Orchestrator:
         allow_trend = above_200 and above_50 and rising_50
         allow_range = above_200 and rising_50
         allow_any   = above_200
-        try:
-            nifty_adx = float(adx_value(df).iloc[-1])
-            strong_trend = not pd.isna(nifty_adx) and nifty_adx >= 20
-        except Exception:
-            strong_trend = True
-        return bool(allow_trend), bool(allow_range), bool(allow_any), bool(strong_trend)
+        return bool(allow_trend), bool(allow_range), bool(allow_any)
 
     def _handle_signal(self, sig) -> None:
         equity = self.broker.equity()
