@@ -190,6 +190,12 @@ class BacktestEngine:
             nifty_allow_range = above_200 and rising_50   # RANGE longs need upward DMA slope
             nifty_allow_any   = above_200
 
+            # Nifty ADX filter: breakout/momentum strategies require a strong Nifty trend
+            # (ADX >= 20). In choppy recovery markets (ADX 10-18), stock breakouts fail
+            # frequently even if DMAs are rising. Only applied to trend_breakout + rsi_momentum.
+            nifty_adx = _adx_last(nifty_slice)
+            nifty_strong_trend = (nifty_adx is None) or (nifty_adx >= 20)
+
             for symbol, df in symbol_history.items():
                 history = df.loc[:yday]
                 if len(history) < 30:
@@ -236,6 +242,17 @@ class BacktestEngine:
                         rejected += 1
                         rejection_breakdown["stock_adx_filter"] = (
                             rejection_breakdown.get("stock_adx_filter", 0) + 1
+                        )
+                        continue
+
+                    # Nifty ADX filter for breakout/momentum strategies: require Nifty ADX >= 20.
+                    # In choppy recovery markets, these strategies have very poor win rates.
+                    if (sig.side == Side.BUY
+                            and sig.strategy in ("trend_breakout", "rsi_momentum")
+                            and not nifty_strong_trend):
+                        rejected += 1
+                        rejection_breakdown["nifty_adx_filter"] = (
+                            rejection_breakdown.get("nifty_adx_filter", 0) + 1
                         )
                         continue
 
