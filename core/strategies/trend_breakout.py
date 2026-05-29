@@ -32,7 +32,7 @@ class TrendBreakout(IStrategy):
     def evaluate(self, symbol: str, candles: pd.DataFrame, regime: Regime) -> Optional[Signal]:
         if not self.supports(regime):
             return None
-        if len(candles) < max(self.donchian_period, self.atr_period) + 5:
+        if len(candles) < max(self.donchian_period, self.atr_period) + 2:
             return None
 
         upper, _ = donchian(candles, self.donchian_period)
@@ -52,15 +52,6 @@ class TrendBreakout(IStrategy):
         if latest_close <= prev_upper:
             return None
 
-        # Require 2 of the last 3 closes above their 21-day EMA to confirm
-        # underlying trend momentum -- filters fake one-day breakouts.
-        ema21 = close.ewm(span=21, adjust=False).mean()
-        closes_above_ema = sum(
-            1 for k in range(1, 4) if close.iloc[-k] > ema21.iloc[-k]
-        )
-        if closes_above_ema < 2:
-            return None
-
         stop = latest_close - self.atr_stop_multiplier * latest_atr
         risk = latest_close - stop
         target = latest_close + self.target_r_multiple * risk
@@ -73,6 +64,6 @@ class TrendBreakout(IStrategy):
             stop_loss=stop,
             target=target,
             confidence=0.6,
-            rationale=f"Donchian breakout above {prev_upper:.2f}, EMA confirmed, ATR {latest_atr:.2f}",
+            rationale=f"Donchian breakout above {prev_upper:.2f}, ATR {latest_atr:.2f}",
             ts=datetime.utcnow(),
         )

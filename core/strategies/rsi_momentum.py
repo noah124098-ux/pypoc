@@ -61,22 +61,12 @@ class RsiMomentum(IStrategy):
         if trend_ema.iloc[-1] <= trend_ema.iloc[-5]:
             return None
 
-        # Fast EMA (21) above slow EMA (50) = confirmed bullish crossover structure
-        ema21 = close.ewm(span=21, adjust=False).mean()
-        if ema21.iloc[-1] <= trend_ema.iloc[-1]:
-            return None  # 21-EMA below 50-EMA -- trend structure not bullish
-
         rsi_series = rsi(candles, self.rsi_period)
         latest_rsi = rsi_series.iloc[-1]
         if pd.isna(latest_rsi):
             return None
         if not (self.rsi_pullback_low <= latest_rsi <= self.rsi_pullback_high):
             return None
-
-        # RSI must have been above 60 within the last 10 bars (confirms prior momentum)
-        recent_rsi_max = rsi_series.iloc[-10:].max()
-        if pd.isna(recent_rsi_max) or recent_rsi_max < 60:
-            return None  # no prior momentum -- this is a bounce, not a pullback
 
         # RSI must be recovering (rising from the pullback low)
         prev_rsi = rsi_series.iloc[-2]

@@ -43,11 +43,11 @@ strategies:
   trend_breakout:
     enabled: true
     regimes: [TREND]
-    donchian_period: 15
+    donchian_period: 20              # Raised from 15 -- longer breakouts are more meaningful
     atr_period: 14
     atr_stop_multiplier: 1.5
     target_r_multiple: 2.0
-    volume_confirm_ratio: 1.2        # Volume must be 20% above 20-day avg to confirm breakout
+    volume_confirm_ratio: 1.5        # Volume must be 50% above avg -- only high-conviction breakouts
   mean_reversion:
     enabled: true
     regimes: [RANGE]
