@@ -85,21 +85,20 @@ class SupertrendShort(IStrategy):
 
             supertrend.iloc[i] = final_lower.iloc[i] if direction.iloc[i] == 1 else final_upper.iloc[i]
 
-        # Signal: Supertrend is currently bearish AND flipped within the last 5 bars.
-        # A fresh flip on the exact last bar rarely coincides with a declining 50-DMA
-        # (the DMA takes weeks to start falling after the stock tops). Allowing a 5-bar
-        # entry window lets us catch the confirmation when both conditions align.
+        # Signal: Supertrend is currently bearish + 50-DMA is falling.
+        # Fire on the *first day* both conditions are simultaneously true within a
+        # bearish run. This avoids re-firing every day during a sustained downtrend
+        # while still allowing entry after the DMA-confirmation lag.
+        # Condition: direction[-1]==-1 (bearish now) AND yesterday's DMA check
+        # was not falling (i.e., today is the first confirmed day in the decline).
         if direction.iloc[-1] != -1:
-            return None  # not currently bearish
-        # Count consecutive bearish bars ending at -1 (i.e., how long ago the flip was)
-        bars_bearish = 1
-        for k in range(2, min(n, 7)):
-            if direction.iloc[-k] == -1:
-                bars_bearish += 1
-            else:
-                break
-        if bars_bearish > 5:
-            return None  # flip happened too long ago (stale entry)
+            return None  # Supertrend not currently bearish
+        # Check if yesterday the 50-DMA was still rising (dma[-2] >= dma[-22]).
+        # If it was already falling yesterday, this isn't a fresh confirmation.
+        if len(dma.dropna()) >= 23 and not pd.isna(dma.iloc[-22]):
+            dma_was_falling_yesterday = dma.iloc[-2] < dma.iloc[-22]
+            if dma_was_falling_yesterday:
+                return None  # DMA already falling yesterday -- not a fresh signal
 
         latest_close = close.iloc[-1]
         latest_atr = a.iloc[-1]

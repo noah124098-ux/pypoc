@@ -352,6 +352,35 @@ def cmd_debug_rejections(args):
     print(f"  Sharpe:        {m.sharpe:.2f}")
     print(f"  Max DD:        {m.max_drawdown_pct:.2f}%")
     print(f"  CAGR:          {m.cagr_pct:.2f}%")
+
+    # Per-strategy breakdown
+    if r.trades:
+        from collections import defaultdict
+        strat_wins: dict[str, int] = defaultdict(int)
+        strat_losses: dict[str, int] = defaultdict(int)
+        strat_gross_win: dict[str, float] = defaultdict(float)
+        strat_gross_loss: dict[str, float] = defaultdict(float)
+        for t in r.trades:
+            net = t.pnl - t.charges
+            if net > 0:
+                strat_wins[t.strategy] += 1
+                strat_gross_win[t.strategy] += net
+            else:
+                strat_losses[t.strategy] += 1
+                strat_gross_loss[t.strategy] += abs(net)
+        all_strats = sorted(set(list(strat_wins.keys()) + list(strat_losses.keys())))
+        if all_strats:
+            print(f"\n--- PER-STRATEGY P&L BREAKDOWN ---")
+            print(f"  {'Strategy':<28}  {'Trades':>6}  {'Win%':>5}  {'PF':>5}  {'Net P&L':>10}")
+            for s in all_strats:
+                w = strat_wins[s]; lo = strat_losses[s]
+                total_s = w + lo
+                win_pct = w / total_s * 100 if total_s else 0
+                gw = strat_gross_win[s]; gl = strat_gross_loss[s]
+                pf_s = gw / gl if gl else float("inf")
+                net_s = gw - gl
+                pf_str = f"{pf_s:.2f}" if pf_s != float("inf") else " inf"
+                print(f"  {s:<28}  {total_s:>6}  {win_pct:>4.0f}%  {pf_str:>5}  {net_s:>10,.0f}")
     print()
 
     print("--- DIAGNOSIS HINTS ---")
