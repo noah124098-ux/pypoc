@@ -222,7 +222,7 @@ class BacktestEngine:
                         blocked = (
                             (not nifty_allow_any)
                             or (regime == Regime.TREND and not nifty_allow_trend)
-                            or (regime == Regime.RANGE and not nifty_allow_range)
+                            or (regime in (Regime.RANGE, Regime.VOLATILE) and not nifty_allow_range)
                         )
                         if blocked:
                             rejected += 1

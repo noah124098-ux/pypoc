@@ -202,7 +202,7 @@ class Orchestrator:
                 blocked = (
                     (not nifty_allow_any)
                     or (self.current_regime.regime == Regime.TREND and not nifty_allow_trend)
-                    or (self.current_regime.regime == Regime.RANGE and not nifty_allow_range)
+                    or (self.current_regime.regime in (Regime.RANGE, Regime.VOLATILE) and not nifty_allow_range)
                 )
                 if blocked:
                     log.debug("Nifty market filter blocked BUY for %s (%s)", candle.symbol, strat.name)
