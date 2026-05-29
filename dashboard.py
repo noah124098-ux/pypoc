@@ -212,6 +212,20 @@ def _load_env_creds() -> tuple[str, str, str, str]:
     )
 
 
+def _write_config_risk(updates: dict) -> str:
+    """Patch the risk section of config/default.yaml in-place. Returns status message."""
+    try:
+        import yaml
+        text = CONFIG_PATH.read_text(encoding="utf-8")
+        cfg = yaml.safe_load(text) or {}
+        for k, v in updates.items():
+            cfg.setdefault("risk", {})[k] = v
+        CONFIG_PATH.write_text(yaml.dump(cfg, default_flow_style=False, allow_unicode=True), encoding="utf-8")
+        return "Config saved. Restart the agent to apply."
+    except Exception as e:
+        return f"Save failed: {e}"
+
+
 def _pnl_by_period(trades_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """Return dict of period -> grouped P&L DataFrames."""
     if trades_df.empty:
@@ -287,12 +301,13 @@ with st.sidebar:
 # ── tabs ─────────────────────────────────────────────────────────────────────
 
 conn = _db_connect()
-tab_live, tab_pnl, tab_positions, tab_regime, tab_backtest = st.tabs([
+tab_live, tab_pnl, tab_positions, tab_regime, tab_backtest, tab_controls = st.tabs([
     "🔴 Live Account",
     "📊 P&L & Equity",
     "📋 Positions & Signals",
     "🌡️ Regime & Market",
     "🔬 Backtest Results",
+    "⚙️ Controls",
 ])
 
 
@@ -833,6 +848,126 @@ with tab_backtest:
         "python cli.py debug-rejections --days 365\n"
         "```\n\n"
         "Then click **Refresh now** in the sidebar."
+    )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# TAB 6: CONTROLS
+# ────────────────────────────────────────────────────────────────────────────
+
+with tab_controls:
+    st.header("Agent Controls & Risk Limits")
+
+    # ── Agent start/stop ─────────────────────────────────────────────────────
+    st.subheader("Agent Process")
+    ctrl_running = _agent_is_running()
+    c1, c2 = st.columns([1, 3])
+    ctrl_color = "#2ecc71" if ctrl_running else "#e74c3c"
+    c1.markdown(
+        f"<div style='background:{ctrl_color};padding:12px;border-radius:6px;text-align:center'>"
+        f"<b style='color:white'>{'RUNNING' if ctrl_running else 'STOPPED'}</b></div>",
+        unsafe_allow_html=True,
+    )
+    with c2:
+        if ctrl_running:
+            if st.button("Stop Agent", type="secondary", key="ctrl_stop"):
+                st.toast(_stop_agent())
+                st.rerun()
+        else:
+            if st.button("Start Agent", type="primary", key="ctrl_start"):
+                st.toast(_start_agent())
+                st.rerun()
+
+    st.divider()
+
+    # ── Risk limit controls ───────────────────────────────────────────────────
+    st.subheader("Risk Limits")
+    st.caption("Changes write to config/default.yaml. Restart the agent to apply them.")
+
+    risk_cfg = config.get("risk", {})
+    with st.form("risk_limits_form"):
+        r1, r2 = st.columns(2)
+        new_per_trade = r1.number_input(
+            "Per-trade risk (%)", min_value=0.5, max_value=5.0, step=0.25,
+            value=float(risk_cfg.get("per_trade_risk_pct", 1.0)),
+            help="Maximum % of equity risked on a single trade (stop-loss distance × qty)",
+        )
+        new_max_pos = r2.number_input(
+            "Max open positions", min_value=1, max_value=20, step=1,
+            value=int(risk_cfg.get("max_open_positions", 5)),
+            help="Hard cap on concurrent open positions across all strategies",
+        )
+        new_daily = r1.number_input(
+            "Daily loss circuit (%)", min_value=1.0, max_value=10.0, step=0.5,
+            value=float(risk_cfg.get("daily_loss_circuit_pct", 3.0)),
+            help="Halt new entries for the day when P&L falls below this % of start-of-day equity",
+        )
+        new_dd = r2.number_input(
+            "Drawdown circuit (%)", min_value=5.0, max_value=30.0, step=1.0,
+            value=float(risk_cfg.get("drawdown_circuit_pct", 10.0)),
+            help="Halt agent and trigger EOD review when peak-to-trough drawdown exceeds this %",
+        )
+        new_capital = r1.number_input(
+            "Initial capital (INR)", min_value=50000, max_value=10000000, step=50000,
+            value=int(config.get("capital", {}).get("initial_inr", 500000)),
+            help="Starting equity for the paper broker (takes effect on next agent restart)",
+        )
+        new_max_pos_pct = r2.number_input(
+            "Max position size (%)", min_value=5.0, max_value=50.0, step=5.0,
+            value=float(risk_cfg.get("max_position_pct", 20.0)),
+            help="Cap a single position at this % of total equity",
+        )
+
+        if st.form_submit_button("Save Risk Limits", type="primary", use_container_width=True):
+            msg = _write_config_risk({
+                "per_trade_risk_pct": new_per_trade,
+                "max_open_positions": int(new_max_pos),
+                "daily_loss_circuit_pct": new_daily,
+                "drawdown_circuit_pct": new_dd,
+                "max_position_pct": new_max_pos_pct,
+            })
+            # also patch capital
+            try:
+                import yaml
+                text = CONFIG_PATH.read_text(encoding="utf-8")
+                cfg_all = yaml.safe_load(text) or {}
+                cfg_all.setdefault("capital", {})["initial_inr"] = int(new_capital)
+                CONFIG_PATH.write_text(yaml.dump(cfg_all, default_flow_style=False, allow_unicode=True), encoding="utf-8")
+            except Exception:
+                pass
+            st.success(msg)
+            st.cache_data.clear()
+
+    st.divider()
+
+    # ── Multi-agent info (Phase 3 placeholder) ───────────────────────────────
+    st.subheader("Multi-Agent Architecture")
+    st.info(
+        "**Coming soon:** Multiple independent paper-trading agents with different strategy profiles.\n\n"
+        "Each agent will run as a separate process with its own capital allocation, strategy set, "
+        "and risk limits. Results will be aggregated here for comparison.\n\n"
+        "**Planned agent profiles:**\n"
+        "- `trend_agent` — TREND strategies only (TrendBreakout, EMA, OBV)\n"
+        "- `range_agent` — RANGE strategies only (MeanReversion, BbSqueeze)\n"
+        "- `short_agent` — Short-selling strategies (SupertrendShort)\n"
+        "- `full_agent` — All strategies (current default)\n\n"
+        "Track this on GitHub: https://github.com/noah124098-ux/pypoc"
+    )
+
+    st.divider()
+
+    # ── Claude AI overlay (Phase 4 placeholder) ──────────────────────────────
+    st.subheader("Claude AI Trade Review")
+    st.info(
+        "**Coming soon:** Claude Opus reviews every signal before placement.\n\n"
+        "Flow:\n"
+        "1. Strategy generates signal (e.g. TrendBreakout on TATASTEEL)\n"
+        "2. Claude receives signal + last 30-day OHLC + regime context + news summary\n"
+        "3. Claude scores confidence (0–1) and can veto the trade\n"
+        "4. Signal only proceeds if Claude confidence >= threshold AND guardrails pass\n\n"
+        "**Guardrails preserved:** Claude's veto is additional filtering, never bypass of "
+        "stop-loss, position sizing, or circuit breakers.\n\n"
+        "Enable EOD review in config: `llm.enable_eod_review: true`"
     )
 
 
