@@ -37,18 +37,21 @@ class SupertrendShort(IStrategy):
     def evaluate(self, symbol: str, candles: pd.DataFrame, regime: Regime) -> Optional[Signal]:
         if not self.supports(regime):
             return None
-        min_bars = max(self.atr_period, self.stock_dma_period) + 5
+        min_bars = max(self.atr_period, self.stock_dma_period) + 21
         if len(candles) < min_bars:
             return None
 
         close = candles["close"]
 
         # Only short stocks with a confirmed falling 50-DMA (downtrend).
+        # Compare current DMA to 20 bars ago (one calendar month): if it's not declining
+        # even slightly, skip. The 50-DMA is slow -- using a 20-bar lookback gives it
+        # enough time to actually move while still filtering out sideways stocks.
         dma = close.rolling(self.stock_dma_period).mean()
-        if pd.isna(dma.iloc[-1]) or pd.isna(dma.iloc[-6]):
+        if pd.isna(dma.iloc[-1]) or pd.isna(dma.iloc[-21]):
             return None
-        if dma.iloc[-1] >= dma.iloc[-6] * 0.99:
-            return None  # DMA not falling -- no short
+        if dma.iloc[-1] >= dma.iloc[-21]:
+            return None  # DMA not falling over past month -- no short
 
         hl2 = (candles["high"] + candles["low"]) / 2
         a = atr(candles, self.atr_period)
@@ -82,9 +85,21 @@ class SupertrendShort(IStrategy):
 
             supertrend.iloc[i] = final_lower.iloc[i] if direction.iloc[i] == 1 else final_upper.iloc[i]
 
-        # Signal: direction flipped to bearish on last bar
-        if direction.iloc[-1] != -1 or direction.iloc[-2] == -1:
-            return None  # must be a fresh flip down
+        # Signal: Supertrend is currently bearish AND flipped within the last 5 bars.
+        # A fresh flip on the exact last bar rarely coincides with a declining 50-DMA
+        # (the DMA takes weeks to start falling after the stock tops). Allowing a 5-bar
+        # entry window lets us catch the confirmation when both conditions align.
+        if direction.iloc[-1] != -1:
+            return None  # not currently bearish
+        # Count consecutive bearish bars ending at -1 (i.e., how long ago the flip was)
+        bars_bearish = 1
+        for k in range(2, min(n, 7)):
+            if direction.iloc[-k] == -1:
+                bars_bearish += 1
+            else:
+                break
+        if bars_bearish > 5:
+            return None  # flip happened too long ago (stale entry)
 
         latest_close = close.iloc[-1]
         latest_atr = a.iloc[-1]
