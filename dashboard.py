@@ -8,13 +8,16 @@ Reads from:
   - data/snapshot.json   -- Live agent state (positions, equity, halt status)
   - data/backtest_gate.json -- Last walk-forward gate result
   - config/default.yaml  -- Active configuration
-  - .env                 -- Angel One credentials for live account tab (DATA-ONLY)
+  - .env                 -- Angel One credentials (can also enter in UI)
 """
 from __future__ import annotations
 
 import json
 import os
+import signal
 import sqlite3
+import subprocess
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -35,6 +38,55 @@ DB_PATH = Path("data/agent.db")
 SNAPSHOT_PATH = Path("data/snapshot.json")
 GATE_PATH = Path("data/backtest_gate.json")
 CONFIG_PATH = Path("config/default.yaml")
+AGENT_PID_PATH = Path("data/agent.pid")
+
+
+def _agent_is_running() -> bool:
+    """Check if the paper agent process is alive via PID file."""
+    if not AGENT_PID_PATH.exists():
+        return False
+    try:
+        pid = int(AGENT_PID_PATH.read_text().strip())
+        import psutil
+        return psutil.pid_exists(pid)
+    except Exception:
+        return False
+
+
+def _start_agent() -> str:
+    """Launch the agent as a background subprocess. Returns status message."""
+    try:
+        python = sys.executable
+        proc = subprocess.Popen(
+            [python, "cli.py", "run"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=str(Path(__file__).parent),
+        )
+        AGENT_PID_PATH.parent.mkdir(parents=True, exist_ok=True)
+        AGENT_PID_PATH.write_text(str(proc.pid))
+        return f"Agent started (PID {proc.pid})"
+    except Exception as e:
+        return f"Failed to start agent: {e}"
+
+
+def _stop_agent() -> str:
+    """Send SIGTERM to the agent process."""
+    if not AGENT_PID_PATH.exists():
+        return "No agent PID file found."
+    try:
+        pid = int(AGENT_PID_PATH.read_text().strip())
+        import psutil
+        if psutil.pid_exists(pid):
+            proc = psutil.Process(pid)
+            proc.terminate()
+            AGENT_PID_PATH.unlink(missing_ok=True)
+            return f"Agent (PID {pid}) stopped."
+        else:
+            AGENT_PID_PATH.unlink(missing_ok=True)
+            return "Agent was not running (PID file removed)."
+    except Exception as e:
+        return f"Error stopping agent: {e}"
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -148,13 +200,15 @@ def _fetch_angel_one_data(api_key: str, client_code: str, password: str, totp_se
 
 
 def _load_env_creds() -> tuple[str, str, str, str]:
+    """Load Angel One credentials: session-state UI inputs take precedence over .env."""
     from dotenv import load_dotenv
     load_dotenv(override=False)
+    ss = st.session_state
     return (
-        os.getenv("ANGEL_ONE_API_KEY", ""),
-        os.getenv("ANGEL_ONE_CLIENT_CODE", ""),
-        os.getenv("ANGEL_ONE_PASSWORD", ""),
-        os.getenv("ANGEL_ONE_TOTP_SECRET", ""),
+        ss.get("ao_api_key") or os.getenv("ANGEL_ONE_API_KEY", ""),
+        ss.get("ao_client_code") or os.getenv("ANGEL_ONE_CLIENT_CODE", ""),
+        ss.get("ao_password") or os.getenv("ANGEL_ONE_PASSWORD", ""),
+        ss.get("ao_totp_secret") or os.getenv("ANGEL_ONE_TOTP_SECRET", ""),
     )
 
 
@@ -219,6 +273,12 @@ with st.sidebar:
     st.caption(f"Drawdown circuit: -{risk_cfg.get('drawdown_circuit_pct', '-')}%")
 
     st.divider()
+    _running = _agent_is_running()
+    _run_color = "#2ecc71" if _running else "#e74c3c"
+    _run_label = "RUNNING" if _running else "STOPPED"
+    st.markdown(f"**Agent:** <span style='color:{_run_color}'>{_run_label}</span>", unsafe_allow_html=True)
+
+    st.divider()
     if st.button("Refresh now"):
         st.cache_data.clear()
         st.rerun()
@@ -243,15 +303,65 @@ tab_live, tab_pnl, tab_positions, tab_regime, tab_backtest = st.tabs([
 with tab_live:
     st.header("Live Angel One Account")
 
+    # ── Agent start/stop controls ────────────────────────────────────────────
+    agent_running = _agent_is_running()
+    agent_col1, agent_col2, agent_col3 = st.columns([1, 1, 3])
+    status_color = "#2ecc71" if agent_running else "#e74c3c"
+    status_label = "RUNNING" if agent_running else "STOPPED"
+    agent_col1.markdown(
+        f"<div style='background:{status_color};padding:10px;border-radius:6px;text-align:center'>"
+        f"<b style='color:white'>Agent: {status_label}</b></div>",
+        unsafe_allow_html=True,
+    )
+    with agent_col2:
+        if agent_running:
+            if st.button("Stop Agent", type="secondary", use_container_width=True):
+                msg = _stop_agent()
+                st.toast(msg)
+                st.rerun()
+        else:
+            if st.button("Start Agent", type="primary", use_container_width=True):
+                msg = _start_agent()
+                st.toast(msg)
+                st.rerun()
+
+    st.divider()
+
+    # ── Angel One credential form ─────────────────────────────────────────────
+    api_key, client_code, password, totp_secret = _load_env_creds()
+    creds_present = all([api_key, client_code, password, totp_secret])
+
+    with st.expander(
+        "Connect Angel One Account" + (" (connected)" if creds_present else " (not configured)"),
+        expanded=not creds_present,
+    ):
+        st.caption("Credentials are stored in session state only — they are never written to disk here.")
+        with st.form("ao_creds_form"):
+            c1, c2 = st.columns(2)
+            inp_api = c1.text_input("API Key", value=api_key, type="password", key="_inp_api")
+            inp_code = c2.text_input("Client Code", value=client_code, key="_inp_code")
+            inp_pwd = c1.text_input("Password", value=password, type="password", key="_inp_pwd")
+            inp_totp = c2.text_input("TOTP Secret", value=totp_secret, type="password", key="_inp_totp")
+            col_save, col_clear = st.columns(2)
+            if col_save.form_submit_button("Connect", type="primary", use_container_width=True):
+                st.session_state["ao_api_key"] = inp_api
+                st.session_state["ao_client_code"] = inp_code
+                st.session_state["ao_password"] = inp_pwd
+                st.session_state["ao_totp_secret"] = inp_totp
+                st.cache_data.clear()
+                st.rerun()
+            if col_clear.form_submit_button("Disconnect", use_container_width=True):
+                for k in ("ao_api_key", "ao_client_code", "ao_password", "ao_totp_secret"):
+                    st.session_state.pop(k, None)
+                st.cache_data.clear()
+                st.rerun()
+
+    # re-read creds after potential form submit
     api_key, client_code, password, totp_secret = _load_env_creds()
     creds_present = all([api_key, client_code, password, totp_secret])
 
     if not creds_present:
-        st.warning(
-            "Angel One credentials not found in `.env`. Add these to enable live account data:\n\n"
-            "```\nANGEL_ONE_API_KEY=...\nANGEL_ONE_CLIENT_CODE=...\n"
-            "ANGEL_ONE_PASSWORD=...\nANGEL_ONE_TOTP_SECRET=...\n```"
-        )
+        st.info("Enter your Angel One credentials above to view live account data.")
     else:
         with st.spinner("Connecting to Angel One (DATA-ONLY)..."):
             ao = _fetch_angel_one_data(api_key, client_code, password, totp_secret)

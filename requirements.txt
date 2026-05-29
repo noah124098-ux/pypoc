@@ -12,6 +12,7 @@ ta==0.11.0
 yfinance==0.2.50
 nsepython==2.95
 streamlit==1.40.2
+psutil==6.1.1
 plotly==5.24.1
 python-telegram-bot==21.7
 anthropic==0.40.0
