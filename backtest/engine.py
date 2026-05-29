@@ -181,10 +181,13 @@ class BacktestEngine:
                 above_200 = nifty_close.iloc[-1] > nifty_dma200.iloc[-1]
             else:
                 above_200 = True  # not enough history — don't block
-            # allow_all: Nifty above both DMAs (healthy uptrend)
-            # allow_range_only: Nifty above 200-DMA but 50-DMA weak (correction inside uptrend)
-            # block_all: Nifty below 200-DMA (structural decline — no long strategies)
+            # Three-tier Nifty market filter:
+            #   Tier 1 (all longs): above 200-DMA  → if below, block ALL BUY signals
+            #   Tier 2 (RANGE longs): 50-DMA rising → if falling, block RANGE BUYs too
+            #   Tier 3 (TREND longs): above 50-DMA AND rising  → block TREND BUYs otherwise
+            # SELL (short) signals are never blocked by these filters.
             nifty_allow_trend = above_200 and above_50 and rising_50
+            nifty_allow_range = above_200 and rising_50   # RANGE longs need upward DMA slope
             nifty_allow_any   = above_200
 
             for symbol, df in symbol_history.items():
@@ -213,10 +216,14 @@ class BacktestEngine:
                     signal_count_by_strategy[strat.name] = signal_count_by_strategy.get(strat.name, 0) + 1
                     signal_count_by_symbol[symbol] = signal_count_by_symbol.get(symbol, 0) + 1
 
-                    # Two-tier Nifty filter: only applies to BUY signals.
+                    # Three-tier Nifty filter: only applies to BUY signals.
                     # SELL (short) signals are not blocked by a bullish market filter.
                     if sig.side == Side.BUY:
-                        blocked = (not nifty_allow_any) or (regime == Regime.TREND and not nifty_allow_trend)
+                        blocked = (
+                            (not nifty_allow_any)
+                            or (regime == Regime.TREND and not nifty_allow_trend)
+                            or (regime == Regime.RANGE and not nifty_allow_range)
+                        )
                         if blocked:
                             rejected += 1
                             rejection_breakdown["nifty_trend_filter"] = (

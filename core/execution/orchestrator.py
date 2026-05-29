@@ -191,7 +191,7 @@ class Orchestrator:
             ]
         )
 
-        nifty_allow_trend, nifty_allow_any = self._nifty_market_filter()
+        nifty_allow_trend, nifty_allow_range, nifty_allow_any = self._nifty_market_filter()
         for strat in self.strategies:
             if not strat.supports(self.current_regime.regime):
                 continue
@@ -199,23 +199,26 @@ class Orchestrator:
             if sig is None:
                 continue
             if sig.side == Side.BUY:
-                blocked = (not nifty_allow_any) or (
-                    self.current_regime.regime == Regime.TREND and not nifty_allow_trend
+                blocked = (
+                    (not nifty_allow_any)
+                    or (self.current_regime.regime == Regime.TREND and not nifty_allow_trend)
+                    or (self.current_regime.regime == Regime.RANGE and not nifty_allow_range)
                 )
                 if blocked:
                     log.debug("Nifty market filter blocked BUY for %s (%s)", candle.symbol, strat.name)
                     continue
             self._handle_signal(sig)
 
-    def _nifty_market_filter(self) -> tuple[bool, bool]:
-        """Return (allow_trend_buys, allow_any_buys) based on Nifty vs 50/200-DMA.
+    def _nifty_market_filter(self) -> tuple[bool, bool, bool]:
+        """Return (allow_trend_buys, allow_range_buys, allow_any_buys) based on Nifty vs 50/200-DMA.
 
         allow_any_buys=False when Nifty is below 200-DMA (structural decline).
-        allow_trend_buys=False when 50-DMA is weak (correction inside uptrend).
+        allow_range_buys=False when 50-DMA is falling (correction; RANGE longs also suppressed).
+        allow_trend_buys=False when Nifty is below or 50-DMA is falling.
         """
         df = self.nifty_ohlc_daily
         if df is None or len(df) < 55:
-            return True, True  # not enough history -- don't block
+            return True, True, True  # not enough history -- don't block
         close = df["close"]
         dma50  = close.rolling(50).mean()
         dma200 = close.rolling(200).mean()
@@ -223,8 +226,9 @@ class Orchestrator:
         rising_50 = dma50.iloc[-1] > dma50.iloc[-5]
         above_200 = bool(close.iloc[-1] > dma200.iloc[-1]) if len(dma200.dropna()) >= 1 else True
         allow_trend = above_200 and above_50 and rising_50
+        allow_range = above_200 and rising_50
         allow_any   = above_200
-        return bool(allow_trend), bool(allow_any)
+        return bool(allow_trend), bool(allow_range), bool(allow_any)
 
     def _handle_signal(self, sig) -> None:
         equity = self.broker.equity()
