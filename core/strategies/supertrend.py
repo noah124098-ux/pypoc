@@ -15,7 +15,7 @@ from typing import Optional
 import pandas as pd
 
 from core.strategies.base import IStrategy
-from core.strategies.indicators import atr
+from core.strategies.indicators import atr, supertrend_bands
 from core.types import Regime, Side, Signal
 
 
@@ -39,55 +39,22 @@ class Supertrend(IStrategy):
         if len(candles) < self.atr_period + 5:
             return None
 
-        hl2 = (candles["high"] + candles["low"]) / 2
-        a = atr(candles, self.atr_period)
-
-        upper_band = hl2 + self.multiplier * a
-        lower_band = hl2 - self.multiplier * a
-
-        # Compute supertrend direction iteratively over last N bars.
-        close = candles["close"]
-        n = len(candles)
-
-        final_upper = upper_band.copy()
-        final_lower = lower_band.copy()
-        supertrend = pd.Series(index=candles.index, dtype=float)
-        direction = pd.Series(index=candles.index, dtype=int)
-
-        for i in range(1, n):
-            # Final upper band
-            if upper_band.iloc[i] < final_upper.iloc[i - 1] or close.iloc[i - 1] > final_upper.iloc[i - 1]:
-                final_upper.iloc[i] = upper_band.iloc[i]
-            else:
-                final_upper.iloc[i] = final_upper.iloc[i - 1]
-
-            # Final lower band
-            if lower_band.iloc[i] > final_lower.iloc[i - 1] or close.iloc[i - 1] < final_lower.iloc[i - 1]:
-                final_lower.iloc[i] = lower_band.iloc[i]
-            else:
-                final_lower.iloc[i] = final_lower.iloc[i - 1]
-
-            # Direction: 1 = bullish (price > lower band), -1 = bearish
-            if close.iloc[i] > final_upper.iloc[i - 1]:
-                direction.iloc[i] = 1
-            elif close.iloc[i] < final_lower.iloc[i - 1]:
-                direction.iloc[i] = -1
-            else:
-                direction.iloc[i] = direction.iloc[i - 1] if i > 0 else 1
-
-            supertrend.iloc[i] = final_lower.iloc[i] if direction.iloc[i] == 1 else final_upper.iloc[i]
+        final_upper, final_lower, direction = supertrend_bands(
+            candles, self.atr_period, self.multiplier
+        )
 
         # Signal: direction flipped to bullish on last bar
-        if direction.iloc[-1] != 1 or direction.iloc[-2] == 1:
+        if direction[-1] != 1 or direction[-2] == 1:
             return None  # must be a fresh flip up
 
-        latest_close = close.iloc[-1]
-        latest_atr = a.iloc[-1]
+        close = candles["close"]
+        latest_close = float(close.iloc[-1])
+        latest_atr = float(atr(candles, self.atr_period).iloc[-1])
         if pd.isna(latest_atr) or latest_atr <= 0:
             return None
 
-        # Stop just below supertrend line
-        stop = float(supertrend.iloc[-1]) - 0.1 * latest_atr
+        # Stop just below supertrend line (= final_lower on a bullish bar)
+        stop = float(final_lower[-1]) - 0.1 * latest_atr
         if stop >= latest_close:
             return None
         risk = latest_close - stop
@@ -104,7 +71,7 @@ class Supertrend(IStrategy):
             confidence=0.7,
             rationale=(
                 f"Supertrend({self.atr_period},{self.multiplier}) flipped bullish, "
-                f"line at {supertrend.iloc[-1]:.2f}"
+                f"line at {final_lower[-1]:.2f}"
             ),
             ts=datetime.utcnow(),
         )
