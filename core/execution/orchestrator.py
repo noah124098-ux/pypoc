@@ -38,6 +38,7 @@ from core.risk.guardrails import (
 from core.risk.sizing import position_size
 from core.strategies.base import IStrategy
 from core.strategies.mean_reversion import MeanReversion
+from core.strategies.supertrend_short import SupertrendShort
 from core.strategies.trend_breakout import TrendBreakout
 from core.strategies.volatility_compression import VolatilityCompression
 from core.types import Candle, OrderType, Regime, Side, Tick
@@ -331,6 +332,14 @@ class Orchestrator:
         if scfg.get("volatility_compression", {}).get("enabled", False):
             cfg = scfg["volatility_compression"]
             out.append(VolatilityCompression(nr_lookback=cfg.get("nr_lookback", 7)))
+        if scfg.get("supertrend_short", {}).get("enabled", False):
+            cfg = scfg["supertrend_short"]
+            out.append(SupertrendShort(
+                atr_period=cfg.get("atr_period", 10),
+                multiplier=cfg.get("multiplier", 3.0),
+                target_r_multiple=cfg.get("target_r_multiple", 2.0),
+                stock_dma_period=cfg.get("stock_dma_period", 50),
+            ))
         return out
 
     def _maybe_squareoff_eod(self) -> None:

@@ -45,6 +45,7 @@ from core.strategies.mean_reversion import MeanReversion
 from core.strategies.obv_trend import ObvTrend
 from core.strategies.rsi_momentum import RsiMomentum
 from core.strategies.supertrend import Supertrend
+from core.strategies.supertrend_short import SupertrendShort
 from core.strategies.trend_breakout import TrendBreakout
 from core.strategies.volatility_compression import VolatilityCompression
 from core.strategies.indicators import adx_value
@@ -212,8 +213,8 @@ class BacktestEngine:
                     signal_count_by_strategy[strat.name] = signal_count_by_strategy.get(strat.name, 0) + 1
                     signal_count_by_symbol[symbol] = signal_count_by_symbol.get(symbol, 0) + 1
 
-                    # Two-tier Nifty filter: block all BUY signals below 200-DMA;
-                    # block only TREND BUYs when 50-DMA is weak (correction in uptrend).
+                    # Two-tier Nifty filter: only applies to BUY signals.
+                    # SELL (short) signals are not blocked by a bullish market filter.
                     if sig.side == Side.BUY:
                         blocked = (not nifty_allow_any) or (regime == Regime.TREND and not nifty_allow_trend)
                         if blocked:
@@ -223,7 +224,7 @@ class BacktestEngine:
                             )
                             continue
 
-                    # Per-stock ADX filter: TREND strategies need the stock itself trending.
+                    # Per-stock ADX filter: TREND BUYs need the stock itself trending.
                     if sig.side == Side.BUY and regime == Regime.TREND and not stock_trend_ok:
                         rejected += 1
                         rejection_breakdown["stock_adx_filter"] = (
@@ -239,12 +240,21 @@ class BacktestEngine:
                             rejection_breakdown.get("stop_above_open_after_gap", 0) + 1
                         )
                         continue
+                    if sig.side == Side.SELL and sig.stop_loss <= sig.entry_price:
+                        rejected += 1
+                        rejection_breakdown["stop_below_open_after_gap"] = (
+                            rejection_breakdown.get("stop_below_open_after_gap", 0) + 1
+                        )
+                        continue
 
-                    # Minimum R:R at actual fill price. Gap opens can degrade a 2:1
-                    # signal to 1:1 or worse before we even enter. Reject those.
-                    if sig.side == Side.BUY and sig.target is not None:
-                        reward = sig.target - sig.entry_price
-                        risk_amt = sig.entry_price - sig.stop_loss
+                    # Minimum R:R at actual fill price.
+                    if sig.target is not None:
+                        if sig.side == Side.BUY:
+                            reward = sig.target - sig.entry_price
+                            risk_amt = sig.entry_price - sig.stop_loss
+                        else:
+                            reward = sig.entry_price - sig.target
+                            risk_amt = sig.stop_loss - sig.entry_price
                         if risk_amt > 0 and reward / risk_amt < 1.2:
                             rejected += 1
                             rejection_breakdown["insufficient_rr_at_open"] = (
@@ -404,6 +414,14 @@ class BacktestEngine:
                 atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
                 target_r_multiple=cfg.get("target_r_multiple", 2.5),
             ))
+        if scfg.get("supertrend_short", {}).get("enabled", False):
+            cfg = scfg["supertrend_short"]
+            out.append(SupertrendShort(
+                atr_period=cfg.get("atr_period", 10),
+                multiplier=cfg.get("multiplier", 3.0),
+                target_r_multiple=cfg.get("target_r_multiple", 2.0),
+                stock_dma_period=cfg.get("stock_dma_period", 50),
+            ))
         return out
 
     def _process_intraday_exits(
@@ -425,10 +443,19 @@ class BacktestEngine:
             row = df.loc[date]
             low = float(row["low"])
             high = float(row["high"])
-            if low <= pos.stop_loss:
-                broker.update_market_prices({pos.symbol: pos.stop_loss})  # triggers auto-exit
-            elif pos.target is not None and high >= pos.target:
-                broker.update_market_prices({pos.symbol: pos.target})
+            is_short = pos.symbol in broker._short_positions
+            if is_short:
+                # Short: stop hits if price rises to stop_loss; target hits if price falls to target
+                if high >= pos.stop_loss:
+                    broker.update_market_prices({pos.symbol: pos.stop_loss})
+                elif pos.target is not None and low <= pos.target:
+                    broker.update_market_prices({pos.symbol: pos.target})
+            else:
+                # Long: stop hits if price falls to stop_loss; target hits if price rises to target
+                if low <= pos.stop_loss:
+                    broker.update_market_prices({pos.symbol: pos.stop_loss})
+                elif pos.target is not None and high >= pos.target:
+                    broker.update_market_prices({pos.symbol: pos.target})
 
     def _check_guardrails(
         self,

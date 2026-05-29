@@ -111,6 +111,14 @@ strategies:
     atr_stop_multiplier: 1.5
     target_r_multiple: 2.5
 
+  supertrend_short:
+    enabled: true
+    regimes: [VOLATILE, TREND]
+    atr_period: 10
+    multiplier: 3.0
+    target_r_multiple: 2.0
+    stock_dma_period: 50              # Only short stocks with falling 50-DMA (confirmed downtrend)
+
 execution:
   slippage_bps: 5            # 5 basis points slippage assumption for paper
   brokerage_per_order_inr: 20
