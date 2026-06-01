@@ -728,6 +728,80 @@ with tab_positions:
 # TAB 4: REGIME & MARKET
 # ────────────────────────────────────────────────────────────────────────────
 
+_REGIME_COLOR_MAP = {
+    "TREND": "#2ecc71",
+    "RANGE": "#3498db",
+    "VOLATILE": "#e67e22",
+    "UNKNOWN": "#95a5a6",
+}
+_REGIME_ORDER = ["TREND", "RANGE", "VOLATILE", "UNKNOWN"]
+
+
+def _nifty_dma_status(nifty_ltp: float | None) -> dict:
+    """Compute Nifty DMA status from the regime_log ADX/VIX history.
+
+    Returns a dict with keys: above_200dma, above_50dma, dma50_rising, ltp.
+    Values are True/False/None (None = data unavailable).
+    We derive approximate DMA proxies from the regime_log close prices
+    stored as nifty_change_pct; if that is absent we return N/A for all.
+    """
+    result = {
+        "ltp": nifty_ltp,
+        "above_200dma": None,
+        "above_50dma": None,
+        "dma50_rising": None,
+    }
+    if conn is None:
+        return result
+
+    # Pull enough rows to compute 200-day MA (need ~200 trading days = ~280 cal days)
+    # We use the equity_snapshots table which records equity over time as a proxy
+    # for the running Nifty level captured in regime_log nifty_change_pct.
+    # A more accurate approach would require persisted Nifty close prices.
+    # For now we reconstruct a synthetic Nifty series from the cumulative
+    # nifty_change_pct column in regime_log.
+    try:
+        df_rl = pd.read_sql_query(
+            "SELECT ts, nifty_change_pct FROM regime_log ORDER BY ts ASC LIMIT 500",
+            conn,
+        )
+        if df_rl.empty or "nifty_change_pct" not in df_rl.columns:
+            return result
+        df_rl["ts"] = pd.to_datetime(df_rl["ts"])
+        df_rl = df_rl.dropna(subset=["nifty_change_pct"]).sort_values("ts").reset_index(drop=True)
+        if len(df_rl) < 5:
+            return result
+
+        # Reconstruct synthetic index starting from 1000 using daily % changes
+        df_rl["synth_close"] = 1000.0 * (1 + df_rl["nifty_change_pct"] / 100).cumprod()
+        closes = df_rl["synth_close"]
+
+        # Use actual ltp if provided, else last synthetic value
+        last_price = nifty_ltp if (nifty_ltp and nifty_ltp > 0) else closes.iloc[-1]
+
+        dma50 = closes.tail(50).mean() if len(closes) >= 50 else closes.mean()
+        dma200 = closes.tail(200).mean() if len(closes) >= 200 else closes.mean()
+
+        # For 50-DMA rising: compare current 50-DMA to 10-period-ago 50-DMA
+        if len(closes) >= 60:
+            dma50_prev = closes.iloc[-60:-10].mean()
+            result["dma50_rising"] = bool(dma50 > dma50_prev)
+        else:
+            result["dma50_rising"] = None
+
+        # Scale DMAs to real LTP if available (synthetic base is arbitrary)
+        if nifty_ltp and nifty_ltp > 0 and closes.iloc[-1] > 0:
+            scale = nifty_ltp / closes.iloc[-1]
+            dma50 *= scale
+            dma200 *= scale
+
+        result["above_50dma"] = bool(last_price > dma50)
+        result["above_200dma"] = bool(last_price > dma200)
+    except Exception:
+        pass
+    return result
+
+
 with tab_regime:
     st.header("Regime & Market State")
 
@@ -761,39 +835,182 @@ with tab_regime:
 
     st.divider()
 
+    # ── Nifty DMA Status ──────────────────────────────────────────────────────
+    st.subheader("Nifty DMA Status")
+
+    _nifty_ltp_raw = snap.get("nifty_ltp", None)
+    try:
+        _nifty_ltp = float(_nifty_ltp_raw) if _nifty_ltp_raw not in (None, "", "n/a") else None
+    except (TypeError, ValueError):
+        _nifty_ltp = None
+
+    # PCR from snapshot (Phase 3 data, may not exist yet)
+    _pcr_raw = snap.get("pcr", None)
+    try:
+        _pcr_val = float(_pcr_raw) if _pcr_raw not in (None, "", "n/a") else None
+    except (TypeError, ValueError):
+        _pcr_val = None
+
+    _dma_status = _nifty_dma_status(_nifty_ltp)
+
+    def _yn_metric(col, label: str, value, true_color: str = "#2ecc71", false_color: str = "#e74c3c"):
+        """Render a Yes/No/N/A metric with color."""
+        if value is None:
+            col.metric(label, "N/A")
+        else:
+            color = true_color if value else false_color
+            yn = "Yes" if value else "No"
+            col.markdown(
+                f"<div style='text-align:center'>"
+                f"<small style='color:#888'>{label}</small><br>"
+                f"<span style='font-size:1.4em;font-weight:bold;color:{color}'>{yn}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    dma_c1, dma_c2, dma_c3, dma_c4, dma_c5 = st.columns(5)
+
+    ltp_display = f"{_nifty_ltp:,.1f}" if _nifty_ltp else "N/A"
+    dma_c1.metric("Nifty LTP", ltp_display)
+
+    _yn_metric(dma_c2, "Above 200-DMA", _dma_status["above_200dma"])
+    _yn_metric(dma_c3, "Above 50-DMA", _dma_status["above_50dma"])
+    _yn_metric(dma_c4, "50-DMA Rising", _dma_status["dma50_rising"])
+
+    if _pcr_val is not None:
+        pcr_color = "#2ecc71" if _pcr_val > 1.0 else ("#e74c3c" if _pcr_val < 0.7 else "#f39c12")
+        dma_c5.markdown(
+            f"<div style='text-align:center'>"
+            f"<small style='color:#888'>PCR</small><br>"
+            f"<span style='font-size:1.4em;font-weight:bold;color:{pcr_color}'>{_pcr_val:.2f}</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        dma_c5.metric("PCR", "N/A")
+
+    if _nifty_ltp is None:
+        st.caption("Nifty LTP not in snapshot — DMA values derived from synthetic regime_log series.")
+
+    st.divider()
+
+    # ── Regime History charts ─────────────────────────────────────────────────
     st.subheader("Regime History")
-    reg_df = _query_df(conn, "SELECT * FROM regime_log ORDER BY ts DESC LIMIT 500")
+    reg_df = _query_df(conn, "SELECT ts, regime, adx, bb_width, vix FROM regime_log ORDER BY ts DESC LIMIT 500")
     if not reg_df.empty:
         reg_df["ts"] = pd.to_datetime(reg_df["ts"])
-        reg_df = reg_df.sort_values("ts")
+        reg_df = reg_df.sort_values("ts").reset_index(drop=True)
 
-        pie_col, timeline_col = st.columns([1, 2])
-        with pie_col:
-            reg_counts = reg_df["regime"].value_counts().reset_index()
-            reg_counts.columns = ["regime", "count"]
-            color_map = {r: _regime_color(r) for r in reg_counts["regime"]}
-            fig_pie = px.pie(reg_counts, names="regime", values="count",
-                              color="regime", color_discrete_map=color_map, title="Regime Distribution")
-            fig_pie.update_layout(height=300, margin=dict(l=0, r=0, t=40, b=10))
-            st.plotly_chart(fig_pie, use_container_width=True)
+        # ── 1. Color-coded timeline (go.Scatter markers+lines per regime) ────
+        st.markdown("**Regime Timeline (last 500 entries)**")
+        fig_tl = go.Figure()
+        # Assign numeric Y positions for categorical axis
+        regime_y = {r: i for i, r in enumerate(_REGIME_ORDER)}
+        for regime_name in _REGIME_ORDER:
+            sub = reg_df[reg_df["regime"] == regime_name]
+            if sub.empty:
+                continue
+            fig_tl.add_trace(go.Scatter(
+                x=sub["ts"],
+                y=[regime_name] * len(sub),
+                mode="markers+lines",
+                name=regime_name,
+                marker=dict(color=_REGIME_COLOR_MAP[regime_name], size=7, symbol="circle"),
+                line=dict(color=_REGIME_COLOR_MAP[regime_name], width=1.5, dash="dot"),
+                connectgaps=False,
+            ))
+        fig_tl.update_layout(
+            height=280,
+            margin=dict(l=0, r=0, t=20, b=0),
+            yaxis=dict(
+                title="Regime",
+                categoryorder="array",
+                categoryarray=_REGIME_ORDER,
+            ),
+            xaxis_title="Timestamp",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            showlegend=True,
+        )
+        st.plotly_chart(fig_tl, use_container_width=True)
 
-        with timeline_col:
-            fig_tl = px.scatter(reg_df, x="ts", y="regime", color="regime",
-                                 color_discrete_map={r: _regime_color(r) for r in reg_df["regime"].unique()},
-                                 title="Regime Timeline", height=300)
-            fig_tl.update_traces(marker=dict(size=6))
-            fig_tl.update_layout(margin=dict(l=0, r=0, t=40, b=0))
-            st.plotly_chart(fig_tl, use_container_width=True)
+        # ── 2. Distribution charts: all-time + last 30 days ─────────────────
+        pie_col1, pie_col2 = st.columns(2)
 
+        with pie_col1:
+            reg_counts_all = reg_df["regime"].value_counts().reset_index()
+            reg_counts_all.columns = ["regime", "count"]
+            color_map_all = {r: _REGIME_COLOR_MAP.get(r, "#95a5a6") for r in reg_counts_all["regime"]}
+            fig_pie_all = px.pie(
+                reg_counts_all, names="regime", values="count",
+                color="regime", color_discrete_map=color_map_all,
+                title="Regime Distribution (all history)",
+            )
+            fig_pie_all.update_layout(height=300, margin=dict(l=0, r=0, t=40, b=10))
+            st.plotly_chart(fig_pie_all, use_container_width=True)
+
+        with pie_col2:
+            cutoff_30d = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=30)
+            reg_df_30 = reg_df[reg_df["ts"] >= cutoff_30d]
+            if not reg_df_30.empty:
+                reg_counts_30 = reg_df_30["regime"].value_counts().reset_index()
+                reg_counts_30.columns = ["regime", "count"]
+                color_map_30 = {r: _REGIME_COLOR_MAP.get(r, "#95a5a6") for r in reg_counts_30["regime"]}
+                fig_pie_30 = px.pie(
+                    reg_counts_30, names="regime", values="count",
+                    color="regime", color_discrete_map=color_map_30,
+                    title="Regime Distribution (last 30 days)",
+                )
+                fig_pie_30.update_layout(height=300, margin=dict(l=0, r=0, t=40, b=10))
+                st.plotly_chart(fig_pie_30, use_container_width=True)
+            else:
+                st.info("No regime entries in the last 30 days.")
+
+        # ── 3. Regime transition table ───────────────────────────────────────
+        st.subheader("Last 20 Regime Transitions")
+        # Detect regime changes
+        reg_df_sorted = reg_df.sort_values("ts").reset_index(drop=True)
+        transitions = []
+        prev_regime = None
+        for _, row in reg_df_sorted.iterrows():
+            if prev_regime is not None and row["regime"] != prev_regime:
+                transitions.append({
+                    "Timestamp": row["ts"].strftime("%Y-%m-%d %H:%M"),
+                    "From": prev_regime,
+                    "To": row["regime"],
+                })
+            prev_regime = row["regime"]
+
+        if transitions:
+            trans_df = pd.DataFrame(transitions[-20:]).iloc[::-1].reset_index(drop=True)
+
+            def _color_regime_cell(val: str) -> str:
+                color = _REGIME_COLOR_MAP.get(str(val), "#95a5a6")
+                return f"background-color:{color};color:white;font-weight:bold;border-radius:4px"
+
+            styled_trans = trans_df.style.applymap(
+                _color_regime_cell, subset=["From", "To"]
+            )
+            st.dataframe(styled_trans, use_container_width=True, hide_index=True)
+        else:
+            st.info("No regime transitions recorded yet (need at least 2 entries).")
+
+        # ── 4. ADX / BB Width indicator subplots ────────────────────────────
         if "adx" in reg_df.columns and "bb_width" in reg_df.columns:
-            fig_ind = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                                     subplot_titles=("ADX (>20 = TREND)", "BB Width (<6% = RANGE)"),
-                                     vertical_spacing=0.12)
-            fig_ind.add_trace(go.Scatter(x=reg_df["ts"], y=reg_df["adx"], name="ADX",
-                                          line=dict(color="#f39c12", width=1.5)), row=1, col=1)
+            st.subheader("Market Indicators")
+            fig_ind = make_subplots(
+                rows=2, cols=1, shared_xaxes=True,
+                subplot_titles=("ADX (>20 = TREND)", "BB Width (<6% = RANGE)"),
+                vertical_spacing=0.12,
+            )
+            fig_ind.add_trace(go.Scatter(
+                x=reg_df["ts"], y=reg_df["adx"], name="ADX",
+                line=dict(color="#f39c12", width=1.5),
+            ), row=1, col=1)
             fig_ind.add_hline(y=20, line_dash="dash", line_color="gray", row=1, col=1)
-            fig_ind.add_trace(go.Scatter(x=reg_df["ts"], y=reg_df["bb_width"], name="BB Width",
-                                          line=dict(color="#9b59b6", width=1.5)), row=2, col=1)
+            fig_ind.add_trace(go.Scatter(
+                x=reg_df["ts"], y=reg_df["bb_width"], name="BB Width",
+                line=dict(color="#9b59b6", width=1.5),
+            ), row=2, col=1)
             fig_ind.add_hline(y=0.06, line_dash="dash", line_color="gray", row=2, col=1)
             fig_ind.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0), showlegend=False)
             st.plotly_chart(fig_ind, use_container_width=True)
