@@ -2,6 +2,25 @@
 
 > Read this first. It captures the current state, locked decisions, and what to work on next so a new session doesn't have to re-derive context from code alone.
 
+## ⚡ Operating Mode — MANDATORY
+
+Every session in this repo runs as a **non-blocking master/worker system**.
+Full protocol: `.claude/MASTER_WORKER.md` — read it immediately after this file.
+
+**TL;DR:**
+- Master assigns tasks to workers (via `Workflow` or `Agent`). Master NEVER waits idle.
+- While workers run, master plans next steps or spawns more workers.
+- Workers self-approve decisions — do NOT escalate to the user.
+- Commit + push after every meaningful change. No end-of-session batches.
+- Workers always run `pytest` before committing.
+
+**Reusable workflows (in `.claude/workflows/`):**
+- `master.js` — full session orchestrator: discover work → fan out → integrate
+- `gate-fix.js` — parallel backtest gate improvement experiments
+- `full-ci.js` — tests + gate + push pipeline
+
+**Start any session with:** `Workflow({ name: "master" })` to auto-assign all work.
+
 ## What this project is
 
 An automated, regime-aware **paper-trading agent for NSE Nifty 50** that consumes live Angel One SmartAPI tick data, classifies the market into TREND/RANGE/VOLATILE regimes, runs strategy logic appropriate to the regime, and sends every order through a hard guardrails layer with stop-loss, daily-loss circuit, drawdown circuit, and black-swan halts.
@@ -52,7 +71,7 @@ core/
   persistence/   SQLite store
   config.py      Pydantic settings loaded from YAML + .env
 mcp_server/      MCP server (read-only) — 10 tools for inspecting the live agent
-tests/           80 passing tests, exhaustive guardrail coverage
+tests/           112 passing tests, exhaustive guardrail + NSE data module coverage
 config/          Default YAML
 cli.py           Entry points: run | warmup | check-config | mcp-server | backtest | walk-forward | check-gate
 ```
@@ -63,7 +82,7 @@ cli.py           Entry points: run | warmup | check-config | mcp-server | backte
 # Activate venv (Windows)
 .\.venv\Scripts\Activate.ps1
 
-# Run the full test suite (must always be 80/80)
+# Run the full test suite (must always be 112/112)
 pytest -q
 
 # Inspect current config + creds
@@ -87,27 +106,29 @@ python cli.py mcp-server
 
 ## Open issues — pick up here
 
-### 1. Backtest gate failed; agent is barely trading
+### 1. Backtest gate failed — W3 correction market hurts aggregate
 
-Walk-forward result on 3 years of Nifty 50 daily data:
+Current best walk-forward (pinned `--end-date 2026-05-29`):
 
 ```text
-W1 (2023-05 -> 2024-05):  7 trades, Sharpe 1.33, MaxDD 4.8%, win 71%, pf 12.2
-W2 (2024-05 -> 2025-05):  1 trade,  Sharpe -6.78, MaxDD 1.9%, win 0%
-W3 (2025-05 -> 2026-05):  1 trade,  Sharpe -3.76, MaxDD 3.7%, win 0%
-Aggregate: 9 trades, Sharpe -0.25, MaxDD 4.82%, win 56%, pf 4.04
-Gate FAILED on: sharpe (-0.25 < 1.2), n_trades (9 < 100)
+W1 (2023-05 -> 2024-05):  ~80 trades, Sharpe ~1.67, MaxDD ~5%, win ~43%, pf ~1.78  ✓
+W2 (2024-05 -> 2025-05):  ~43 trades, Sharpe ~0.20, MaxDD ~7%, win ~30%, pf ~1.32
+W3 (2025-05 -> 2026-05):  ~59 trades, Sharpe ~-1.26, MaxDD ~10%, win ~29%, pf ~0.86
+Aggregate: ~190 trades, Sharpe ~0.42, MaxDD ~10.5%, win ~35.8%, pf ~1.41
+Gate FAILED: sharpe (0.42 < 1.2), win_rate (35.8% < 45%), profit_factor (1.41 < 1.5)
 ```
 
-When the agent trades, it's profitable. The problem is **it almost never trades.** 9 trades over 3 years across 50 stocks ≈ 3 trades/year.
+**Root cause:** W3 (May 2025–Jun 2026) is a correction+recovery market. All long-only
+trend strategies fail in this period. Per-strategy W3 damage: `trend_breakout`
+(-₹19,912, 20% win), `rsi_momentum` (-₹11,734, 0% win).
 
-**Likely root causes (in priority order):**
-1. Regime classifier too strict — ADX > 25 + BB width filters most days into UNKNOWN
-2. ATR stop multiplier (2.0×) trips per-trade-risk guardrail too often → qty rounds to 0
-3. Donchian period 20 days only fires on cleanest breakouts
-4. Engine assumes signals fire on D-1 close, fill on D's open + slippage; gap-up opens push stop above open → rejected pre-guardrails
+**What's been tried that DEGRADES results** (see memory `project_gate_status.md`):
+every stock-level DMA filter, 52-week-high filter, regime directionality check —
+all hurt W1 more than they help W3.
 
-**Recommended next move:** add a debug command that prints the full rejection breakdown (which guardrail rule rejected each signal, regime distribution, qty=0 rejections). Then we know exactly what to tune.
+**Reproducible gate run:** `python cli.py walk-forward --years 3 --end-date 2026-05-29`
+
+**Recommended next move:** Run `Workflow({ name: "gate-fix" })` to fan out parallel experiments.
 
 ### 2. EC2 development environment
 

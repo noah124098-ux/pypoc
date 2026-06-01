@@ -8,10 +8,12 @@ secrets/
 credentials.json
 
 # --- Local tool config ---
-# Track .claude/memory (project-scoped Claude Code memory ships with the repo)
-# but NOT settings.local.json or other per-machine state.
+# Track .claude/memory + shared operating files; NOT per-machine state.
 .claude/*
 !.claude/memory/
+!.claude/MASTER_WORKER.md
+!.claude/workflows/
+!.claude/settings.json
 .claude/settings.local.json
 .idea/
 .vscode/
