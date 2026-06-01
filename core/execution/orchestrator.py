@@ -35,6 +35,9 @@ from core.risk.guardrails import (
     MarketContext,
     PortfolioState,
 )
+from core.data.economic_calendar import is_blackout_day
+from core.data.nse_pcr import get_nifty_pcr
+from core.data.nse_vix import get_vix
 from core.risk.sizing import position_size
 from core.strategies.base import IStrategy
 from core.strategies.mean_reversion import MeanReversion
@@ -82,6 +85,7 @@ class Orchestrator:
         self.vix_change_pct_15m = 0.0
         self.halted = False
         self.halt_reason = ""
+        self._last_vix_fetch: float = 0.0
 
     # ---------- public API ----------
 
@@ -116,6 +120,15 @@ class Orchestrator:
         self.last_tick_age_seconds = self.feed.last_tick_age_seconds()
         equity = self.broker.equity()
         self.peak_equity = max(self.peak_equity, equity)
+
+        # Refresh India VIX from NSE every 60 seconds.  get_vix() is fail-open:
+        # returns None on network/parse errors, in which case we keep the last
+        # known value so the regime classifier and guardrails are not disrupted.
+        if time.time() - self._last_vix_fetch > 60:
+            fresh_vix = get_vix()
+            if fresh_vix is not None:
+                self.vix = fresh_vix
+            self._last_vix_fetch = time.time()
         self.store.record_equity(
             cash=self.broker.cash(),
             equity=equity,
@@ -207,6 +220,9 @@ class Orchestrator:
                 if blocked:
                     log.debug("Nifty market filter blocked BUY for %s (%s)", candle.symbol, strat.name)
                     continue
+                if is_blackout_day(datetime.now(), buffer_days=1):
+                    log.debug("Economic blackout — skipping BUY signal for %s", candle.symbol)
+                    continue
             self._handle_signal(sig)
 
     def _nifty_market_filter(self) -> tuple[bool, bool, bool]:
@@ -215,6 +231,12 @@ class Orchestrator:
         allow_any_buys=False when Nifty is below 200-DMA (structural decline).
         allow_range_buys=False when 50-DMA is falling (correction; RANGE longs also suppressed).
         allow_trend_buys=False when Nifty is below or 50-DMA is falling.
+
+        PCR filter (live only):
+          If the Nifty Put-Call Ratio < 0.7 (bearish options-market sentiment — calls
+          dominant, distribution phase), allow_trend_buys is suppressed even when the
+          DMA conditions are met.  Returns None when the NSE feed is unavailable
+          (fail-open: does not block trading).
         """
         df = self.nifty_ohlc_daily
         if df is None or len(df) < 55:
@@ -228,6 +250,14 @@ class Orchestrator:
         allow_trend = above_200 and above_50 and rising_50
         allow_range = above_200 and rising_50
         allow_any   = above_200
+
+        # PCR sentiment gate: suppress TREND BUYs when options market turns very bearish.
+        # Fail-open: if the fetch returns None (network issue, outside market hours),
+        # we do not block trading.
+        pcr = get_nifty_pcr()
+        if pcr is not None and pcr < 0.7:
+            allow_trend = False
+
         return bool(allow_trend), bool(allow_range), bool(allow_any)
 
     def _handle_signal(self, sig) -> None:
