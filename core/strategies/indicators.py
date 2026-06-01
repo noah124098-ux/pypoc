@@ -116,3 +116,64 @@ def adx_value(df: pd.DataFrame, period: int = 14) -> pd.Series:
     minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr_s.replace(0, float("nan"))
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, float("nan"))
     return dx.ewm(alpha=1 / period, adjust=False).mean()
+
+
+def rolling_autocorr(series: pd.Series, lag: int = 1, window: int = 20) -> pd.Series:
+    """Rolling autocorrelation with given lag over a rolling window.
+    Positive = trending (momentum), Negative = mean-reverting.
+    Returns pd.Series of same length as input.
+    """
+    return series.rolling(window).apply(
+        lambda x: x.autocorr(lag=lag) if len(x) >= lag + 1 else float("nan"),
+        raw=False,
+    )
+
+
+def hurst_exponent(series: pd.Series, min_lag: int = 2, max_lag: int = 20) -> float:
+    """Estimate Hurst exponent using R/S analysis.
+    H > 0.5: trending (persistent) — breakout strategies work
+    H = 0.5: random walk
+    H < 0.5: mean-reverting — breakout strategies FAIL
+    Returns float in [0, 1], or 0.5 if insufficient data.
+    """
+    if len(series) < max_lag + 1:
+        return 0.5
+    try:
+        lags = range(min_lag, min(max_lag, len(series) // 2))
+        rs_vals = []
+        for lag in lags:
+            sub = series.values
+            rs_list = []
+            for start in range(0, len(sub) - lag, lag):
+                chunk = sub[start:start + lag]
+                if len(chunk) < 2:
+                    continue
+                mean_c = chunk.mean()
+                if mean_c == 0:
+                    continue
+                dev = chunk - mean_c
+                cum_dev = np.cumsum(dev)
+                r = cum_dev.max() - cum_dev.min()
+                s = chunk.std(ddof=1)
+                if s > 0:
+                    rs_list.append(r / s)
+            if rs_list:
+                rs_vals.append((lag, np.mean(rs_list)))
+        if len(rs_vals) < 2:
+            return 0.5
+        lags_log = np.log([x[0] for x in rs_vals])
+        rs_log = np.log([x[1] for x in rs_vals])
+        h = np.polyfit(lags_log, rs_log, 1)[0]
+        return float(np.clip(h, 0.0, 1.0))
+    except Exception:
+        return 0.5
+
+
+def is_trending_market(nifty_close: pd.Series, lookback: int = 20) -> bool:
+    """Returns True if Nifty is in a trending (persistent) regime.
+    Uses rolling autocorrelation: True when autocorr(lag=1, window=lookback) > 0.
+    """
+    if len(nifty_close) < lookback + 2:
+        return True  # fail-open
+    autocorr_val = nifty_close.iloc[-lookback:].autocorr(lag=1)
+    return bool(not pd.isna(autocorr_val) and autocorr_val > 0)

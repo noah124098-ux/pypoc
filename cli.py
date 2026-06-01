@@ -441,6 +441,191 @@ def cmd_debug_rejections(args):
     print()
 
 
+def cmd_profile_backtest(args):
+    """Run a full backtest under cProfile and report the top 20 slowest functions."""
+    import cProfile
+    import io
+    import pstats
+    import time
+    from datetime import timedelta
+
+    from backtest.data_loader import HistoricalLoader
+    from backtest.engine import BacktestEngine
+    from backtest.metrics import compute_metrics
+    from core.data.universe import resolve_universe
+
+    settings = load_settings(args.config)
+    setup_logging("WARNING", None)  # suppress INFO noise during profiling
+    days = args.days or 365
+    loader = HistoricalLoader()
+    nifty = loader.load_nifty(days=days + 30)
+    if nifty is None or nifty.empty:
+        print("ERROR: Failed to load Nifty history. Check internet / yfinance.")
+        raise SystemExit(2)
+
+    symbols = resolve_universe(settings.universe.source, settings.universe.symbols)
+    history = loader.load_universe(symbols, days=days + 30)
+    print(f"Loaded {len(history)}/{len(symbols)} symbols, {len(nifty)} Nifty bars")
+
+    end = nifty.index[-1].to_pydatetime()
+    start = max(nifty.index[0].to_pydatetime(), end - timedelta(days=days))
+    engine = BacktestEngine(settings)
+
+    # ---- profile ----
+    pr = cProfile.Profile()
+    pr.enable()
+    t0 = time.time()
+    result = engine.run(
+        symbol_history=history,
+        nifty_history=nifty,
+        starting_equity=settings.capital.initial_inr,
+        start_date=start,
+        end_date=end,
+    )
+    elapsed = time.time() - t0
+    pr.disable()
+
+    # ---- top-20 slowest functions ----
+    s = io.StringIO()
+    ps = pstats.Stats(pr, stream=s).sort_stats("cumulative")
+    ps.print_stats(20)
+    print("\n=== cProfile: Top 20 functions by cumulative time ===")
+    print(s.getvalue())
+
+    # ---- wall-clock / throughput ----
+    print(f"Wall-clock time:       {elapsed:.2f}s")
+    throughput = result.signal_count / elapsed if elapsed > 0 else 0
+    print(f"Signals generated:     {result.signal_count}")
+    print(f"Throughput:            {throughput:.0f} signals/sec")
+
+    # ---- per-strategy cumulative time extracted from profiler ----
+    print("\n=== Strategy evaluate() time (from profiler stats) ===")
+    pr.create_stats()
+    strategy_times: dict[str, float] = {}
+    for func_key, stat in pr.stats.items():  # type: ignore[attr-defined]
+        filename, lineno, funcname = func_key
+        # stat layout: (cc, nc, tt, ct, callers)
+        cumtime = stat[3]
+        for strat in engine.strategies:
+            if funcname == "evaluate" and strat.__class__.__name__.lower() in filename.lower():
+                strategy_times[strat.name] = strategy_times.get(strat.name, 0) + cumtime
+    if strategy_times:
+        for sname, stime in sorted(strategy_times.items(), key=lambda kv: -kv[1]):
+            print(f"  {sname:<30}  {stime*1000:.1f} ms cumulative")
+    else:
+        # Fallback: scan by module path fragment (strategies live in core/strategies/)
+        for func_key, stat in pr.stats.items():  # type: ignore[attr-defined]
+            filename, lineno, funcname = func_key
+            if "strategies" in filename and funcname == "evaluate":
+                # Use the module file name as proxy for strategy name
+                mod = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].replace(".py", "")
+                cumtime = stat[3]
+                strategy_times[mod] = strategy_times.get(mod, 0) + cumtime
+        if strategy_times:
+            for sname, stime in sorted(strategy_times.items(), key=lambda kv: -kv[1]):
+                print(f"  {sname:<30}  {stime*1000:.1f} ms cumulative")
+        else:
+            print("  (could not isolate per-strategy timings; see full profile above)")
+
+    # ---- summary metrics ----
+    metrics = compute_metrics(
+        trades=result.trades,
+        equity_curve=result.equity_curve,
+        starting_equity=settings.capital.initial_inr,
+        period_days=(result.period_end - result.period_start).days,
+    )
+    print(f"\n=== Backtest summary ===")
+    print(f"Period:       {result.period_start.date()}  ->  {result.period_end.date()}")
+    print(f"Trades:       {metrics.n_trades}")
+    print(f"Sharpe:       {metrics.sharpe:.2f}")
+    print(f"Max DD:       {metrics.max_drawdown_pct:.2f}%")
+
+
+def cmd_benchmark_strategies(args):
+    """Run each strategy alone on 1 year of RELIANCE data and report throughput."""
+    import time
+    from datetime import timedelta
+
+    from backtest.data_loader import HistoricalLoader
+    from backtest.engine import BacktestEngine
+    from core.data.universe import resolve_universe
+    from core.types import Regime
+
+    settings = load_settings(args.config)
+    setup_logging("WARNING", None)
+    loader = HistoricalLoader()
+    nifty = loader.load_nifty(days=365 + 30)
+
+    # Load RELIANCE; fall back to the first symbol in the universe if not available.
+    target_symbol = "RELIANCE"
+    history = loader.load_universe([target_symbol], days=365 + 30)
+    if target_symbol not in history:
+        symbols = resolve_universe(settings.universe.source, settings.universe.symbols)
+        history = loader.load_universe(symbols[:3], days=365 + 30)
+        if not history:
+            print("ERROR: Could not load benchmark data.")
+            raise SystemExit(2)
+        target_symbol = next(iter(history))
+        print(f"RELIANCE not available; using {target_symbol} for benchmark")
+
+    df = history[target_symbol]
+    # Determine a plausible single regime to call evaluate() with.
+    test_regimes = [Regime.TREND, Regime.RANGE, Regime.VOLATILE]
+
+    engine = BacktestEngine(settings)
+    if not engine.strategies:
+        print("No strategies enabled in config. Nothing to benchmark.")
+        raise SystemExit(2)
+
+    print(f"\n=== Strategy benchmark on {target_symbol} ({len(df)} bars) ===")
+    print(f"{'Strategy':<30}  {'Regime':<10}  {'Signals':>8}  {'μs/call':>8}  {'signals/s':>10}")
+    print("-" * 72)
+
+    ITERATIONS = max(100, len(df) - 30)  # one evaluate() call per rolling window position
+
+    for strat in engine.strategies:
+        best_signals = 0
+        best_regime = None
+        best_us_per_call = None
+        best_sps = None
+
+        for regime in test_regimes:
+            if not strat.supports(regime):
+                continue
+
+            signals = 0
+            t0 = time.perf_counter()
+            calls = 0
+            for idx in range(30, min(30 + ITERATIONS, len(df))):
+                window = df.iloc[:idx]
+                sig = strat.evaluate(target_symbol, window, regime)
+                if sig is not None:
+                    signals += 1
+                calls += 1
+            elapsed = time.perf_counter() - t0
+            if calls == 0:
+                continue
+
+            us_per_call = elapsed / calls * 1_000_000
+            sps = signals / elapsed if elapsed > 0 else 0
+
+            if best_regime is None or signals > best_signals:
+                best_signals = signals
+                best_regime = regime
+                best_us_per_call = us_per_call
+                best_sps = sps
+
+        if best_regime is None:
+            print(f"  {strat.name:<30}  {'N/A':<10}  {'no supported regime':>30}")
+        else:
+            print(
+                f"  {strat.name:<30}  {best_regime.value:<10}  "
+                f"{best_signals:>8d}  {best_us_per_call:>8.1f}  {best_sps:>10.1f}"
+            )
+
+    print()
+
+
 def cmd_check_gate(args):
     from backtest.gate import is_live_allowed, read_gate_result
 
@@ -488,6 +673,19 @@ def main():
         help="Capital to use (default 500000 INR -- removes qty=0 noise from sizing)",
     )
     dr.set_defaults(func=cmd_debug_rejections)
+
+    pb = sub.add_parser(
+        "profile-backtest",
+        help="Run a backtest under cProfile and report top-20 slowest functions + throughput",
+    )
+    pb.add_argument("--days", type=int, default=365, help="Look-back window in calendar days (default 365)")
+    pb.set_defaults(func=cmd_profile_backtest)
+
+    bs = sub.add_parser(
+        "benchmark-strategies",
+        help="Run each enabled strategy on 1 year of RELIANCE data and report signals/sec + us/call",
+    )
+    bs.set_defaults(func=cmd_benchmark_strategies)
 
     args = parser.parse_args()
     args.func(args)
