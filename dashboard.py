@@ -39,6 +39,19 @@ SNAPSHOT_PATH = Path("data/snapshot.json")
 GATE_PATH = Path("data/backtest_gate.json")
 CONFIG_PATH = Path("config/default.yaml")
 AGENT_PID_PATH = Path("data/agent.pid")
+LAST_REVIEW_PATH = Path("data/last_review.json")
+
+try:
+    from core.llm.eod_reviewer import run_eod_review as _run_eod_review, ReviewReport as _ReviewReport
+    _EOD_REVIEWER_AVAILABLE = True
+except ImportError:
+    _EOD_REVIEWER_AVAILABLE = False
+
+try:
+    import anthropic as _anthropic_mod  # noqa: F401 — only used to detect installation
+    _ANTHROPIC_INSTALLED = True
+except ImportError:
+    _ANTHROPIC_INSTALLED = False
 
 
 def _agent_is_running() -> bool:
@@ -226,6 +239,28 @@ def _write_config_risk(updates: dict) -> str:
         return f"Save failed: {e}"
 
 
+def _read_last_review() -> dict:
+    """Read data/last_review.json if it exists."""
+    if not LAST_REVIEW_PATH.exists():
+        return {}
+    try:
+        return json.loads(LAST_REVIEW_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_last_review(report_dict: dict) -> None:
+    """Persist a review report dict to data/last_review.json."""
+    try:
+        LAST_REVIEW_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LAST_REVIEW_PATH.write_text(
+            json.dumps(report_dict, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception as exc:
+        logger_dash = __import__("logging").getLogger(__name__)
+        logger_dash.warning("Could not save last review: %s", exc)
+
+
 def _pnl_by_period(trades_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """Return dict of period -> grouped P&L DataFrames."""
     if trades_df.empty:
@@ -301,12 +336,13 @@ with st.sidebar:
 # ── tabs ─────────────────────────────────────────────────────────────────────
 
 conn = _db_connect()
-tab_live, tab_pnl, tab_positions, tab_regime, tab_backtest, tab_controls, tab_costs = st.tabs([
+tab_live, tab_pnl, tab_positions, tab_regime, tab_backtest, tab_ai_review, tab_controls, tab_costs = st.tabs([
     "🔴 Live Account",
     "📊 P&L & Equity",
     "📋 Positions & Signals",
     "🌡️ Regime & Market",
     "🔬 Backtest Results",
+    "🤖 AI Review",
     "⚙️ Controls",
     "💰 Costs",
 ])
@@ -853,7 +889,159 @@ with tab_backtest:
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# TAB 6: CONTROLS
+# TAB 6: AI REVIEW
+# ────────────────────────────────────────────────────────────────────────────
+
+with tab_ai_review:
+    st.header("AI End-of-Day Review")
+    st.caption(
+        "Claude analyses today's trades, signals, guardrail rejections, and regime data "
+        "and proposes parameter tweaks. Requires ANTHROPIC_API_KEY in the environment."
+    )
+
+    # ── API key check ─────────────────────────────────────────────────────────
+    _anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    _api_key_ok = bool(_anthropic_api_key) and _ANTHROPIC_INSTALLED and _EOD_REVIEWER_AVAILABLE
+
+    if not _ANTHROPIC_INSTALLED:
+        st.warning(
+            "The `anthropic` Python package is not installed. "
+            "Run `pip install anthropic` then restart the dashboard."
+        )
+    elif not _EOD_REVIEWER_AVAILABLE:
+        st.warning("core.llm.eod_reviewer could not be imported. Check the module for errors.")
+    elif not _anthropic_api_key:
+        st.warning("API key not configured — set ANTHROPIC_API_KEY in your .env file.")
+
+    # ── Auto-review toggle (session state only) ───────────────────────────────
+    auto_eod = st.toggle(
+        "Auto-review at EOD",
+        value=st.session_state.get("auto_eod_review", False),
+        disabled=not _api_key_ok,
+        help="Session-only setting. When enabled, the review runs automatically when the page refreshes near market close.",
+    )
+    st.session_state["auto_eod_review"] = auto_eod
+
+    st.divider()
+
+    # ── Run review button ─────────────────────────────────────────────────────
+    st.subheader("Run EOD Review Now")
+    if st.button(
+        "Run EOD Review Now",
+        type="primary",
+        disabled=not _api_key_ok,
+        help="Calls Claude to analyse today's activity and propose parameter changes.",
+    ):
+        with st.spinner("Running EOD review with Claude... (may take 15–30 seconds)"):
+            try:
+                _report = _run_eod_review(
+                    db_path=str(DB_PATH),
+                    snapshot_path=str(SNAPSHOT_PATH),
+                    api_key=_anthropic_api_key,
+                )
+            except Exception as _exc:
+                _report = None
+                st.error(f"Review failed with exception: {_exc}")
+
+        if _report is None:
+            st.error("EOD review returned no result. Check logs for details.")
+        else:
+            # Persist to disk
+            _review_dict = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "summary": _report.summary,
+                "suggestions": [
+                    {
+                        "strategy": s.strategy,
+                        "parameter": s.parameter,
+                        "current_value": s.current_value,
+                        "suggested_value": s.suggested_value,
+                        "rationale": s.rationale,
+                    }
+                    for s in _report.suggestions
+                ],
+                "flags": _report.flags,
+            }
+            _save_last_review(_review_dict)
+
+            # Display results
+            st.info(_report.summary)
+
+            if _report.suggestions:
+                st.subheader("Parameter Suggestions")
+                _sugg_rows = [
+                    {
+                        "Strategy": s.strategy,
+                        "Parameter": s.parameter,
+                        "Current": s.current_value,
+                        "Suggested": s.suggested_value,
+                        "Change": f"{s.current_value} → {s.suggested_value}",
+                        "Rationale": s.rationale,
+                    }
+                    for s in _report.suggestions
+                ]
+                st.dataframe(
+                    pd.DataFrame(_sugg_rows)[["Strategy", "Parameter", "Change", "Rationale"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption("No parameter suggestions from this review.")
+
+            if _report.flags:
+                st.subheader("Flags")
+                for _flag in _report.flags:
+                    st.warning(_flag)
+
+            st.success("Review complete. Result saved to data/last_review.json")
+
+    st.divider()
+
+    # ── Last review section ───────────────────────────────────────────────────
+    st.subheader("Last Review")
+    _last = _read_last_review()
+    if _last:
+        _last_ts = _last.get("timestamp", "unknown")
+        try:
+            _last_ts_fmt = datetime.fromisoformat(_last_ts).strftime("%Y-%m-%d %H:%M UTC")
+        except Exception:
+            _last_ts_fmt = _last_ts
+        st.caption(f"Reviewed at: {_last_ts_fmt}")
+
+        _last_summary = _last.get("summary", "")
+        if _last_summary:
+            st.info(_last_summary)
+
+        _last_suggs = _last.get("suggestions", [])
+        if _last_suggs:
+            st.markdown("**Parameter Suggestions**")
+            st.dataframe(
+                pd.DataFrame([
+                    {
+                        "Strategy": s.get("strategy", ""),
+                        "Parameter": s.get("parameter", ""),
+                        "Change": f"{s.get('current_value', '?')} → {s.get('suggested_value', '?')}",
+                        "Rationale": s.get("rationale", ""),
+                    }
+                    for s in _last_suggs
+                ]),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.caption("No parameter suggestions in last review.")
+
+        _last_flags = _last.get("flags", [])
+        if _last_flags:
+            st.markdown("**Flags**")
+            for _flag in _last_flags:
+                st.warning(_flag)
+    else:
+        st.info("No review has been run yet. Click 'Run EOD Review Now' above.")
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# TAB 7: CONTROLS
 # ────────────────────────────────────────────────────────────────────────────
 
 with tab_controls:
@@ -971,9 +1159,195 @@ with tab_controls:
         "Enable EOD review in config: `llm.enable_eod_review: true`"
     )
 
+    st.divider()
+
+    # ── Notifications ─────────────────────────────────────────────────────────
+    with st.expander("🔔 Notifications", expanded=True):
+        st.caption(
+            "Credentials are stored in session state only — they are never written to disk "
+            "unless you click **Save to .env**."
+        )
+
+        # ── Telegram ──────────────────────────────────────────────────────────
+        st.markdown("**Telegram**")
+        tg_col1, tg_col2 = st.columns(2)
+        tg_token = tg_col1.text_input(
+            "Bot Token",
+            value=st.session_state.get("notif_tg_token", os.getenv("TELEGRAM_BOT_TOKEN", "")),
+            type="password",
+            key="_notif_tg_token_input",
+            help="Create a bot via @BotFather and paste the token here",
+        )
+        tg_chat_id = tg_col2.text_input(
+            "Chat ID",
+            value=st.session_state.get("notif_tg_chat_id", os.getenv("TELEGRAM_CHAT_ID", "")),
+            key="_notif_tg_chat_id_input",
+            help="Your Telegram user/group chat ID (e.g. 123456789)",
+        )
+        st.session_state["notif_tg_token"] = tg_token
+        st.session_state["notif_tg_chat_id"] = tg_chat_id
+
+        if st.button("Test Telegram", key="btn_test_telegram"):
+            if not tg_token or not tg_chat_id:
+                st.error("Telegram: bot token and chat ID are both required.")
+            else:
+                try:
+                    import urllib.request as _urllib_req
+                    import urllib.parse as _urllib_parse
+                    _tg_msg = "Test from NSE Agent dashboard"
+                    _tg_url = (
+                        f"https://api.telegram.org/bot{tg_token}/sendMessage?"
+                        + _urllib_parse.urlencode({"chat_id": tg_chat_id, "text": _tg_msg})
+                    )
+                    with _urllib_req.urlopen(_tg_url, timeout=10) as _tg_resp:
+                        _tg_body = json.loads(_tg_resp.read().decode())
+                    if _tg_body.get("ok"):
+                        st.success("Telegram: test message sent successfully.")
+                    else:
+                        st.error(f"Telegram API error: {_tg_body.get('description', _tg_body)}")
+                except Exception as _tg_exc:
+                    st.error(f"Telegram send failed: {_tg_exc}")
+
+        st.divider()
+
+        # ── Email ──────────────────────────────────────────────────────────────
+        with st.expander("Email", expanded=False):
+            em_col1, em_col2 = st.columns(2)
+            smtp_host = em_col1.text_input(
+                "SMTP Host",
+                value=st.session_state.get("notif_smtp_host", os.getenv("SMTP_HOST", "smtp.gmail.com")),
+                key="_notif_smtp_host_input",
+            )
+            smtp_port = em_col2.number_input(
+                "SMTP Port",
+                min_value=1, max_value=65535, step=1,
+                value=int(st.session_state.get(
+                    "notif_smtp_port", int(os.getenv("SMTP_PORT", "587"))
+                )),
+                key="_notif_smtp_port_input",
+            )
+            smtp_user = em_col1.text_input(
+                "SMTP User",
+                value=st.session_state.get("notif_smtp_user", os.getenv("SMTP_USER", "")),
+                key="_notif_smtp_user_input",
+            )
+            smtp_pass = em_col2.text_input(
+                "SMTP Password",
+                value=st.session_state.get("notif_smtp_pass", os.getenv("SMTP_PASS", "")),
+                type="password",
+                key="_notif_smtp_pass_input",
+            )
+            smtp_from = em_col1.text_input(
+                "From Address",
+                value=st.session_state.get("notif_smtp_from", os.getenv("SMTP_FROM", "")),
+                key="_notif_smtp_from_input",
+            )
+            smtp_to = em_col2.text_input(
+                "To Address",
+                value=st.session_state.get("notif_smtp_to", os.getenv("SMTP_TO", "")),
+                key="_notif_smtp_to_input",
+            )
+            # Persist to session state
+            st.session_state["notif_smtp_host"] = smtp_host
+            st.session_state["notif_smtp_port"] = int(smtp_port)
+            st.session_state["notif_smtp_user"] = smtp_user
+            st.session_state["notif_smtp_pass"] = smtp_pass
+            st.session_state["notif_smtp_from"] = smtp_from
+            st.session_state["notif_smtp_to"] = smtp_to
+
+            if st.button("Send test email", key="btn_test_email"):
+                if not all([smtp_host, smtp_user, smtp_pass, smtp_from, smtp_to]):
+                    st.error("Email: all fields except port are required.")
+                else:
+                    try:
+                        import smtplib as _smtplib
+                        from email.mime.text import MIMEText as _MIMEText
+                        _mail = _MIMEText("Test from NSE Agent dashboard")
+                        _mail["Subject"] = "NSE Agent — test notification"
+                        _mail["From"] = smtp_from
+                        _mail["To"] = smtp_to
+                        with _smtplib.SMTP(smtp_host, int(smtp_port), timeout=10) as _srv:
+                            _srv.ehlo()
+                            _srv.starttls()
+                            _srv.login(smtp_user, smtp_pass)
+                            _srv.sendmail(smtp_from, [smtp_to], _mail.as_string())
+                        st.success("Email: test message sent successfully.")
+                    except Exception as _em_exc:
+                        st.error(f"Email send failed: {_em_exc}")
+
+        st.divider()
+
+        # ── Save to .env ───────────────────────────────────────────────────────
+        st.markdown("**Save notification credentials to .env**")
+        st.caption(
+            "Only TELEGRAM and SMTP keys are written — Angel One / Anthropic keys "
+            "in the existing .env are never touched."
+        )
+
+        _env_path = Path(".env")
+
+        if st.button("Save to .env", key="btn_save_notif_env"):
+            _notif_keys = {
+                "TELEGRAM_BOT_TOKEN": st.session_state.get("notif_tg_token", ""),
+                "TELEGRAM_CHAT_ID": st.session_state.get("notif_tg_chat_id", ""),
+                "SMTP_HOST": st.session_state.get("notif_smtp_host", ""),
+                "SMTP_PORT": str(st.session_state.get("notif_smtp_port", 587)),
+                "SMTP_USER": st.session_state.get("notif_smtp_user", ""),
+                "SMTP_PASS": st.session_state.get("notif_smtp_pass", ""),
+                "SMTP_FROM": st.session_state.get("notif_smtp_from", ""),
+                "SMTP_TO": st.session_state.get("notif_smtp_to", ""),
+            }
+
+            _allowed_notif_prefixes = (
+                "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+                "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SMTP_FROM", "SMTP_TO",
+            )
+
+            _create_confirmed = st.session_state.get("_notif_env_create_confirmed", False)
+
+            if not _env_path.exists() and not _create_confirmed:
+                st.warning(
+                    ".env file does not exist. Click **Save to .env** again to confirm creation."
+                )
+                st.session_state["_notif_env_create_confirmed"] = True
+            else:
+                try:
+                    # Read existing lines, keeping non-notification keys untouched
+                    _existing_lines: list[str] = []
+                    if _env_path.exists():
+                        _existing_lines = _env_path.read_text(encoding="utf-8").splitlines()
+
+                    # Safety: never touch Angel One / Anthropic lines, only strip notif keys
+                    _safe_existing: list[str] = []
+                    for _env_line in _existing_lines:
+                        _env_stripped = _env_line.strip()
+                        _is_notif_line = any(
+                            _env_stripped.startswith(f"{_nk}=")
+                            or _env_stripped.startswith(f"{_nk} =")
+                            for _nk in _allowed_notif_prefixes
+                        )
+                        if not _is_notif_line:
+                            _safe_existing.append(_env_line)
+
+                    # Append notification keys
+                    _new_lines = list(_safe_existing)
+                    if _new_lines and _new_lines[-1].strip() != "":
+                        _new_lines.append("")  # blank separator
+
+                    _new_lines.append("# --- Notification settings (managed by dashboard) ---")
+                    for _nk, _nv in _notif_keys.items():
+                        if _nv:  # only write non-empty values
+                            _new_lines.append(f"{_nk}={_nv}")
+
+                    _env_path.write_text("\n".join(_new_lines) + "\n", encoding="utf-8")
+                    st.session_state.pop("_notif_env_create_confirmed", None)
+                    st.success(".env updated with notification settings.")
+                except Exception as _env_exc:
+                    st.error(f"Failed to write .env: {_env_exc}")
+
 
 # ────────────────────────────────────────────────────────────────────────────
-# TAB 7: COSTS
+# TAB 8: COSTS
 # ────────────────────────────────────────────────────────────────────────────
 
 with tab_costs:
