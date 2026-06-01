@@ -164,4 +164,4 @@ def test_get_config_summary(tools):
     cfg = tools.get_config_summary()
     assert cfg["mode"] == "paper"
     assert cfg["risk"]["per_trade_risk_pct"] == 1.0
-    assert "trend_breakout" in cfg["strategies_enabled"]
+    assert "mean_reversion" in cfg["strategies_enabled"]
