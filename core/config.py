@@ -119,11 +119,21 @@ class Settings(BaseModel):
 class Secrets(BaseModel):
     """Secrets pulled from environment. Empty strings allowed for unused integrations."""
 
+    # Data-feed app credentials (DATA-ONLY — never used for order placement).
     angel_one_api_key: str = ""
     angel_one_api_secret: str = ""
     angel_one_client_code: str = ""
     angel_one_password: str = ""
     angel_one_totp_secret: str = ""
+
+    # Live-broker app credentials (SEPARATE app from the data feed).
+    # These are intentionally empty until Phase 7 live-broker integration.
+    # NEVER populate these with the data-feed credentials above.
+    angel_one_live_api_key: str = ""
+    angel_one_live_client_code: str = ""
+    angel_one_live_password: str = ""
+    angel_one_live_totp_secret: str = ""
+
     anthropic_api_key: str = ""
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
@@ -143,6 +153,11 @@ class Secrets(BaseModel):
             angel_one_client_code=os.getenv("ANGEL_ONE_CLIENT_CODE", ""),
             angel_one_password=os.getenv("ANGEL_ONE_PASSWORD", ""),
             angel_one_totp_secret=os.getenv("ANGEL_ONE_TOTP_SECRET", ""),
+            # Live-broker vars — separate app, separate credentials.
+            angel_one_live_api_key=os.getenv("ANGEL_ONE_LIVE_API_KEY", ""),
+            angel_one_live_client_code=os.getenv("ANGEL_ONE_LIVE_CLIENT_CODE", ""),
+            angel_one_live_password=os.getenv("ANGEL_ONE_LIVE_PASSWORD", ""),
+            angel_one_live_totp_secret=os.getenv("ANGEL_ONE_LIVE_TOTP_SECRET", ""),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
