@@ -44,9 +44,18 @@ def cmd_run(args):
 
         allowed, reason = is_live_allowed()
         if not allowed:
-            log.error("Refusing to start in live mode: %s", reason)
+            log.error(
+                "LIVE MODE BLOCKED: backtest gate has not passed or file is stale (>30 days). "
+                "Reason: %s. Run: python cli.py walk-forward --years 3",
+                reason,
+            )
             raise SystemExit(2)
         log.info("Live-mode gate check passed.")
+        log.warning(
+            "LIVE MODE: AngelOneLiveBroker is a STUB. "
+            "Do not use with real capital until implementation is complete. "
+            "All order methods raise NotImplementedError."
+        )
 
     if settings.capital.initial_inr < 50000:
         log.warning(
@@ -57,7 +66,22 @@ def cmd_run(args):
         )
 
     store = Store(settings.persistence.sqlite_path)
-    broker = PaperBroker(settings.capital.initial_inr, settings.execution)
+    if settings.mode == "live":
+        try:
+            from core.broker.angelone_live import AngelOneLiveBroker
+
+            broker = AngelOneLiveBroker.from_env(settings.execution)
+            log.warning(
+                "AngelOneLiveBroker constructed — STUB, all order methods raise NotImplementedError. "
+                "Falling through to PaperBroker until live implementation is complete."
+            )
+            # Fall back to PaperBroker because the stub raises on every call.
+            broker = PaperBroker(settings.capital.initial_inr, settings.execution)
+        except ValueError as exc:
+            log.warning("Live broker creds not configured (%s); using PaperBroker.", exc)
+            broker = PaperBroker(settings.capital.initial_inr, settings.execution)
+    else:
+        broker = PaperBroker(settings.capital.initial_inr, settings.execution)
     feed = _build_feed(settings, secrets)
     orch = Orchestrator(settings, feed, broker, store, events)
 
