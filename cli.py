@@ -205,7 +205,23 @@ def cmd_walk_forward(args):
     history = loader.load_universe(symbols, days=days)
     log.info("Loaded %d / %d symbols, %d Nifty days", len(history), len(symbols), len(nifty))
 
-    end = nifty.index[-1].to_pydatetime()
+    # --end-date pins the walk-forward end so results are reproducible regardless of run date.
+    if args.end_date:
+        try:
+            fixed_end = datetime.strptime(args.end_date, "%Y-%m-%d")
+        except ValueError:
+            log.error("--end-date must be in YYYY-MM-DD format, got: %s", args.end_date)
+            raise SystemExit(2)
+        # Clamp to the latest available Nifty bar that is <= fixed_end
+        available = nifty.index[nifty.index <= fixed_end.strftime("%Y-%m-%d")]
+        if available.empty:
+            log.error("No Nifty data available on or before %s", args.end_date)
+            raise SystemExit(2)
+        end = available[-1].to_pydatetime()
+        log.info("Pinned end date to %s (latest bar on or before %s)", end.date(), args.end_date)
+    else:
+        end = nifty.index[-1].to_pydatetime()
+
     start = (end - timedelta(days=int(years * 365)))
     report = run_walk_forward(
         settings=settings,
@@ -431,8 +447,9 @@ def main():
     bt.set_defaults(func=cmd_backtest)
 
     wf = sub.add_parser("walk-forward", help="Run walk-forward and write data/backtest_gate.json")
-    wf.add_argument("--years", type=float, default=None)
-    wf.add_argument("--window-months", type=int, default=12)
+    wf.add_argument("--years", type=float, default=None, help="Number of years to cover (default: from config, typically 3)")
+    wf.add_argument("--window-months", type=int, default=12, help="Size of each walk-forward window in months (default: 12)")
+    wf.add_argument("--end-date", default=None, help="Pin the walk-forward end date YYYY-MM-DD for reproducible results (default: latest available data)")
     wf.set_defaults(func=cmd_walk_forward)
 
     sub.add_parser("check-gate").set_defaults(func=cmd_check_gate)

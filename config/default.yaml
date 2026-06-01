@@ -134,6 +134,7 @@ backtest_gate:
   min_profit_factor: 1.5
   min_trades: 100
   walk_forward_years: 3
+  # Reproducible run: python cli.py walk-forward --years 3 --end-date 2026-05-29
 
 data:
   primary_feed: angelone           # angelone | upstox | poll
