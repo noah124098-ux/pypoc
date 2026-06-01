@@ -81,6 +81,8 @@ class PaperBroker(IBroker):
 
         fill_price = self._apply_slippage(ref_price, side)
         cost = qty * fill_price
+        # Detect if this BUY is covering an open short (affects STT)
+        _is_short_cover = side == Side.BUY and symbol in self._short_positions
         charges = compute_charges(
             side=side,
             qty=qty,
@@ -89,6 +91,7 @@ class PaperBroker(IBroker):
             stt_pct=self._exec.stt_pct,
             exchange_txn_pct=self._exec.exchange_txn_pct,
             gst_pct=self._exec.gst_pct,
+            is_short_cover=_is_short_cover,
         ).total
 
         if side == Side.BUY:
@@ -291,5 +294,6 @@ class PaperBroker(IBroker):
             brokerage_per_order_inr=self._exec.brokerage_per_order_inr,
             stt_pct=self._exec.stt_pct, exchange_txn_pct=self._exec.exchange_txn_pct,
             gst_pct=self._exec.gst_pct,
+            is_short_cover=True,
         ).total
         self._cover_short(pos.symbol, pos.qty, fill, charges, exit_reason=reason)
