@@ -43,6 +43,14 @@ class RegimeClassifier:
             return RegimeSnapshot(Regime.VOLATILE, adx, bb_width, vix,
                                    f"VIX {vix:.1f} > {self.cfg.vix_volatile_threshold}")
         if adx > self.cfg.adx_trend_threshold:
+            # Verify market is actually trending (not just high-volatility mean-reverting)
+            # Autocorr > 0 = momentum/trending, autocorr <= 0 = mean-reverting choppy
+            if len(nifty_ohlc) >= 22:
+                _ac = nifty_ohlc["close"].iloc[-20:].autocorr(lag=1)
+                if not pd.isna(_ac) and _ac <= 0:
+                    # High ADX but mean-reverting: reclassify as RANGE
+                    return RegimeSnapshot(Regime.RANGE, adx, bb_width, vix,
+                        f"ADX {adx:.1f}>{self.cfg.adx_trend_threshold} but autocorr={_ac:.3f}<=0 (mean-reverting)")
             return RegimeSnapshot(Regime.TREND, adx, bb_width, vix,
                                    f"ADX {adx:.1f} > {self.cfg.adx_trend_threshold}")
         if bb_width < self.cfg.bb_width_range_threshold:
