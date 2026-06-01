@@ -167,3 +167,47 @@ class TradingAgentTools:
             ],
             "primary_feed": s.data.primary_feed,
         }
+
+    # --- Mutating tools (via command queue) ---
+
+    def halt_agent(self, reason: str = "manual halt via MCP") -> dict:
+        """Enqueue a halt_agent command. The orchestrator will stop trading when it drains the queue."""
+        from core.command_queue import enqueue
+        cmd = enqueue("halt_agent", {"reason": reason})
+        return {"queued": True, "command_id": cmd.id, "message": f"Halt command queued: {cmd.id}"}
+
+    def resume_agent(self) -> dict:
+        """Enqueue a resume_agent command to clear a manual halt."""
+        from core.command_queue import enqueue
+        cmd = enqueue("resume_agent", {})
+        return {"queued": True, "command_id": cmd.id}
+
+    def update_risk_param(self, param: str, value: float) -> dict:
+        """Enqueue a risk-parameter update. Only pre-approved params within safe bounds are accepted."""
+        SAFE_BOUNDS = {
+            "per_trade_risk_pct": (0.5, 2.0),
+            "max_open_positions": (2, 8),
+            "daily_loss_circuit_pct": (2.0, 5.0),
+        }
+        if param not in SAFE_BOUNDS:
+            return {"error": f"Unknown param {param}. Allowed: {list(SAFE_BOUNDS)}"}
+        lo, hi = SAFE_BOUNDS[param]
+        if not (lo <= value <= hi):
+            return {"error": f"{param} must be in [{lo}, {hi}], got {value}"}
+        from core.command_queue import enqueue
+        cmd = enqueue("update_risk_param", {"param": param, "value": value})
+        return {"queued": True, "command_id": cmd.id, "param": param, "value": value}
+
+    def place_paper_order(self, symbol: str, side: str, qty: int, strategy: str = "manual") -> dict:
+        """Enqueue a manual paper order. Goes through all guardrails in the orchestrator."""
+        if side not in ("BUY", "SELL"):
+            return {"error": "side must be BUY or SELL"}
+        if qty <= 0 or qty > 1000:
+            return {"error": "qty must be 1-1000"}
+        from core.data.universe import resolve_universe
+        universe = resolve_universe("nifty50", [])
+        if symbol not in universe:
+            return {"error": f"{symbol} not in Nifty 50 universe"}
+        from core.command_queue import enqueue
+        cmd = enqueue("place_paper_order", {"symbol": symbol, "side": side, "qty": qty, "strategy": strategy})
+        return {"queued": True, "command_id": cmd.id, "symbol": symbol, "side": side, "qty": qty}

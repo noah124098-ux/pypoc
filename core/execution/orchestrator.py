@@ -125,6 +125,7 @@ class Orchestrator:
 
     def tick_lifecycle(self) -> None:
         """Periodic housekeeping — call from a 1-second timer in run loop."""
+        self._process_command_queue()
         self.last_tick_age_seconds = self.feed.last_tick_age_seconds()
         equity = self.broker.equity()
         self.peak_equity = max(self.peak_equity, equity)
@@ -350,6 +351,58 @@ class Orchestrator:
         )
 
     # ---------- helpers ----------
+
+    def _process_command_queue(self) -> None:
+        from core.command_queue import read_pending, update_status
+        try:
+            for cmd in read_pending():
+                update_status(cmd.id, "processing")
+                try:
+                    if cmd.type == "halt_agent":
+                        self.halted = True
+                        self.halt_reason = cmd.params.get("reason", "manual halt via MCP")
+                        update_status(cmd.id, "done", f"halted: {self.halt_reason}")
+
+                    elif cmd.type == "resume_agent":
+                        # Only allow resume if circuits not triggered
+                        equity = self.broker.equity()
+                        day_pnl = (equity - self.starting_equity_today) / self.starting_equity_today * 100
+                        if day_pnl < -self.s.risk.daily_loss_circuit_pct:
+                            update_status(cmd.id, "rejected", "daily loss circuit still active")
+                        else:
+                            self.halted = False
+                            self.halt_reason = ""
+                            update_status(cmd.id, "done", "resumed")
+
+                    elif cmd.type == "update_risk_param":
+                        param = cmd.params["param"]
+                        value = float(cmd.params["value"])
+                        setattr(self.s.risk, param, value)
+                        update_status(cmd.id, "done", f"set {param}={value}")
+
+                    elif cmd.type == "place_paper_order":
+                        from core.types import Side, OrderType
+                        side = Side.BUY if cmd.params["side"] == "BUY" else Side.SELL
+                        ltp = self.broker._latest_prices.get(cmd.params["symbol"])
+                        if ltp is None:
+                            update_status(cmd.id, "rejected", "no market price")
+                        else:
+                            order = self.broker.place_order(
+                                symbol=cmd.params["symbol"],
+                                side=side,
+                                qty=int(cmd.params["qty"]),
+                                order_type=OrderType.MARKET,
+                                stop_loss=ltp * 0.98,
+                                target=ltp * 1.04,
+                                strategy=cmd.params.get("strategy", "manual"),
+                            )
+                            update_status(cmd.id, "done", f"order {order.id} {order.status.value}")
+                    else:
+                        update_status(cmd.id, "rejected", f"unknown command type: {cmd.type}")
+                except Exception as e:
+                    update_status(cmd.id, "rejected", str(e))
+        except Exception as e:
+            log.warning("Command queue processing failed: %s", e)
 
     def _build_strategies(self, settings: Settings) -> list[IStrategy]:
         out: list[IStrategy] = []

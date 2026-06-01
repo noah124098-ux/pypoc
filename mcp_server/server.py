@@ -125,6 +125,68 @@ def _build_tool_schemas() -> list[Tool]:
             ),
             inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
         ),
+        # --- Mutating tools (via command queue) ---
+        Tool(
+            name="halt_agent",
+            description=(
+                "Enqueue a halt_agent command. The orchestrator stops trading when it drains "
+                "the queue. Provide an optional reason string."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "default": "manual halt via MCP",
+                        "description": "Human-readable reason for the halt.",
+                    }
+                },
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="resume_agent",
+            description="Enqueue a resume_agent command to clear a manual halt.",
+            inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
+        ),
+        Tool(
+            name="update_risk_param",
+            description=(
+                "Enqueue a risk-parameter update. Allowed params: per_trade_risk_pct [0.5-2.0], "
+                "max_open_positions [2-8], daily_loss_circuit_pct [2.0-5.0]. "
+                "Value is validated before queuing."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "param": {
+                        "type": "string",
+                        "enum": ["per_trade_risk_pct", "max_open_positions", "daily_loss_circuit_pct"],
+                    },
+                    "value": {"type": "number"},
+                },
+                "required": ["param", "value"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="place_paper_order",
+            description=(
+                "Enqueue a manual paper order for a Nifty 50 symbol. "
+                "The orchestrator will run it through all guardrails before filling."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "NSE symbol, e.g. RELIANCE"},
+                    "side": {"type": "string", "enum": ["BUY", "SELL"]},
+                    "qty": {"type": "integer", "minimum": 1, "maximum": 1000},
+                    "strategy": {"type": "string", "default": "manual"},
+                },
+                "required": ["symbol", "side", "qty"],
+                "additionalProperties": False,
+            },
+        ),
     ]
 
 
@@ -145,6 +207,18 @@ def _build_dispatch(tools: TradingAgentTools):
         "get_regime_history": lambda a: tools.get_regime_history(limit=int(a.get("limit", 50))),
         "get_universe": lambda _: tools.get_universe(),
         "get_config_summary": lambda _: tools.get_config_summary(),
+        # mutating tools
+        "halt_agent": lambda a: tools.halt_agent(reason=a.get("reason", "manual halt via MCP")),
+        "resume_agent": lambda _: tools.resume_agent(),
+        "update_risk_param": lambda a: tools.update_risk_param(
+            param=str(a["param"]), value=float(a["value"])
+        ),
+        "place_paper_order": lambda a: tools.place_paper_order(
+            symbol=str(a["symbol"]),
+            side=str(a["side"]),
+            qty=int(a["qty"]),
+            strategy=str(a.get("strategy", "manual")),
+        ),
     }
 
 
