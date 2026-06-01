@@ -1,56 +1,56 @@
 {
   "passed": false,
-  "timestamp": "2026-06-01T22:59:44.238171+00:00",
+  "timestamp": "2026-06-01T22:56:04.888422+00:00",
   "period_start": "2023-05-30T00:00:00",
   "period_end": "2026-05-29T00:00:00",
   "metrics": {
-    "n_trades": 170,
-    "win_rate_pct": 34.11764705882353,
-    "profit_factor": 1.1473409065783244,
-    "avg_win": 8545.421725047812,
-    "avg_loss": -3857.0120298770316,
-    "total_pnl": 63649.11270654548,
-    "sharpe": -0.19646687381416753,
-    "sortino": -0.2529651641397182,
-    "max_drawdown_pct": 17.767882429579306,
-    "cagr_pct": 3.9000617955611494,
-    "expectancy": 374.40654533262045,
+    "n_trades": 166,
+    "win_rate_pct": 33.734939759036145,
+    "profit_factor": 1.307700392284484,
+    "avg_win": 9574.779029818164,
+    "avg_loss": -3727.484513573727,
+    "total_pnl": 126164.32917670714,
+    "sharpe": 0.08206514779344216,
+    "sortino": 0.10940099308067364,
+    "max_drawdown_pct": 20.123839720412956,
+    "cagr_pct": 7.163452792217728,
+    "expectancy": 760.0260793777538,
     "starting_equity": 500000.0,
-    "ending_equity": 560768.1037961394,
+    "ending_equity": 615245.4364353591,
     "period_days": 1095
   },
   "checks": [
     {
       "name": "sharpe",
-      "actual": -0.19646687381416753,
+      "actual": 0.08206514779344216,
       "threshold": 1.2,
       "pass_": false,
       "direction": "ge"
     },
     {
       "name": "max_drawdown_pct",
-      "actual": 17.767882429579306,
+      "actual": 20.123839720412956,
       "threshold": 15.0,
       "pass_": false,
       "direction": "le"
     },
     {
       "name": "win_rate_pct",
-      "actual": 34.11764705882353,
+      "actual": 33.734939759036145,
       "threshold": 45.0,
       "pass_": false,
       "direction": "ge"
     },
     {
       "name": "profit_factor",
-      "actual": 1.1473409065783244,
+      "actual": 1.307700392284484,
       "threshold": 1.5,
       "pass_": false,
       "direction": "ge"
     },
     {
       "name": "n_trades",
-      "actual": 170.0,
+      "actual": 166.0,
       "threshold": 100.0,
       "pass_": true,
       "direction": "ge"

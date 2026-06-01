@@ -48,7 +48,7 @@ from core.strategies.supertrend import Supertrend
 from core.strategies.supertrend_short import SupertrendShort
 from core.strategies.trend_breakout import TrendBreakout
 from core.strategies.volatility_compression import VolatilityCompression
-from core.strategies.indicators import adx_value
+from core.strategies.indicators import adx_value, hurst_exponent as _hurst_exp
 from core.types import OrderType, Position, Regime, Side, Signal
 from core.data.economic_calendar import is_blackout_day
 
@@ -188,6 +188,8 @@ class BacktestEngine:
             #   Tier 3 (TREND longs): above 50-DMA AND rising  → block TREND BUYs otherwise
             # SELL (short) signals are never blocked by these filters.
             nifty_allow_trend = above_200 and above_50 and rising_50
+            vix_calm = vix_proxy < 18.0
+            nifty_allow_trend = nifty_allow_trend and vix_calm
             nifty_allow_range = above_200 and rising_50   # RANGE longs need upward DMA slope
             nifty_allow_any   = above_200
 
@@ -204,6 +206,14 @@ class BacktestEngine:
             # frequently even if DMAs are rising. Only applied to trend_breakout + rsi_momentum.
             nifty_adx = _adx_last(nifty_slice)
             nifty_strong_trend = (nifty_adx is None) or (nifty_adx >= 20)
+
+            # Hurst filter: only enter TREND breakouts in persistent (H>0.5) markets.
+            # H > 0.5 means the recent price series is trending/persistent → breakouts follow through.
+            # H < 0.5 means mean-reverting → breakouts fail. Uses last 20 Nifty closes.
+            if len(nifty_close) >= 22:
+                _h = _hurst_exp(nifty_close.iloc[-20:])
+                if _h < 0.5:
+                    nifty_allow_trend = False  # mean-reverting: breakouts will fail
 
             # Economic calendar blackout: disabled in daily-bar backtest.
             # The daily bar model already fills at "open" — event day opens are captured
