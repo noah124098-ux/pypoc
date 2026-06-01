@@ -73,6 +73,20 @@ try:
 except ImportError:
     _FII_AVAILABLE = False
 
+try:
+    from core.data.nse_pcr import get_nifty_pcr as _get_nifty_pcr
+    _PCR_AVAILABLE = True
+except ImportError:
+    _PCR_AVAILABLE = False
+    _get_nifty_pcr = None  # type: ignore[assignment]
+
+try:
+    from core.data.nse_vix import get_india_vix as _get_india_vix
+    _VIX_MODULE_AVAILABLE = True
+except ImportError:
+    _VIX_MODULE_AVAILABLE = False
+    _get_india_vix = None  # type: ignore[assignment]
+
 
 def _agent_is_running() -> bool:
     """Check if the paper agent process is alive via PID file."""
@@ -346,6 +360,46 @@ with st.sidebar:
     _run_color = "#2ecc71" if _running else "#e74c3c"
     _run_label = "RUNNING" if _running else "STOPPED"
     st.markdown(f"**Agent:** <span style='color:{_run_color}'>{_run_label}</span>", unsafe_allow_html=True)
+
+    st.sidebar.divider()
+    st.sidebar.subheader("Market Pulse")
+
+    # VIX
+    try:
+        vix_val = snap.get("vix", 0) if snap else 0
+        if vix_val and vix_val > 0:
+            vix_color = "🟢" if vix_val < 15 else ("🟡" if vix_val < 20 else "🔴")
+            st.sidebar.metric(
+                f"{vix_color} India VIX",
+                f"{vix_val:.1f}",
+                help="<15 calm, 15-20 normal, >20 volatile",
+            )
+    except Exception:
+        pass
+
+    # PCR
+    try:
+        if _PCR_AVAILABLE and _get_nifty_pcr is not None:
+            pcr = _get_nifty_pcr()
+            if pcr:
+                pcr_color = "🟢" if pcr > 1.0 else ("🔴" if pcr < 0.7 else "🟡")
+                st.sidebar.metric(
+                    f"{pcr_color} PCR",
+                    f"{pcr:.2f}",
+                    help="Put-Call Ratio. >1.0 bullish, <0.7 bearish",
+                )
+    except Exception:
+        pass
+
+    # FII sentiment
+    try:
+        if _FII_AVAILABLE:
+            sent = get_institutional_sentiment()
+            if sent:
+                sent_display = {"BULLISH": "🟢 FII Buy", "BEARISH": "🔴 FII Sell"}.get(sent, "⚪ Neutral")
+                st.sidebar.metric("FII Sentiment", sent_display)
+    except Exception:
+        pass
 
     st.divider()
     if st.button("Refresh now"):
