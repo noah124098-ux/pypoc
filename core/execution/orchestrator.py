@@ -246,6 +246,13 @@ class Orchestrator:
           dominant, distribution phase), allow_trend_buys is suppressed even when the
           DMA conditions are met.  Returns None when the NSE feed is unavailable
           (fail-open: does not block trading).
+
+        FII/DII institutional sentiment filter:
+          If the 3-day average FII net flow is strongly negative (< -500 crore),
+          allow_trend_buys is suppressed — institutions are net sellers and it is
+          unwise to fight that headwind with new TREND BUY entries.
+          Fail-open: if the fetch returns None (network issue, outside market hours),
+          we do not block trading.
         """
         df = self.nifty_ohlc_daily
         if df is None or len(df) < 55:
@@ -266,6 +273,26 @@ class Orchestrator:
         pcr = get_nifty_pcr()
         if pcr is not None and pcr < 0.7:
             allow_trend = False
+
+        # VIX 18-20 danger zone: suppress TREND BUYs when volatility is elevated.
+        # In live mode self.vix is the real India VIX from NSE (refreshed every 60s).
+        # 18 = elevated but not yet VOLATILE threshold (which is 20).
+        # Applies to TREND BUYs only — RANGE strategies and shorts are not affected.
+        # Fail-open: if vix == 0.0 (not yet fetched), do not block.
+        if self.vix > 0 and self.vix >= 18.0:
+            allow_trend = False
+
+        # FII/DII institutional sentiment gate: suppress TREND BUYs when foreign
+        # institutions are strong net sellers (avg FII net < -500 crore over 3 days).
+        # Fail-open: if get_institutional_sentiment() returns None (fetch failed or
+        # neutral/insufficient data), we do not block trading.
+        try:
+            from core.data.nse_fii_dii import get_institutional_sentiment
+            _fii_sentiment = get_institutional_sentiment()
+        except Exception:
+            _fii_sentiment = None
+        if _fii_sentiment == "BEARISH":
+            allow_trend = False  # institutions are net sellers — don't fight them
 
         return bool(allow_trend), bool(allow_range), bool(allow_any)
 
