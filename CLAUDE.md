@@ -25,7 +25,7 @@ Full protocol: `.claude/MASTER_WORKER.md` — read it immediately after this fil
 
 An automated, regime-aware **paper-trading agent for NSE Nifty 50** that consumes live Angel One SmartAPI tick data, classifies the market into TREND/RANGE/VOLATILE regimes, runs strategy logic appropriate to the regime, and sends every order through a hard guardrails layer with stop-loss, daily-loss circuit, drawdown circuit, and black-swan halts.
 
-**Status:** v1 paper-trading skeleton. **No live broker integration.** Backtest gate must pass before any live deployment is even attempted, and the gate currently fails (see "Open issues" below).
+**Status:** v2 — Phases 3 (live NSE data feeds, economic calendar, EOD Claude reviewer), 5 (Streamlit dashboard with Telegram/email notifications), and 6b (file-based MCP command queue) are now **complete**. Phase 4 (EOD reviewer) is also live. Backtest gate still fails (see "Open issues" below). No live broker integration.
 
 **Repo:** https://github.com/noah124098-ux/pypoc
 
@@ -63,15 +63,19 @@ Test `test_order_methods_are_neutralized_after_login` in `tests/test_angelone_hi
 backtest/        Backtest engine (reuses Phase 1 components verbatim), walk-forward harness, strict gate
 core/
   broker/        IBroker + PaperBroker (slippage + brokerage + auto stop/target)
-  data/          Angel One feed + history, Bhavcopy fallback, tick aggregator, universe
+  data/          Angel One feed + history, Bhavcopy fallback, tick aggregator, universe,
+                 economic_calendar.py (RBI/Budget/FOMC blackouts), nse_vix.py, nse_pcr.py
   regime/        Regime classifier (ADX + BB width + VIX)
   strategies/    Three baseline strategies + IStrategy interface
   risk/          Position sizing + 14 hard guardrails (every order goes through, no overrides)
-  execution/     Orchestrator (live loop wires everything)
+  execution/     Orchestrator (live loop wires everything), command_queue.py (file-based MCP mutations)
   persistence/   SQLite store
+  llm/           EOD Claude reviewer — daily trade analysis and parameter suggestions
+  notifications/ Telegram notifier (trade alerts), email notifier (EOD reports and halt alerts)
   config.py      Pydantic settings loaded from YAML + .env
 mcp_server/      MCP server (read-only) — 10 tools for inspecting the live agent
-tests/           112 passing tests, exhaustive guardrail + NSE data module coverage
+dashboard.py     Streamlit dashboard — equity curve, costs, regime timeline, controls + notification config
+tests/           200 passing tests, exhaustive guardrail + NSE data module + notification coverage
 config/          Default YAML
 cli.py           Entry points: run | warmup | check-config | mcp-server | backtest | walk-forward | check-gate
 ```
@@ -82,7 +86,7 @@ cli.py           Entry points: run | warmup | check-config | mcp-server | backte
 # Activate venv (Windows)
 .\.venv\Scripts\Activate.ps1
 
-# Run the full test suite (must always be 112/112)
+# Run the full test suite (must always be 200/200)
 pytest -q
 
 # Inspect current config + creds
@@ -141,16 +145,31 @@ Windows Server EC2 at `3.239.215.143`. Setup completed:
 
 User decided to **not** use VS Code Remote-SSH — work happens directly on the EC2 over RDP, with VS Code + Claude Code running there.
 
-### 3. Phases not yet built
+### 3. Phase status
 
-| Phase | What |
+| Phase | What | Status |
+| --- | --- | --- |
+| 3 | Live NSE data feeds (VIX, PCR), economic calendar blackouts, EOD Claude reviewer | **DONE** |
+| 4 | EOD reviewer (Claude Opus 4.7) producing parameter-adjustment proposals | **DONE** |
+| 5 | Streamlit dashboard + Telegram alerts + email EOD report | **DONE** |
+| 6b | MCP mutating tools via file-based command-queue (halt_agent, place_paper_order) | **DONE** |
+| 7 | Live broker integration (separate creds, separate guards) | not started |
+| 8 | Live deployment with small capital, after backtest gate + paper proof | not started |
+
+### 4. Recently completed (last 10 commits)
+
+| Commit | What |
 | --- | --- |
-| 3 | News sentiment scorer (Claude) + options PCR/OI feed + FII/DII flows |
-| 4 | EOD reviewer (Claude Opus 4.7) producing parameter-adjustment proposals |
-| 5 | Streamlit dashboard + Telegram alerts + email EOD report |
-| 6b | MCP mutating tools (place_paper_order, halt_agent) via command-queue |
-| 7 | Live broker integration (separate creds, separate guards) |
-| 8 | Live deployment with small capital, after backtest gate + paper proof |
+| 5ce5e28 | Orchestrator processes MCP command queue on each tick (Phase 6b) |
+| f48ad35 | Dashboard: regime timeline chart + DMA status metrics |
+| ad2a554 | File-based command queue for safe MCP mutations |
+| 9393fef | Dashboard: Telegram + email config UI in Controls tab |
+| 4a0fe2f | Orchestrator: wire Telegram halt + EOD notifications |
+| 7e4f65d | Email notifier — EOD reports and halt alerts |
+| 09f5932 | EOD Claude reviewer — daily trade analysis and parameter suggestions |
+| 1833bac | Telegram notifier — trade alerts and daily summary |
+| 3f04f8b | Economic calendar blackout — RBI/Budget/FOMC event guard |
+| ee9b2a0 | Orchestrator: wire live VIX refresh and PCR sentiment filter |
 
 ## User preferences (collaboration style)
 
