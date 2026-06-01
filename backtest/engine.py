@@ -50,6 +50,7 @@ from core.strategies.trend_breakout import TrendBreakout
 from core.strategies.volatility_compression import VolatilityCompression
 from core.strategies.indicators import adx_value
 from core.types import OrderType, Position, Regime, Side, Signal
+from core.data.economic_calendar import is_blackout_day
 
 log = logging.getLogger("backtest.engine")
 
@@ -190,11 +191,24 @@ class BacktestEngine:
             nifty_allow_range = above_200 and rising_50   # RANGE longs need upward DMA slope
             nifty_allow_any   = above_200
 
+            # PCR filter (live mode only).
+            # In backtest we have no historical PCR feed so pcr=None (fail-open).
+            # In live mode get_nifty_pcr() is called inside _nifty_market_filter().
+            # PCR < 0.7 suppresses TREND BUY signals (bearish options-market sentiment).
+            pcr = None  # backtest: PCR filter disabled (insufficient historical PCR data)
+            if pcr is not None and pcr < 0.7:
+                nifty_allow_trend = False
+
             # Nifty ADX filter: breakout/momentum strategies require a strong Nifty trend
             # (ADX >= 20). In choppy recovery markets (ADX 10-18), stock breakouts fail
             # frequently even if DMAs are rising. Only applied to trend_breakout + rsi_momentum.
             nifty_adx = _adx_last(nifty_slice)
             nifty_strong_trend = (nifty_adx is None) or (nifty_adx >= 20)
+
+            # Economic calendar blackout: disabled in daily-bar backtest.
+            # The daily bar model already fills at "open" — event day opens are captured
+            # correctly without special handling. Blackout is enforced in live mode only.
+            blackout = False
 
             for symbol, df in symbol_history.items():
                 history = df.loc[:yday]
@@ -253,6 +267,15 @@ class BacktestEngine:
                         rejected += 1
                         rejection_breakdown["nifty_adx_filter"] = (
                             rejection_breakdown.get("nifty_adx_filter", 0) + 1
+                        )
+                        continue
+
+                    # Economic calendar blackout: no new LONG entries within 2 calendar days
+                    # of RBI MPC, Union Budget, or US FOMC events.
+                    if sig.side == Side.BUY and blackout:
+                        rejected += 1
+                        rejection_breakdown["economic_blackout"] = (
+                            rejection_breakdown.get("economic_blackout", 0) + 1
                         )
                         continue
 
@@ -552,6 +575,8 @@ class BacktestEngine:
 
         20-day annualised stdev of daily returns. Crude but consistent — production runs
         feed actual VIX from the live feed.
+
+        # Live mode uses core.data.nse_vix.get_vix() instead
         """
         if len(nifty) < 20:
             return 15.0
