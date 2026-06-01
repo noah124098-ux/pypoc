@@ -1,20 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git *)",
-      "Bash(.venv/Scripts/python.exe *)",
-      "Bash(.venv\\\\Scripts\\\\python.exe *)",
-      "Bash(pip *)",
-      "Bash(cat *)",
-      "Bash(ls *)",
-      "Bash(mkdir *)",
-      "Bash(grep *)",
-      "Bash(tail *)",
-      "Bash(head *)",
-      "Bash(echo *)",
-      "Bash(sleep *)",
-      "Bash(tasklist *)",
-      "Bash(taskkill *)"
+      "Bash(*)"
     ]
   }
 }
