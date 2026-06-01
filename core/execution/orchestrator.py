@@ -87,6 +87,14 @@ class Orchestrator:
         self.halt_reason = ""
         self._last_vix_fetch: float = 0.0
 
+        try:
+            from core.config import Secrets
+            from core.notifications.telegram import TelegramNotifier
+            _sec = Secrets.from_env()
+            self.telegram = TelegramNotifier(_sec.telegram_bot_token, _sec.telegram_chat_id) if self.s.notifications.telegram_enabled else None
+        except Exception:
+            self.telegram = None
+
     # ---------- public API ----------
 
     def warmup(self) -> None:
@@ -390,6 +398,9 @@ class Orchestrator:
             isinstance(self.broker, PaperBroker) and self.broker._auto_exit(  # type: ignore[attr-defined]
                 pos, pos.last_price or pos.avg_price, "eod_squareoff"
             )
+        if getattr(self, 'telegram', None) and self.s.notifications.telegram_enabled:
+            pnl = getattr(self.broker, 'realized_pnl', 0.0)
+            self.telegram.send_daily_summary(self.broker.equity(), pnl, len(self.broker.trade_log), self.current_regime.regime.value)
 
     def _check_global_halts(self) -> None:
         if self.halted:
@@ -401,9 +412,11 @@ class Orchestrator:
                 self.halted = True
                 self.halt_reason = f"daily loss circuit hit ({day_pnl_pct:.2f}%)"
                 log.error("HALT: %s", self.halt_reason)
+                if getattr(self, 'telegram', None): self.telegram.send_halt_alert(self.halt_reason)
         if self.peak_equity > 0:
             dd_pct = (self.peak_equity - equity) / self.peak_equity * 100.0
             if dd_pct > self.s.risk.drawdown_circuit_pct:
                 self.halted = True
                 self.halt_reason = f"drawdown circuit hit ({dd_pct:.2f}%)"
                 log.error("HALT: %s", self.halt_reason)
+                if getattr(self, 'telegram', None): self.telegram.send_halt_alert(self.halt_reason)
