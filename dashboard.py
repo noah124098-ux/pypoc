@@ -54,12 +54,24 @@ except ImportError:
     _ANTHROPIC_INSTALLED = False
 
 try:
+    from core.llm.news_scorer import score_news
+    _NEWS_SCORER_AVAILABLE = True
+except ImportError:
+    _NEWS_SCORER_AVAILABLE = False
+
+try:
     from core.data.angelone_portfolio import fetch_live_portfolio as _fetch_live_portfolio, AccountSummary as _AccountSummary
     _AO_PORTFOLIO_AVAILABLE = True
 except ImportError:
     _AO_PORTFOLIO_AVAILABLE = False
     _fetch_live_portfolio = None  # type: ignore[assignment]
     _AccountSummary = None  # type: ignore[assignment]
+
+try:
+    from core.data.nse_fii_dii import get_fii_dii_flows, get_institutional_sentiment
+    _FII_AVAILABLE = True
+except ImportError:
+    _FII_AVAILABLE = False
 
 
 def _agent_is_running() -> bool:
@@ -537,6 +549,36 @@ with tab_live:
         st.dataframe(styled, use_container_width=True)
     else:
         st.info("Paper agent has no open positions." + (" (Agent not running)" if not snap else ""))
+
+    st.divider()
+
+    # ── Market Intelligence: FII/DII Flows ───────────────────────────────────
+    with st.expander("📊 Institutional Flows (FII/DII)", expanded=False):
+        if _FII_AVAILABLE:
+            flows = get_fii_dii_flows(days=5)
+            sentiment = get_institutional_sentiment()
+
+            # Sentiment badge
+            if sentiment == "BULLISH":
+                st.success("🟢 FII BULLISH — Institutions are net buyers (avg >₹500cr/day)")
+            elif sentiment == "BEARISH":
+                st.error("🔴 FII BEARISH — Institutions are net sellers (avg <-₹500cr/day)")
+                st.warning("⚠️ TREND BUY signals suppressed by institutional sentiment gate")
+            else:
+                st.info("⚪ FII NEUTRAL — Mixed institutional flows")
+
+            # Flows table
+            if flows:
+                df = pd.DataFrame([{
+                    "Date": f.date, "FII Net (₹Cr)": f"{f.fii_net_inr_cr:+,.0f}",
+                    "DII Net (₹Cr)": f"{f.dii_net_inr_cr:+,.0f}",
+                    "Combined (₹Cr)": f"{f.combined_net:+,.0f}"
+                } for f in flows])
+                st.dataframe(df, hide_index=True, use_container_width=True)
+            else:
+                st.caption("No flow data available (market may be closed)")
+        else:
+            st.caption("FII/DII module not available")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -1426,6 +1468,52 @@ with tab_ai_review:
                 st.warning(_flag)
     else:
         st.info("No review has been run yet. Click 'Run EOD Review Now' above.")
+
+    st.divider()
+
+    # ── News Sentiment Scorer ─────────────────────────────────────────────────
+    st.subheader("📰 News Sentiment Scorer")
+    st.caption("Score news headlines for selected stocks using Claude Haiku")
+
+    selected_symbols = st.multiselect(
+        "Select symbols to score",
+        options=["RELIANCE", "INFY", "TCS", "HDFC", "ICICIBANK", "HCLTECH", "WIPRO", "BAJFINANCE", "LTIM", "AXISBANK"],
+        default=["RELIANCE", "INFY"],
+    )
+
+    # Text area for each selected symbol's headlines
+    headlines_input = {}
+    for sym in selected_symbols:
+        headlines_input[sym] = st.text_area(
+            f"Headlines for {sym} (one per line):",
+            height=80,
+            key=f"headlines_{sym}",
+        )
+
+    if st.button("Score Sentiment", disabled=not _NEWS_SCORER_AVAILABLE):
+        if not os.getenv("ANTHROPIC_API_KEY", ""):
+            st.warning("Set ANTHROPIC_API_KEY in .env to use news scoring")
+        else:
+            api_key = os.getenv("ANTHROPIC_API_KEY", "")
+            results = {}
+            with st.spinner("Scoring with Claude Haiku..."):
+                for sym, raw in headlines_input.items():
+                    lines = [l.strip() for l in raw.splitlines() if l.strip()]
+                    if lines:
+                        score = score_news(sym, lines, api_key=api_key)
+                        results[sym] = score
+
+            if results:
+                for sym, score in results.items():
+                    if score:
+                        color = "🟢" if score.score > 0.2 else ("🔴" if score.score < -0.2 else "⚪")
+                        st.metric(f"{color} {sym}", f"{score.score:+.2f}", f"confidence {score.confidence:.0%}")
+                        st.caption(score.summary)
+            else:
+                st.info("No headlines were entered. Add at least one headline per symbol.")
+
+    if not _NEWS_SCORER_AVAILABLE:
+        st.caption("core.llm.news_scorer could not be imported. Ensure the anthropic package is installed.")
 
 
 # ────────────────────────────────────────────────────────────────────────────
