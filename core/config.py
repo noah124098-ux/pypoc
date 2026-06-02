@@ -178,11 +178,56 @@ class Secrets(BaseModel):
         )
 
 
-def load_settings(path: str | Path = "config/default.yaml") -> Settings:
-    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge *override* into *base*, returning a new dict.
+
+    Nested dicts are merged key-by-key. Any other type (str, int, list …) in
+    *override* replaces the corresponding value in *base* outright.
+    """
+    result = base.copy()
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def load_settings(path: str | Path = "config/default.yaml", env: str | None = None) -> Settings:
+    """Load settings from *path*, then layer environment-specific overrides on top.
+
+    Resolution order (later values win):
+      1. *path* (default: config/default.yaml)
+      2. <config_dir>/environments/<env>.yaml  (sibling of the config directory,
+         resolved relative to the parent of *path*)
+      3. .env / environment variables    (handled by Secrets separately)
+
+    *env* defaults to the ``APP_ENV`` environment variable. When ``APP_ENV``
+    is not set, no overlay is applied and the base config is used as-is.
+    Set ``APP_ENV=dev`` explicitly for lighter capital / verbose logging.
+
+    The environment overlay is looked up relative to the *config file's own
+    directory*, not the process working directory, so tests that pass an
+    absolute tmp-path config get a predictable result even when no
+    environments/ folder exists next to that file.
+    """
+    config_file = Path(path)
+    raw = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+
+    if env is None:
+        env = os.getenv("APP_ENV", None)  # None = use base config only
+
+    # Resolve the overlay path relative to the directory that contains the
+    # config file (e.g. config/ → config/environments/dev.yaml).
+    env_config_path = config_file.parent / "environments" / f"{env}.yaml"
+    if env_config_path.exists():
+        env_raw = yaml.safe_load(env_config_path.read_text(encoding="utf-8"))
+        if env_raw:  # guard against empty file
+            raw = _deep_merge(raw, env_raw)
+
     return Settings.model_validate(raw)
 
 
-def reload_settings(path: str = "config/default.yaml") -> Settings:
+def reload_settings(path: str = "config/default.yaml", env: str | None = None) -> Settings:
     """Reload settings from YAML — call from orchestrator tick to pick up changes."""
-    return load_settings(path)
+    return load_settings(path, env=env)

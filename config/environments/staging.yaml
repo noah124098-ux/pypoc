@@ -1,0 +1,7 @@
+# Staging = paper trading with full production config but separate DB
+capital:
+  initial_inr: 500000
+persistence:
+  sqlite_path: data/agent_staging.db
+logging:
+  level: INFO

@@ -1,0 +1,8 @@
+# Production overrides (post-gate-pass)
+mode: live
+capital:
+  initial_inr: 500000
+persistence:
+  sqlite_path: data/agent_prod.db
+logging:
+  level: WARNING

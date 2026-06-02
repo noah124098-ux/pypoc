@@ -1,0 +1,14 @@
+# Development overrides — lighter capital, more logging, no real notifications
+capital:
+  initial_inr: 100000    # 1 lakh for dev (not 5)
+risk:
+  per_trade_risk_pct: 0.5   # half risk in dev
+  max_open_positions: 3
+  daily_loss_circuit_pct: 5.0   # more permissive circuit in dev
+logging:
+  level: DEBUG
+notifications:
+  telegram_enabled: false
+  email_enabled: false
+persistence:
+  sqlite_path: data/agent_dev.db    # separate DB per env

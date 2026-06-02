@@ -33,7 +33,7 @@ def _build_feed(settings, secrets: Secrets) -> ILiveFeed:
 
 
 def cmd_run(args):
-    settings = load_settings(args.config)
+    settings = load_settings(args.config, env=getattr(args, "env", None))
     secrets = Secrets.from_env()
     log = setup_logging(
         settings.logging.level,
@@ -104,7 +104,7 @@ def cmd_run(args):
 
 
 def cmd_warmup(args):
-    settings = load_settings(args.config)
+    settings = load_settings(args.config, env=getattr(args, "env", None))
     secrets = Secrets.from_env()
     setup_logging(settings.logging.level, settings.logging.file)
     Store(settings.persistence.sqlite_path)
@@ -130,7 +130,7 @@ def cmd_warmup(args):
 
 
 def cmd_check_config(args):
-    settings = load_settings(args.config)
+    settings = load_settings(args.config, env=getattr(args, "env", None))
     secrets = Secrets.from_env()
     print(f"Mode:                 {settings.mode}")
     print(f"Capital:              INR {settings.capital.initial_inr:,.0f}")
@@ -234,7 +234,7 @@ def cmd_backtest(args):
     from backtest.metrics import compute_metrics
     from core.data.universe import resolve_universe
 
-    settings = load_settings(args.config)
+    settings = load_settings(args.config, env=getattr(args, "env", None))
     log = setup_logging(settings.logging.level, settings.logging.file)
     days = args.days or 365
     loader = HistoricalLoader()
@@ -289,7 +289,7 @@ def cmd_walk_forward(args):
     from backtest.walk_forward import run_walk_forward
     from core.data.universe import resolve_universe
 
-    settings = load_settings(args.config)
+    settings = load_settings(args.config, env=getattr(args, "env", None))
     log = setup_logging(settings.logging.level, settings.logging.file)
 
     years = args.years or settings.backtest_gate.walk_forward_years
@@ -376,7 +376,7 @@ def cmd_debug_rejections(args):
     from core.config import load_settings
     from core.data.universe import resolve_universe
 
-    settings = load_settings(args.config)
+    settings = load_settings(args.config, env=getattr(args, "env", None))
 
     # Override capital to a realistic floor so qty=0 rejections vanish from sizing noise.
     debug_capital = args.capital
@@ -529,7 +529,7 @@ def cmd_profile_backtest(args):
     from backtest.metrics import compute_metrics
     from core.data.universe import resolve_universe
 
-    settings = load_settings(args.config)
+    settings = load_settings(args.config, env=getattr(args, "env", None))
     setup_logging("WARNING", None)  # suppress INFO noise during profiling
     days = args.days or 365
     loader = HistoricalLoader()
@@ -626,7 +626,7 @@ def cmd_benchmark_strategies(args):
     from core.data.universe import resolve_universe
     from core.types import Regime
 
-    settings = load_settings(args.config)
+    settings = load_settings(args.config, env=getattr(args, "env", None))
     setup_logging("WARNING", None)
     loader = HistoricalLoader()
     nifty = loader.load_nifty(days=365 + 30)
@@ -755,7 +755,7 @@ def cmd_status(args):
 
     from backtest.gate import GATE_MAX_AGE_DAYS, is_live_allowed, read_gate_result
 
-    settings = load_settings(args.config)
+    settings = load_settings(args.config, env=getattr(args, "env", None))
     snapshot_path = getattr(settings, "snapshot_path", "data/snapshot.json")
 
     # Read snapshot
@@ -865,7 +865,7 @@ def cmd_performance(args):
     """Print a formatted performance report using generate_eod_report()."""
     from core.analytics.performance_report import generate_eod_report
 
-    settings = load_settings(args.config)
+    settings = load_settings(args.config, env=getattr(args, "env", None))
     db_path = settings.persistence.sqlite_path
     snapshot_path = getattr(settings, "snapshot_path", "data/snapshot.json")
     days = args.days
@@ -899,7 +899,7 @@ def cmd_strategy_report(args):
 
     from core.analytics.metrics import compute_strategy_attribution, load_trades_from_db
 
-    settings = load_settings(args.config)
+    settings = load_settings(args.config, env=getattr(args, "env", None))
     db_path = settings.persistence.sqlite_path
     days = args.days
 
@@ -1120,7 +1120,7 @@ def cmd_preflight(args):
     config_ok = False
     config_detail = ""
     try:
-        load_settings(args.config)
+        load_settings(args.config, env=getattr(args, "env", None))
         config_ok = True
     except Exception as exc:
         config_detail = str(exc)[:120]
@@ -1276,7 +1276,7 @@ def cmd_health_check(args):
     # 1. Config loads
     settings = None
     try:
-        settings = load_settings(args.config)
+        settings = load_settings(args.config, env=getattr(args, "env", None))
     except Exception as exc:
         checks_failed.append(f"config: {exc}")
 
@@ -1409,6 +1409,12 @@ def cmd_send_command(args):
 def main():
     parser = argparse.ArgumentParser(prog="nse-agent")
     parser.add_argument("--config", default="config/default.yaml")
+    parser.add_argument(
+        "--env",
+        default=None,
+        choices=["dev", "staging", "prod"],
+        help="Environment config overlay (default: APP_ENV env var, or 'dev' if unset)",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("run").set_defaults(func=cmd_run)
     sub.add_parser("warmup").set_defaults(func=cmd_warmup)
