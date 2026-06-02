@@ -2,7 +2,7 @@
 
 Automated, regime-aware paper-trading agent for NSE (Nifty 50). Consumes live Angel One SmartAPI tick data, classifies the market into TREND/RANGE/VOLATILE regimes, and runs the appropriate strategy. Every order passes through a hard guardrails layer with stop-loss, daily-loss circuit, drawdown circuit, and black-swan halts.
 
-> **Status: v1 paper-trading skeleton.** No live broker integration yet. Backtest gate must pass before any live deployment is even attempted.
+> **Status: v2.** Phases 3–7 complete (live data feeds, EOD reviewer, Streamlit dashboard, Telegram/email alerts, MCP command queue, Upstox/AngelOne broker stubs). 348 tests passing. Backtest gate still failing — correction-market losses in W3 pull the aggregate below thresholds. No live broker integration active.
 
 ## Why this design
 
@@ -26,7 +26,7 @@ cp .env.example .env
 # 3. Validate config
 python cli.py check-config
 
-# 4. Run tests (especially guardrails — these MUST pass)
+# 4. Run tests (especially guardrails — these MUST pass; 348/348 expected)
 pytest -q
 
 # 5. Warmup (downloads daily history for regime + ADV)
@@ -34,7 +34,15 @@ python cli.py warmup
 
 # 6. Run the live agent (paper trading on live data)
 python cli.py run
+
+# 7. (Optional) Launch the Streamlit dashboard in a second terminal
+streamlit run dashboard.py
+
+# 8. (Optional) Run the MCP inspection server in a third terminal
+python cli.py mcp-server
 ```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a full description of every module and how they wire together.
 
 ## Getting Angel One SmartAPI credentials
 
@@ -201,6 +209,30 @@ This:
 python cli.py check-gate
 ```
 
+## Operational monitoring
+
+### Health check
+
+```bash
+# Prints JSON to stdout; exit 0 = healthy, 1 = degraded.
+python cli.py health-check
+
+# EC2 / load-balancer one-liner:
+python cli.py health-check && echo "Agent OK" || echo "Agent DEGRADED"
+```
+
+Output fields:
+
+| Field | Description |
+| --- | --- |
+| `status` | `"ok"` or `"degraded"` |
+| `snapshot_age_seconds` | Seconds since the last snapshot write by the agent |
+| `halted` | `true` if any guardrail or manual halt is active |
+| `last_tick_age` | Seconds since the last market tick was received |
+| `reasons` | List of degraded reasons (only present when `status == "degraded"`) |
+
+The snapshot-staleness check (`> 60 s`) only fires during NSE market hours (Mon-Fri 09:15-15:30 IST) — outside hours an old snapshot is expected and does not degrade the status.
+
 ### Live-mode safety
 
 When `mode: live` in config, `cli.py run` calls `is_live_allowed()` before connecting to the broker. If the gate is missing, failed, or stale, startup aborts with a non-zero exit code. There is no override flag — the only path to live is a passing gate.
@@ -220,13 +252,13 @@ The engine deliberately uses **conservative fill assumptions**:
 | Phase | Status | Description |
 | --- | --- | --- |
 | 1 | done | Skeleton, paper broker, live data, guardrails, strategies, orchestrator, tests |
-| 6 | done | MCP server wrapper with 10 read-only tools |
 | 2 | done | Backtest engine + walk-forward harness + strict gate (Sharpe > 1.2, MaxDD < 15%) |
-| 3 | next | News sentiment scorer (Claude) + options PCR/OI feed + FII/DII flows |
-| 4 | next | EOD reviewer (Claude Opus 4.7) producing parameter-adjustment proposals |
-| 5 | next | Streamlit dashboard + Telegram alerts + email EOD report |
-| 6b | future | MCP mutating tools (place_paper_order, halt_agent) via command-queue |
-| 7 | future | Add live broker (Upstox / Kite) implementations |
+| 6 | done | MCP server wrapper with 10 read-only tools |
+| 3 | done | News sentiment scorer (Claude) + options PCR/OI feed + FII/DII institutional flows |
+| 4 | done | EOD reviewer (Claude Opus 4.7) producing parameter-adjustment proposals |
+| 5 | done | Streamlit dashboard + Telegram alerts + email EOD report |
+| 6b | done | MCP mutating tools (place_paper_order, halt_agent) via file-based command-queue |
+| 7 | done (stub) | Upstox feed stub + AngelOne live broker scaffold; guards in place |
 | 8 | future | Live deployment with small capital, after backtest gate + paper proof |
 
 ## Safety
@@ -241,16 +273,24 @@ The engine deliberately uses **conservative fill assumptions**:
 
 ```text
 core/
-  broker/        # Paper broker + IBroker interface (live brokers added later)
-  data/          # Angel One feed, tick aggregator, historical fetcher, universe
+  broker/        # Paper broker + IBroker interface + angelone_live stub
+  data/          # Angel One feed, tick aggregator, historical fetcher, universe,
+                 # FII/DII flows, VIX, PCR, economic calendar, Upstox feed stub
   regime/        # Regime classifier (ADX + BB width + VIX)
   strategies/    # Three baseline strategies + IStrategy interface
   risk/          # Position sizing + guardrails (the safety-critical module)
-  execution/     # Orchestrator (the main loop)
+  execution/     # Orchestrator (the main loop) + file-based command queue
   persistence/   # SQLite store
+  llm/           # EOD Claude reviewer + news sentiment scorer
+  notifications/ # Telegram notifier + email notifier
   config.py      # Pydantic settings loaded from YAML + .env
   types.py       # Domain types (Tick, Candle, Signal, Order, Position, Regime)
+backtest/        # Backtest engine, walk-forward harness, strict gate
+mcp_server/      # Read-only MCP server (10 tools)
+dashboard.py     # Streamlit dashboard
+scripts/         # EC2 startup scripts (.bat / .ps1)
+docs/            # ARCHITECTURE.md, LIVE_BROKER_SETUP.md
 config/          # YAML config
-tests/           # Pytest suite — guardrails covered exhaustively
-cli.py           # Entry points: run | warmup | check-config
+tests/           # Pytest suite — 348 tests, guardrails covered exhaustively
+cli.py           # Entry points: run | warmup | check-config | mcp-server | backtest | walk-forward | check-gate
 ```

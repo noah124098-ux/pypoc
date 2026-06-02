@@ -25,7 +25,7 @@ Full protocol: `.claude/MASTER_WORKER.md` — read it immediately after this fil
 
 An automated, regime-aware **paper-trading agent for NSE Nifty 50** that consumes live Angel One SmartAPI tick data, classifies the market into TREND/RANGE/VOLATILE regimes, runs strategy logic appropriate to the regime, and sends every order through a hard guardrails layer with stop-loss, daily-loss circuit, drawdown circuit, and black-swan halts.
 
-**Status:** v2 — Phases 3 (live NSE data feeds, economic calendar, EOD Claude reviewer), 5 (Streamlit dashboard with Telegram/email notifications), and 6b (file-based MCP command queue) are now **complete**. Phase 4 (EOD reviewer) is also live. Backtest gate still fails (see "Open issues" below). No live broker integration.
+**Status:** v2 — Phases 3 (live NSE data feeds, economic calendar, EOD Claude reviewer), 4 (EOD reviewer), 5 (Streamlit dashboard with Telegram/email notifications), 6b (file-based MCP command queue), and 7 (Upstox feed stub + angelone_live broker stub) are now **complete**. Backtest gate still fails (see "Open issues" below). No live broker integration active.
 
 **Repo:** https://github.com/noah124098-ux/pypoc
 
@@ -62,22 +62,28 @@ Test `test_order_methods_are_neutralized_after_login` in `tests/test_angelone_hi
 ```text
 backtest/        Backtest engine (reuses Phase 1 components verbatim), walk-forward harness, strict gate
 core/
-  broker/        IBroker + PaperBroker (slippage + brokerage + auto stop/target)
+  broker/        IBroker + PaperBroker (slippage + brokerage + auto stop/target) + angelone_live stub
   data/          Angel One feed + history, Bhavcopy fallback, tick aggregator, universe,
-                 economic_calendar.py (RBI/Budget/FOMC blackouts), nse_vix.py, nse_pcr.py
+                 economic_calendar.py (RBI/Budget/FOMC blackouts), nse_vix.py, nse_pcr.py,
+                 nse_fii_dii.py (institutional flows), upstox_feed.py (Upstox feed stub),
+                 angelone_portfolio.py, historical.py, feed_base.py
   regime/        Regime classifier (ADX + BB width + VIX)
   strategies/    Three baseline strategies + IStrategy interface
   risk/          Position sizing + 14 hard guardrails (every order goes through, no overrides)
   execution/     Orchestrator (live loop wires everything), command_queue.py (file-based MCP mutations)
   persistence/   SQLite store
   llm/           EOD Claude reviewer — daily trade analysis and parameter suggestions
+                 news_scorer.py — Claude-based news sentiment scoring
   notifications/ Telegram notifier (trade alerts), email notifier (EOD reports and halt alerts)
   config.py      Pydantic settings loaded from YAML + .env
 mcp_server/      MCP server (read-only) — 10 tools for inspecting the live agent
 dashboard.py     Streamlit dashboard — equity curve, costs, regime timeline, controls + notification config
-tests/           200 passing tests, exhaustive guardrail + NSE data module + notification coverage
+tests/           348 passing tests, exhaustive guardrail + NSE data module + notification coverage
 config/          Default YAML
 cli.py           Entry points: run | warmup | check-config | mcp-server | backtest | walk-forward | check-gate
+scripts/         Windows startup scripts (start_agent.bat, start_dashboard.bat, start_mcp.bat,
+                 run_walkforward.bat, health_check.ps1) for EC2 deployment
+docs/            ARCHITECTURE.md (full system design), LIVE_BROKER_SETUP.md (Phase 7 guide)
 ```
 
 ## How to run anything
@@ -86,7 +92,7 @@ cli.py           Entry points: run | warmup | check-config | mcp-server | backte
 # Activate venv (Windows)
 .\.venv\Scripts\Activate.ps1
 
-# Run the full test suite (must always be 200/200)
+# Run the full test suite (must always be 348/348)
 pytest -q
 
 # Inspect current config + creds
@@ -110,25 +116,23 @@ python cli.py mcp-server
 
 ## Open issues — pick up here
 
-### 1. Backtest gate failed — W3 correction market hurts aggregate
+### 1. Backtest gate failed — correction market hurts aggregate
 
-Current best walk-forward (pinned `--end-date 2026-05-29`):
+Current gate run (as of 2026-06-02, pinned `--end-date 2026-05-29`):
 
 ```text
-W1 (2023-05 -> 2024-05):  ~80 trades, Sharpe ~1.67, MaxDD ~5%, win ~43%, pf ~1.78  ✓
-W2 (2024-05 -> 2025-05):  ~43 trades, Sharpe ~0.20, MaxDD ~7%, win ~30%, pf ~1.32
-W3 (2025-05 -> 2026-05):  ~59 trades, Sharpe ~-1.26, MaxDD ~10%, win ~29%, pf ~0.86
-Aggregate: ~190 trades, Sharpe ~0.42, MaxDD ~10.5%, win ~35.8%, pf ~1.41
-Gate FAILED: sharpe (0.42 < 1.2), win_rate (35.8% < 45%), profit_factor (1.41 < 1.5)
+Aggregate: 154 trades, Sharpe -0.31, MaxDD 19.6%, win 33.8%, pf 1.11
+Gate FAILED: sharpe (-0.31 < 1.2), max_drawdown_pct (19.6% > 15%), win_rate (33.8% < 45%), profit_factor (1.11 < 1.5)
 ```
 
-**Root cause:** W3 (May 2025–Jun 2026) is a correction+recovery market. All long-only
-trend strategies fail in this period. Per-strategy W3 damage: `trend_breakout`
-(-₹19,912, 20% win), `rsi_momentum` (-₹11,734, 0% win).
+**Root cause:** The 2025–2026 correction+recovery market severely damages long-only
+trend strategies. Both `trend_breakout` and `rsi_momentum` generate heavy losses in
+the correction window with near-zero win rates.
 
 **What's been tried that DEGRADES results** (see memory `project_gate_status.md`):
-every stock-level DMA filter, 52-week-high filter, regime directionality check —
-all hurt W1 more than they help W3.
+every stock-level DMA filter, 52-week-high filter, regime directionality check,
+rolling autocorr filter — all hurt earlier windows more than they help the correction window.
+The autocorr filter commit was reverted (c0136df).
 
 **Reproducible gate run:** `python cli.py walk-forward --years 3 --end-date 2026-05-29`
 
@@ -140,7 +144,8 @@ Windows Server EC2 at `3.239.215.143`. Setup completed:
 - Git, Python 3.12, VS Code, Node.js installed via Chocolatey
 - Repo cloned to `C:\Users\Administrator\pypoc`
 - `.venv` created, `pip install -r requirements.txt` succeeded
-- 80/80 tests pass
+- 348/348 tests pass
+- Startup scripts in `scripts/` for agent, dashboard, MCP, walk-forward, and health check
 - OpenSSH server running but **port 22 currently blocked at AWS Security Group** (user's IP not whitelisted)
 
 User decided to **not** use VS Code Remote-SSH — work happens directly on the EC2 over RDP, with VS Code + Claude Code running there.
@@ -153,23 +158,23 @@ User decided to **not** use VS Code Remote-SSH — work happens directly on the 
 | 4 | EOD reviewer (Claude Opus 4.7) producing parameter-adjustment proposals | **DONE** |
 | 5 | Streamlit dashboard + Telegram alerts + email EOD report | **DONE** |
 | 6b | MCP mutating tools via file-based command-queue (halt_agent, place_paper_order) | **DONE** |
-| 7 | Live broker integration (separate creds, separate guards) | not started |
+| 7 | Live broker integration stub — Upstox feed + angelone_live broker scaffold | **DONE (stub)** |
 | 8 | Live deployment with small capital, after backtest gate + paper proof | not started |
 
 ### 4. Recently completed (last 10 commits)
 
 | Commit | What |
 | --- | --- |
-| 5ce5e28 | Orchestrator processes MCP command queue on each tick (Phase 6b) |
-| f48ad35 | Dashboard: regime timeline chart + DMA status metrics |
-| ad2a554 | File-based command queue for safe MCP mutations |
-| 9393fef | Dashboard: Telegram + email config UI in Controls tab |
-| 4a0fe2f | Orchestrator: wire Telegram halt + EOD notifications |
-| 7e4f65d | Email notifier — EOD reports and halt alerts |
-| 09f5932 | EOD Claude reviewer — daily trade analysis and parameter suggestions |
-| 1833bac | Telegram notifier — trade alerts and daily summary |
-| 3f04f8b | Economic calendar blackout — RBI/Budget/FOMC event guard |
-| ee9b2a0 | Orchestrator: wire live VIX refresh and PCR sentiment filter |
+| c0136df | Revert rolling autocorr filter — degraded W1/W2, net negative for gate |
+| d9d28bc | fix: add UPSTOX_API_KEY/ACCESS_TOKEN to Secrets model for Upstox feed |
+| 7d9a614 | fix: restore best-known config baseline + add Upstox feed stub |
+| 523d018 | ops: Windows startup scripts + health check for EC2 deployment |
+| a0c807c | fix(tests): fix test_get_config_summary after new config fields added |
+| 22979ab | fix(tests): correct synthetic data for bb_squeeze, supertrend smoke tests |
+| bbdb7f5 | feat(regime): add rolling autocorr filter to TREND classification (reverted) |
+| bc7c55e | feat(dashboard): Market Pulse sidebar with VIX, PCR, and FII sentiment |
+| fd6476c | feat(dashboard): FII/DII institutional flows panel in Live tab |
+| 3104b56 | feat(orchestrator): FII/DII institutional sentiment gate for TREND BUYs |
 
 ## User preferences (collaboration style)
 
