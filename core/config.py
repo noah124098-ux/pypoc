@@ -179,3 +179,8 @@ class Secrets(BaseModel):
 def load_settings(path: str | Path = "config/default.yaml") -> Settings:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     return Settings.model_validate(raw)
+
+
+def reload_settings(path: str = "config/default.yaml") -> Settings:
+    """Reload settings from YAML — call from orchestrator tick to pick up changes."""
+    return load_settings(path)

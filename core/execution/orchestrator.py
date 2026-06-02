@@ -20,7 +20,7 @@ import pandas as pd
 
 from core.broker.base import IBroker
 from core.broker.paper import PaperBroker
-from core.config import Settings
+from core.config import Settings, reload_settings
 from core.data.aggregator import CandleAggregator
 from core.data.feed_base import ILiveFeed
 from core.data.historical import fetch_daily
@@ -87,6 +87,7 @@ class Orchestrator:
         self.halted = False
         self.halt_reason = ""
         self._last_vix_fetch: float = 0.0
+        self._last_config_reload: float = 0.0
 
         try:
             from core.config import Secrets
@@ -158,6 +159,25 @@ class Orchestrator:
             if fresh_vix is not None:
                 self.vix = fresh_vix
             self._last_vix_fetch = time.time()
+
+        # Reload only safe risk params from YAML every 60 seconds so the operator
+        # can tweak per_trade_risk_pct / max_open_positions / circuit thresholds
+        # without restarting the agent.  Universe, mode, and execution fields are
+        # intentionally NOT reloaded — changing those at runtime is unsafe.
+        if time.time() - self._last_config_reload > 60:
+            try:
+                config_path = self.s.config_path if hasattr(self.s, "config_path") else "config/default.yaml"
+                new_settings = reload_settings(config_path)
+                self.s.risk.per_trade_risk_pct = new_settings.risk.per_trade_risk_pct
+                self.s.risk.max_open_positions = new_settings.risk.max_open_positions
+                self.s.risk.daily_loss_circuit_pct = new_settings.risk.daily_loss_circuit_pct
+                self.s.risk.drawdown_circuit_pct = new_settings.risk.drawdown_circuit_pct
+                self.guardrails = Guardrails(self.s.risk, self.s.market, self.s.execution)
+                log.debug("Config reloaded from disk")
+            except Exception as e:
+                log.warning("Config reload failed: %s", e)
+            self._last_config_reload = time.time()
+
         self.store.record_equity(
             cash=self.broker.cash(),
             equity=equity,
@@ -444,6 +464,22 @@ class Orchestrator:
                                 strategy=cmd.params.get("strategy", "manual"),
                             )
                             update_status(cmd.id, "done", f"order {order.id} {order.status.value}")
+
+                    elif cmd.type == "reload_config":
+                        try:
+                            config_path = self.s.config_path if hasattr(self.s, "config_path") else "config/default.yaml"
+                            new_settings = reload_settings(config_path)
+                            self.s.risk.per_trade_risk_pct = new_settings.risk.per_trade_risk_pct
+                            self.s.risk.max_open_positions = new_settings.risk.max_open_positions
+                            self.s.risk.daily_loss_circuit_pct = new_settings.risk.daily_loss_circuit_pct
+                            self.s.risk.drawdown_circuit_pct = new_settings.risk.drawdown_circuit_pct
+                            self.guardrails = Guardrails(self.s.risk, self.s.market, self.s.execution)
+                            self._last_config_reload = time.time()
+                            log.info("Config reloaded via command queue")
+                            update_status(cmd.id, "done", "config reloaded")
+                        except Exception as e:
+                            update_status(cmd.id, "rejected", f"reload failed: {e}")
+
                     else:
                         update_status(cmd.id, "rejected", f"unknown command type: {cmd.type}")
                 except Exception as e:
