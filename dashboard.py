@@ -97,6 +97,11 @@ except ImportError:
     _get_india_vix = None  # type: ignore[assignment]
 
 
+def _safe_html(text: str) -> str:
+    """Escape user-controlled or LLM-generated text before injecting into HTML."""
+    return _html.escape(str(text) if text else "")
+
+
 def _agent_is_running() -> bool:
     """Check if the paper agent process is alive via PID file."""
     if not AGENT_PID_PATH.exists():
@@ -454,7 +459,7 @@ with st.sidebar:
 
     mode = config.get("mode", "unknown").upper()
     mode_color = "#e74c3c" if mode == "LIVE" else "#2ecc71"
-    st.markdown(f"**Mode:** <span style='color:{mode_color}'>{mode}</span>", unsafe_allow_html=True)
+    st.markdown(f"**Mode:** <span style='color:{mode_color}'>{_safe_html(mode)}</span>", unsafe_allow_html=True)
 
     capital = config.get("capital", {}).get("initial_inr", 0)
     st.markdown(f"**Capital:** ₹{capital:,.0f}")
@@ -1843,17 +1848,17 @@ with tab_positions:
                 # Header row: Symbol + Strategy badge + Side badge
                 _hc1, _hc2, _hc3 = st.columns([3, 2, 1])
                 _hc1.markdown(
-                    f"<span style='font-size:1.3em;font-weight:700;color:#f0f0f0'>{_sym}</span>",
+                    f"<span style='font-size:1.3em;font-weight:700;color:#f0f0f0'>{_safe_html(_sym)}</span>",
                     unsafe_allow_html=True,
                 )
                 _hc2.markdown(
                     f"<span style='background:{_strat_color};color:white;padding:3px 10px;"
-                    f"border-radius:12px;font-size:0.8em;font-weight:600'>{_strategy}</span>",
+                    f"border-radius:12px;font-size:0.8em;font-weight:600'>{_safe_html(_strategy)}</span>",
                     unsafe_allow_html=True,
                 )
                 _hc3.markdown(
                     f"<span style='background:{_side_color};color:white;padding:3px 10px;"
-                    f"border-radius:12px;font-size:0.8em;font-weight:700'>{_side}</span>",
+                    f"border-radius:12px;font-size:0.8em;font-weight:700'>{_safe_html(_side)}</span>",
                     unsafe_allow_html=True,
                 )
 
@@ -2098,7 +2103,7 @@ with tab_replay:
             f"<div style='margin-top:8px'>"
             f"<span style='background:{_rpl_exit_color};color:white;padding:4px 14px;"
             f"border-radius:12px;font-weight:700;font-size:0.95em'>"
-            f"Exit: {_rpl_exit_reason or 'UNKNOWN'}</span>"
+            f"Exit: {_safe_html(_rpl_exit_reason or 'UNKNOWN')}</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -2113,7 +2118,7 @@ with tab_replay:
             f"<div style='text-align:center'>"
             f"<small style='color:#888'>Regime at Entry</small><br>"
             f"<span style='background:{_rpl_regime_color};color:white;padding:3px 12px;"
-            f"border-radius:10px;font-weight:700'>{_rpl_regime}</span>"
+            f"border-radius:10px;font-weight:700'>{_safe_html(_rpl_regime)}</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -2599,7 +2604,7 @@ with tab_regime:
     rc1.markdown(
         f"<div style='background:{regime_color};padding:16px;border-radius:8px;text-align:center'>"
         f"<h3 style='color:white;margin:0'>Current Regime</h3>"
-        f"<h2 style='color:white;margin:4px 0'>{current_regime}</h2></div>",
+        f"<h2 style='color:white;margin:4px 0'>{_safe_html(current_regime)}</h2></div>",
         unsafe_allow_html=True,
     )
     halt_bg = "#e74c3c" if halted else "#2ecc71"
@@ -3844,17 +3849,17 @@ Respond in 3–5 sentences. Be direct and actionable. Do not disclaim about data
                 )
                 _se_c1, _se_c2, _se_c3, _se_c4 = st.columns([2, 2, 2, 1])
                 _se_c1.markdown(
-                    f"<b style='color:#f0f0f0'>{_se_sym}</b> "
-                    f"<span style='color:#aaa;font-size:0.85em'>{_se_side} · {_se_strat}</span>",
+                    f"<b style='color:#f0f0f0'>{_safe_html(_se_sym)}</b> "
+                    f"<span style='color:#aaa;font-size:0.85em'>{_safe_html(_se_side)} · {_safe_html(_se_strat)}</span>",
                     unsafe_allow_html=True,
                 )
                 _se_c2.markdown(
-                    f"<span style='color:#aaa;font-size:0.85em'>Regime: {_se_regime} · "
+                    f"<span style='color:#aaa;font-size:0.85em'>Regime: {_safe_html(_se_regime)} · "
                     f"₹{float(_se_price or 0):,.0f}</span>",
                     unsafe_allow_html=True,
                 )
                 _se_c3.markdown(
-                    f"<span style='color:#888;font-size:0.8em'>{_se_ts}</span>",
+                    f"<span style='color:#888;font-size:0.8em'>{_safe_html(_se_ts)}</span>",
                     unsafe_allow_html=True,
                 )
                 _se_c4.markdown(
@@ -3943,18 +3948,18 @@ Respond in 3–5 sentences. Be direct and actionable. Do not disclaim about data
             )
             _ps_col1, _ps_col2, _ps_col3 = st.columns([2, 2, 2])
             _ps_col1.markdown(
-                f"<b style='color:#f0f0f0'>{_ps_strat}</b><br>"
-                f"<span style='color:#aaa;font-size:0.85em'>{_ps_param}</span>",
+                f"<b style='color:#f0f0f0'>{_safe_html(_ps_strat)}</b><br>"
+                f"<span style='color:#aaa;font-size:0.85em'>{_safe_html(_ps_param)}</span>",
                 unsafe_allow_html=True,
             )
             _ps_col2.markdown(
-                f"<span style='color:#e74c3c;font-weight:600'>{_ps_cur}</span>"
+                f"<span style='color:#e74c3c;font-weight:600'>{_safe_html(str(_ps_cur))}</span>"
                 f"<span style='color:#aaa'> → </span>"
-                f"<span style='color:#2ecc71;font-weight:600'>{_ps_sug}</span>",
+                f"<span style='color:#2ecc71;font-weight:600'>{_safe_html(str(_ps_sug))}</span>",
                 unsafe_allow_html=True,
             )
             _ps_col3.markdown(
-                f"<span style='color:#aaa;font-size:0.85em'>{_ps_rat}</span>",
+                f"<span style='color:#aaa;font-size:0.85em'>{_safe_html(_ps_rat)}</span>",
                 unsafe_allow_html=True,
             )
 
@@ -3979,7 +3984,7 @@ Respond in 3–5 sentences. Be direct and actionable. Do not disclaim about data
                         st.error(f"Failed to queue change: {_ps_exc}")
             else:
                 st.markdown(
-                    f"<span style='color:#2ecc71;font-size:0.85em'>Applied: {_ps_param} set to {_ps_sug}</span>",
+                    f"<span style='color:#2ecc71;font-size:0.85em'>Applied: {_safe_html(_ps_param)} set to {_safe_html(str(_ps_sug))}</span>",
                     unsafe_allow_html=True,
                 )
             st.markdown("</div>", unsafe_allow_html=True)
@@ -4180,12 +4185,12 @@ with tab_controls:
     if _ctrl_halted:
         _ctrl_status_label = "HALTED"
         _ctrl_status_bg = "#c0392b"
-        _ctrl_status_detail = f"Halt reason: {_ctrl_halt_reason or 'unknown'}"
+        _ctrl_status_detail = f"Halt reason: {_safe_html(_ctrl_halt_reason or 'unknown')}"
     elif ctrl_running:
         _ctrl_status_label = "RUNNING"
         _ctrl_status_bg = "#1a7a4a"
         _ctrl_status_detail = (
-            f"Regime: {_ctrl_regime} &nbsp;|&nbsp; Last signal: {_ctrl_last_sig} "
+            f"Regime: {_safe_html(_ctrl_regime)} &nbsp;|&nbsp; Last signal: {_safe_html(_ctrl_last_sig)} "
             f"&nbsp;|&nbsp; Market: {'OPEN' if _ctrl_in_market else 'CLOSED'}"
         )
     else:
@@ -4633,11 +4638,11 @@ with tab_controls:
             <tr><td style='padding:3px 0'><b>Universe</b></td>
                 <td>Nifty 50 (50 symbols)</td></tr>
             <tr><td style='padding:3px 0'><b>Active Strategies</b></td>
-                <td>{_enabled_count} enabled</td></tr>
+                <td>{_safe_html(str(_enabled_count))} enabled</td></tr>
             <tr><td style='padding:3px 0'><b>Per-trade risk</b></td>
-                <td>{_per_trade_pct}% of equity</td></tr>
+                <td>{_safe_html(str(_per_trade_pct))}% of equity</td></tr>
             <tr><td style='padding:3px 0'><b>Max positions</b></td>
-                <td>{_max_pos_profile}</td></tr>
+                <td>{_safe_html(str(_max_pos_profile))}</td></tr>
             <tr><td style='padding:3px 0'><b>Starting capital</b></td>
                 <td>&#8377;{_initial_inr_profile:,}</td></tr>
             </table>
@@ -4652,15 +4657,15 @@ with tab_controls:
             <b style='color:#3498db;font-size:1.05em'>Gate &amp; Mode</b><br><br>
             <table style='width:100%;color:#ddd;border-collapse:collapse'>
             <tr><td style='padding:3px 0'><b>Mode</b></td>
-                <td><span style='color:{_mode_col_profile};font-weight:bold'>{_mode_profile}</span></td></tr>
+                <td><span style='color:{_mode_col_profile};font-weight:bold'>{_safe_html(_mode_profile)}</span></td></tr>
             <tr><td style='padding:3px 0'><b>Backtest gate</b></td>
                 <td><span style='color:{_gate_col_profile};font-weight:bold'>{_gate_lbl_profile}</span></td></tr>
             <tr><td style='padding:3px 0'><b>Daily loss circuit</b></td>
-                <td>-{_risk_profile.get("daily_loss_circuit_pct", "—")}%</td></tr>
+                <td>-{_safe_html(str(_risk_profile.get("daily_loss_circuit_pct", "—")))}%</td></tr>
             <tr><td style='padding:3px 0'><b>Drawdown circuit</b></td>
-                <td>-{_risk_profile.get("drawdown_circuit_pct", "—")}%</td></tr>
+                <td>-{_safe_html(str(_risk_profile.get("drawdown_circuit_pct", "—")))}%</td></tr>
             <tr><td style='padding:3px 0'><b>Max position size</b></td>
-                <td>{_risk_profile.get("max_position_pct", "—")}% of equity</td></tr>
+                <td>{_safe_html(str(_risk_profile.get("max_position_pct", "—")))}% of equity</td></tr>
             </table>
             </div>
             """,
@@ -4720,8 +4725,8 @@ with tab_controls:
     _ma_col3.markdown(
         f"<div style='padding:10px;background:#1e2836;border-radius:6px;"
         f"font-size:0.85em;color:#aaa;height:100%'>"
-        f"<b style='color:#f39c12'>{_selected_profile_name}</b><br>"
-        f"{_sel_prof['description']}<br>"
+        f"<b style='color:#f39c12'>{_safe_html(_selected_profile_name)}</b><br>"
+        f"{_safe_html(_sel_prof['description'])}<br>"
         f"Risk: {_sel_prof['per_trade_risk_pct']}% &nbsp;|&nbsp; "
         f"Max pos: {_sel_prof['max_open_positions']}</div>",
         unsafe_allow_html=True,
