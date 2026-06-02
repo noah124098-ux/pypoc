@@ -134,6 +134,10 @@ class Secrets(BaseModel):
     angel_one_live_password: str = ""
     angel_one_live_totp_secret: str = ""
 
+    # Upstox alternative data feed (stub — requires upstox_api2 package).
+    upstox_api_key: str = ""
+    upstox_access_token: str = ""
+
     anthropic_api_key: str = ""
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
@@ -158,6 +162,8 @@ class Secrets(BaseModel):
             angel_one_live_client_code=os.getenv("ANGEL_ONE_LIVE_CLIENT_CODE", ""),
             angel_one_live_password=os.getenv("ANGEL_ONE_LIVE_PASSWORD", ""),
             angel_one_live_totp_secret=os.getenv("ANGEL_ONE_LIVE_TOTP_SECRET", ""),
+            upstox_api_key=os.getenv("UPSTOX_API_KEY", ""),
+            upstox_access_token=os.getenv("UPSTOX_ACCESS_TOKEN", ""),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
