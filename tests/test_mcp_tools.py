@@ -160,7 +160,10 @@ def test_get_universe(tools):
     assert "RELIANCE" in u["symbols"]
 
 
-def test_get_config_summary(tools):
+def test_get_config_summary(tools, monkeypatch):
+    # Run without environment overlay so we get the base config values.
+    # config/environments/dev.yaml would otherwise lower per_trade_risk_pct to 0.5.
+    monkeypatch.setenv("APP_ENV", "test")  # 'test' env has no overlay file
     cfg = tools.get_config_summary()
     assert cfg["mode"] == "paper"
     assert cfg["risk"]["per_trade_risk_pct"] == 1.0
