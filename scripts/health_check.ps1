@@ -101,6 +101,113 @@ if (Test-Path $logPath) {
     $result.checks.log_size = [ordered]@{ ok = $true; message = "logs\agent.log not found (agent not started yet)" }
 }
 
+# ── 5. pypoc-dashboard service ───────────────────────────────────────────────
+try {
+    $dashSvc = sc.exe query pypoc-dashboard 2>&1 | Out-String
+    $dashRunning = $dashSvc -match "RUNNING"
+    $result.checks.service_dashboard = [ordered]@{
+        ok      = $dashRunning
+        message = if ($dashRunning) { "pypoc-dashboard is RUNNING" } else { "pypoc-dashboard is NOT running" }
+    }
+    if (-not $dashRunning) {
+        $result.warnings += "pypoc-dashboard not running"
+    }
+} catch {
+    $result.checks.service_dashboard = [ordered]@{ ok = $false; message = "Could not query pypoc-dashboard: $_" }
+    $result.warnings += "pypoc-dashboard query failed"
+}
+
+# ── 6. pypoc-mcp service ─────────────────────────────────────────────────────
+try {
+    $mcpSvc = sc.exe query pypoc-mcp 2>&1 | Out-String
+    $mcpRunning = $mcpSvc -match "RUNNING"
+    $result.checks.service_mcp = [ordered]@{
+        ok      = $mcpRunning
+        message = if ($mcpRunning) { "pypoc-mcp is RUNNING" } else { "pypoc-mcp is NOT running" }
+    }
+    if (-not $mcpRunning) {
+        $result.warnings += "pypoc-mcp not running"
+    }
+} catch {
+    $result.checks.service_mcp = [ordered]@{ ok = $false; message = "Could not query pypoc-mcp: $_" }
+    $result.warnings += "pypoc-mcp query failed"
+}
+
+# ── 7. Last Telegram notification (within last 60 min) ───────────────────────
+$logPath2 = Join-Path $RepoRoot "logs\agent.log"
+if (Test-Path $logPath2) {
+    try {
+        # Read the last 500 lines to find a recent Telegram entry
+        $lines       = Get-Content $logPath2 -Tail 500
+        $telegramLine = $lines | Where-Object { $_ -match "Telegram" } | Select-Object -Last 1
+        if ($telegramLine) {
+            # Try to extract an ISO timestamp from the log line (format: 2026-06-02T...)
+            $tsMatch = [regex]::Match($telegramLine, '\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}')
+            if ($tsMatch.Success) {
+                $telegramTs  = [DateTime]::Parse($tsMatch.Value)
+                $telegramAge = [int]((Get-Date) - $telegramTs).TotalMinutes
+                $telegramOk  = $telegramAge -lt 60
+                $result.checks.telegram = [ordered]@{
+                    ok          = $telegramOk
+                    age_minutes = $telegramAge
+                    message     = if ($telegramOk) { "Last Telegram msg $telegramAge min ago" } else { "Last Telegram msg $telegramAge min ago (>60 min)" }
+                }
+                if (-not $telegramOk) {
+                    $result.warnings += "Telegram silent for $telegramAge min"
+                }
+            } else {
+                $result.checks.telegram = [ordered]@{ ok = $true; message = "Telegram entries found (timestamp unparseable)" }
+            }
+        } else {
+            $result.checks.telegram = [ordered]@{ ok = $false; message = "No Telegram entries found in last 500 log lines" }
+            $result.warnings += "No recent Telegram activity"
+        }
+    } catch {
+        $result.checks.telegram = [ordered]@{ ok = $false; message = "Error reading agent.log: $_" }
+    }
+} else {
+    $result.checks.telegram = [ordered]@{ ok = $true; message = "agent.log not found — skipping Telegram check" }
+}
+
+# ── 8. Gate validity (backtest_gate.json <= 30 days old) ─────────────────────
+$gatePath = Join-Path $RepoRoot "data\backtest_gate.json"
+$gateValid = $false
+$gateAgeDays = $null
+if (Test-Path $gatePath) {
+    try {
+        $gateContent = Get-Content $gatePath -Raw | ConvertFrom-Json
+        # Accept either .run_date or .timestamp field
+        $gateDateStr = if ($gateContent.run_date) { $gateContent.run_date } elseif ($gateContent.timestamp) { $gateContent.timestamp } else { $null }
+        if ($gateDateStr) {
+            $gateDate    = [DateTime]::Parse($gateDateStr)
+            $gateAgeDays = [int]((Get-Date) - $gateDate).TotalDays
+            $gateValid   = $gateAgeDays -le 30
+        }
+        $result.checks.gate = [ordered]@{
+            ok       = $gateValid
+            age_days = $gateAgeDays
+            message  = if ($gateValid) { "Gate is $gateAgeDays days old (valid)" } elseif ($null -eq $gateAgeDays) { "Could not parse gate date" } else { "Gate is $gateAgeDays days old (>30 — stale)" }
+        }
+        if (-not $gateValid) {
+            $result.warnings += if ($null -eq $gateAgeDays) { "gate date unparseable" } else { "Gate stale: $gateAgeDays days" }
+        }
+    } catch {
+        $result.checks.gate = [ordered]@{ ok = $false; message = "Error reading backtest_gate.json: $_" }
+        $result.warnings += "gate file parse error"
+    }
+} else {
+    $result.checks.gate = [ordered]@{ ok = $false; message = "backtest_gate.json not found" }
+    $result.warnings += "gate file missing"
+}
+
+# ── Summarised service map (for quick top-level access) ──────────────────────
+$result["services"] = [ordered]@{
+    dashboard = $result.checks.service_dashboard.ok
+    mcp       = $result.checks.service_mcp.ok
+}
+$result["snapshot_age"] = if ($result.checks.snapshot.age_sec) { $result.checks.snapshot.age_sec } else { $null }
+$result["gate_valid"]   = $gateValid
+
 # ── Output ───────────────────────────────────────────────────────────────────
 $json = $result | ConvertTo-Json -Depth 5
 Write-Output $json
