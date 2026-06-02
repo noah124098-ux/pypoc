@@ -9,15 +9,12 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from dashboard.design import COLORS, REGIME_COLORS, _badge, _metric_card, _section, regime_hex
 from dashboard.utils.charts import safe_html, regime_color
 from dashboard.utils.db import query_df
 
-_REGIME_COLOR_MAP = {
-    "TREND": "#2ecc71",
-    "RANGE": "#3498db",
-    "VOLATILE": "#e67e22",
-    "UNKNOWN": "#95a5a6",
-}
+# Use canonical palette from design module
+_REGIME_COLOR_MAP = REGIME_COLORS
 _REGIME_ORDER = ["TREND", "RANGE", "VOLATILE", "UNKNOWN"]
 
 
@@ -86,7 +83,7 @@ def render(snap: dict, conn) -> None:
         f"<h2 style='color:white;margin:4px 0'>{safe_html(current_regime)}</h2></div>",
         unsafe_allow_html=True,
     )
-    halt_bg = "#e74c3c" if halted else "#2ecc71"
+    halt_bg = COLORS["loss"] if halted else COLORS["profit"]
     rc2.markdown(
         f"<div style='background:{halt_bg};padding:16px;border-radius:8px;text-align:center'>"
         f"<h3 style='color:white;margin:0'>Agent Status</h3>"
@@ -121,7 +118,7 @@ def render(snap: dict, conn) -> None:
 
     _dma_status = _nifty_dma_status(conn, _nifty_ltp)
 
-    def _yn_metric(col, label: str, value, true_color: str = "#2ecc71", false_color: str = "#e74c3c"):
+    def _yn_metric(col, label: str, value, true_color: str = COLORS["profit"], false_color: str = COLORS["loss"]):
         """Render a Yes/No/N/A metric with color."""
         if value is None:
             col.metric(label, "N/A")
@@ -146,7 +143,7 @@ def render(snap: dict, conn) -> None:
     _yn_metric(dma_c4, "50-DMA Rising", _dma_status["dma50_rising"])
 
     if _pcr_val is not None:
-        pcr_color = "#2ecc71" if _pcr_val > 1.0 else ("#e74c3c" if _pcr_val < 0.7 else "#f39c12")
+        pcr_color = COLORS["profit"] if _pcr_val > 1.0 else (COLORS["loss"] if _pcr_val < 0.7 else COLORS["warning"])
         dma_c5.markdown(
             f"<div style='text-align:center'>"
             f"<small style='color:#888'>PCR</small><br>"
@@ -298,13 +295,13 @@ def render(snap: dict, conn) -> None:
             _fig_fii = _go_fii.Figure()
             _fig_fii.add_trace(_go_fii.Bar(
                 x=_dates, y=_fii_vals, name="FII Net",
-                marker_color=["#2980b9" if v >= 0 else "#c0392b" for v in _fii_vals],
+                marker_color=[COLORS["accent"] if v >= 0 else COLORS["loss"] for v in _fii_vals],
                 text=[f"₹{v:+,.0f}Cr" for v in _fii_vals],
                 textposition="outside",
             ))
             _fig_fii.add_trace(_go_fii.Bar(
                 x=_dates, y=_dii_vals, name="DII Net",
-                marker_color=["#27ae60" if v >= 0 else "#e67e22" for v in _dii_vals],
+                marker_color=[COLORS["profit"] if v >= 0 else COLORS["volatile"] for v in _dii_vals],
                 text=[f"₹{v:+,.0f}Cr" for v in _dii_vals],
                 textposition="outside",
             ))

@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from dashboard.design import COLORS, _badge, _metric_card, _section, regime_hex
 from dashboard.utils.charts import safe_html, color_pnl, time_ago
 from dashboard.utils.db import DB_PATH, get_signals, query_df
 
@@ -20,8 +21,9 @@ def render(snap: dict, config: dict, conn) -> None:
     _pos_halt_reason = snap.get("halt_reason", "")
     if _pos_halted:
         _pos_halt_reason_safe = _html.escape(str(_pos_halt_reason or "No reason recorded"))
+        _halt_color = COLORS["loss"]
         st.markdown(
-            f"<div style='background:#c0392b;color:white;padding:12px 16px;border-radius:8px;"
+            f"<div style='background:{_halt_color};color:white;padding:12px 16px;border-radius:8px;"
             f"font-weight:bold;font-size:1.05em;margin-bottom:12px'>"
             f"AGENT HALTED: {_pos_halt_reason_safe}</div>",
             unsafe_allow_html=True,
@@ -68,12 +70,12 @@ def render(snap: dict, config: dict, conn) -> None:
     st.subheader("Open Positions")
     if positions_list:
         _STRATEGY_COLORS = {
-            "trend_breakout": "#1a6ba0",
-            "rsi_momentum": "#7b2fa0",
-            "mean_reversion": "#a06b1a",
+            "trend_breakout": COLORS["trend"],
+            "rsi_momentum": COLORS["range"],
+            "mean_reversion": COLORS["volatile"],
             "bb_squeeze": "#1a7a4a",
-            "supertrend": "#7a1a1a",
-            "supertrend_short": "#c0392b",
+            "supertrend": COLORS["unknown"],
+            "supertrend_short": COLORS["loss"],
         }
 
         for _pos in positions_list:
@@ -102,8 +104,8 @@ def render(snap: dict, config: dict, conn) -> None:
                 _progress_val = (_last_price - _stop) / (_target - _stop)
                 _progress_val = max(0.0, min(1.0, _progress_val))
 
-            _side_color = "#1a7a4a" if _side == "BUY" else "#7a1a1a"
-            _pnl_color = "#2ecc71" if _unr >= 0 else "#e74c3c"
+            _side_color = COLORS["profit"] if _side == "BUY" else COLORS["loss"]
+            _pnl_color = COLORS["profit"] if _unr >= 0 else COLORS["loss"]
             _strat_color = _STRATEGY_COLORS.get(_strategy.lower(), "#555")
 
             with st.container():
@@ -146,22 +148,25 @@ def render(snap: dict, config: dict, conn) -> None:
                 _r2c1, _r2c2, _r2c3 = st.columns(3)
                 _r2c1.markdown(
                     f"<div style='text-align:center'>"
-                    f"<small style='color:#e74c3c;font-weight:600'>Stop Loss</small><br>"
-                    f"<span style='font-size:1.1em;color:#e74c3c;font-weight:700'>"
+                    f"<small style='color:{COLORS['loss']};font-weight:600'>Stop Loss</small><br>"
+                    f"<span style='font-size:1.1em;color:{COLORS['loss']};font-weight:700'>"
                     f"{'₹' + f'{_stop:,.2f}' if _stop else 'N/A'}</span>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
                 _r2c2.markdown(
                     f"<div style='text-align:center'>"
-                    f"<small style='color:#2ecc71;font-weight:600'>Target</small><br>"
-                    f"<span style='font-size:1.1em;color:#2ecc71;font-weight:700'>"
+                    f"<small style='color:{COLORS['profit']};font-weight:600'>Target</small><br>"
+                    f"<span style='font-size:1.1em;color:{COLORS['profit']};font-weight:700'>"
                     f"{'₹' + f'{_target:,.2f}' if _target else 'N/A'}</span>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
                 _rr_display = f"{_rr_ratio:.2f}R" if _rr_ratio is not None else "N/A"
-                _rr_color = "#2ecc71" if (_rr_ratio or 0) >= 1.5 else ("#f39c12" if (_rr_ratio or 0) >= 1.0 else "#e74c3c")
+                _rr_color = (
+                    COLORS["profit"] if (_rr_ratio or 0) >= 1.5
+                    else (COLORS["warning"] if (_rr_ratio or 0) >= 1.0 else COLORS["loss"])
+                )
                 _r2c3.markdown(
                     f"<div style='text-align:center'>"
                     f"<small style='color:#aaa;font-weight:600'>Risk:Reward</small><br>"
@@ -178,9 +183,9 @@ def render(snap: dict, config: dict, conn) -> None:
                 _r3c4.metric("Opened", time_ago(_opened_at))
 
                 if _progress_val is not None:
-                    _bar_color = "#2ecc71" if _progress_val >= 0.5 else "#f39c12"
+                    _bar_color = COLORS["profit"] if _progress_val >= 0.5 else COLORS["warning"]
                     if _progress_val <= 0.2:
-                        _bar_color = "#e74c3c"
+                        _bar_color = COLORS["loss"]
                     st.markdown(
                         f"<div style='margin-top:8px'>"
                         f"<small style='color:#aaa'>Price position: stop"
@@ -212,7 +217,7 @@ def render(snap: dict, config: dict, conn) -> None:
             if c in sig_df.columns]
 
         def _accepted_style(val):
-            return "color: green" if val == 1 else "color: red"
+            return f"color: {COLORS['profit']}" if val == 1 else f"color: {COLORS['loss']}"
 
         styled_sig = sig_df[sig_display].style
         if "accepted" in sig_display:
@@ -223,7 +228,7 @@ def render(snap: dict, config: dict, conn) -> None:
             breakdown = sig_df.groupby(["strategy", "accepted"]).size().reset_index(name="count")
             breakdown["status"] = breakdown["accepted"].map({1: "Accepted", 0: "Rejected"})
             fig_sig = px.bar(breakdown, x="strategy", y="count", color="status",
-                              color_discrete_map={"Accepted": "#2ecc71", "Rejected": "#e74c3c"},
+                              color_discrete_map={"Accepted": COLORS["profit"], "Rejected": COLORS["loss"]},
                               title="Signal Acceptance by Strategy", barmode="group")
             fig_sig.update_layout(height=300, margin=dict(l=0, r=0, t=40, b=0))
             st.plotly_chart(fig_sig, use_container_width=True)

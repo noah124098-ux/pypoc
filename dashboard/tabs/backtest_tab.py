@@ -9,6 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from dashboard.design import COLORS, _metric_card, _section, regime_hex
 from dashboard.utils.charts import color_pnl
 from dashboard.utils.db import DB_PATH, get_equity_snapshots, query_df
 
@@ -146,7 +147,7 @@ def render(snap: dict, config: dict, gate: dict, conn) -> None:
             y=[_bt_gate_start_eq, _bt_gate_end_eq],
             mode="lines",
             name=f"Backtest trend (CAGR {_bt_cagr:+.1f}%)",
-            line=dict(color="#2ecc71", width=2.5, dash="dash"),
+            line=dict(color=COLORS["profit"], width=2.5, dash="dash"),
             hovertemplate="Backtest trend: ₹%{y:,.0f}<extra></extra>",
         ))
 
@@ -156,14 +157,14 @@ def render(snap: dict, config: dict, gate: dict, conn) -> None:
             y=_bt_live_eq_df_sorted["equity"],
             mode="lines",
             name=f"Live paper equity (CAGR {_live_cagr:+.1f}%)",
-            line=dict(color="#3498db", width=2.5),
+            line=dict(color=COLORS["accent"], width=2.5),
             fill="tozeroy",
-            fillcolor="rgba(52,152,219,0.07)",
+            fillcolor="rgba(2,136,209,0.07)",
             hovertemplate="<b>%{x|%Y-%m-%d %H:%M}</b><br>Live equity: ₹%{y:,.0f}<extra></extra>",
         ))
 
-    _tracking_color = "#2ecc71" if _tracking_label == "YES" else (
-        "#e74c3c" if _tracking_label == "NO" else "#95a5a6"
+    _tracking_color = COLORS["profit"] if _tracking_label == "YES" else (
+        COLORS["loss"] if _tracking_label == "NO" else COLORS["neutral"]
     )
     _fig_cmp.add_annotation(
         xref="paper", yref="paper",
@@ -252,12 +253,12 @@ def render(snap: dict, config: dict, gate: dict, conn) -> None:
             numeric_part = str(val).split("%")[0].replace("+", "").strip()
             v = float(numeric_part)
             if v > 0:
-                return "color: #2ecc71; font-weight: bold"
+                return f"color: {COLORS['profit']}; font-weight: bold"
             if v < 0:
-                return "color: #e74c3c; font-weight: bold"
+                return f"color: {COLORS['loss']}; font-weight: bold"
         except Exception:
             pass
-        return "color: #888888"
+        return f"color: {COLORS['neutral']}"
 
     st.dataframe(
         _cmp_df.style.applymap(_delta_cell_style, subset=["Delta"]),
@@ -294,7 +295,7 @@ def render(snap: dict, config: dict, gate: dict, conn) -> None:
         period_start = gate.get("period_start", "?")[:10] if gate.get("period_start") else "?"
         period_end = gate.get("period_end", "?")[:10] if gate.get("period_end") else "?"
 
-        banner_color = "#1a7a4a" if gate_passed else "#7a1a1a"
+        banner_color = COLORS["profit"] if gate_passed else COLORS["loss"]
         banner_label = "GATE PASSED" if gate_passed else "GATE FAILED"
         st.markdown(
             f"<div style='background:{banner_color};padding:16px;border-radius:8px;margin-bottom:16px'>"
@@ -334,7 +335,11 @@ def render(snap: dict, config: dict, gate: dict, conn) -> None:
             display_checks.columns = ["Metric", "Actual", "Op", "Threshold", "Status"]
 
             def _status_style(val):
-                return "color: green; font-weight: bold" if "PASS" in str(val) else "color: red; font-weight: bold"
+                return (
+                    f"color: {COLORS['profit']}; font-weight: bold"
+                    if "PASS" in str(val)
+                    else f"color: {COLORS['loss']}; font-weight: bold"
+                )
 
             st.dataframe(
                 display_checks.style.applymap(_status_style, subset=["Status"])
@@ -454,7 +459,7 @@ def render(snap: dict, config: dict, gate: dict, conn) -> None:
     st.dataframe(_strat_styled, use_container_width=True, hide_index=True)
 
     _pnl_bar_colors = [
-        "#2ecc71" if v >= 0 else "#e74c3c"
+        COLORS["profit"] if v >= 0 else COLORS["loss"]
         for v in _strat_df["Net P&L ₹"]
     ]
     _fig_strat_bar = go.Figure(go.Bar(
@@ -626,7 +631,7 @@ def render(snap: dict, config: dict, gate: dict, conn) -> None:
                 _sa_df = pd.DataFrame(_sa_rows).sort_values("Net P&L (₹)", ascending=True)
 
                 _sa_colors = [
-                    "#2ecc71" if v >= 0 else "#e74c3c"
+                    COLORS["profit"] if v >= 0 else COLORS["loss"]
                     for v in _sa_df["Net P&L (₹)"]
                 ]
                 _fig_sa = go.Figure(go.Bar(
@@ -726,10 +731,10 @@ def render(snap: dict, config: dict, gate: dict, conn) -> None:
                     _reg_bar_labels = [r for r in _regime_order if r in _reg_attr]
                     _reg_bar_counts = [_reg_attr[r].n_trades for r in _reg_bar_labels]
                     _reg_bar_colors_map = {
-                        "TREND": "#2ecc71",
-                        "RANGE": "#3498db",
-                        "VOLATILE": "#e74c3c",
-                        "UNKNOWN": "#95a5a6",
+                        "TREND": COLORS["trend"],
+                        "RANGE": COLORS["range"],
+                        "VOLATILE": COLORS["volatile"],
+                        "UNKNOWN": COLORS["unknown"],
                     }
                     _reg_bar_colors = [_reg_bar_colors_map.get(r, "#95a5a6") for r in _reg_bar_labels]
                     _fig_reg_bar = go.Figure(go.Bar(
@@ -817,8 +822,8 @@ def render(snap: dict, config: dict, gate: dict, conn) -> None:
                         except Exception:
                             pass
                     _color = (
-                        "#2ecc71" if _is_good is True
-                        else ("#e74c3c" if _is_good is False else "#f0f0f0")
+                        COLORS["profit"] if _is_good is True
+                        else (COLORS["loss"] if _is_good is False else COLORS["neutral"])
                     )
                     st.markdown(
                         f"<div style='display:flex;justify-content:space-between;"
@@ -863,7 +868,7 @@ def render(snap: dict, config: dict, gate: dict, conn) -> None:
                 x=_pnl_series,
                 nbinsx=40,
                 marker_color=[
-                    "#2ecc71" if v >= 0 else "#e74c3c"
+                    COLORS["profit"] if v >= 0 else COLORS["loss"]
                     for v in _pnl_series
                 ],
                 hovertemplate="P&L bin: ₹%{x:,.0f}<br>Count: %{y}<extra></extra>",
@@ -909,7 +914,7 @@ def render(snap: dict, config: dict, gate: dict, conn) -> None:
                 x="hour_frac",
                 y="pnl_net",
                 color="color_flag",
-                color_discrete_map={"Win": "#2ecc71", "Loss": "#e74c3c"},
+                color_discrete_map={"Win": COLORS["profit"], "Loss": COLORS["loss"]},
                 labels={"hour_frac": "Entry Hour (IST)", "pnl_net": "Net P&L (₹)"},
                 opacity=0.65,
             )
@@ -970,9 +975,9 @@ def render(snap: dict, config: dict, gate: dict, conn) -> None:
                 _bg = ""
                 regime_val = str(row.get("Regime", ""))
                 bg_map = {
-                    "TREND": "rgba(46,204,113,0.12)",
-                    "RANGE": "rgba(52,152,219,0.12)",
-                    "VOLATILE": "rgba(231,76,60,0.12)",
+                    "TREND":    "rgba(21,101,192,0.12)",   # COLORS['trend'] at ~12% opacity
+                    "RANGE":    "rgba(106,27,154,0.12)",   # COLORS['range'] at ~12% opacity
+                    "VOLATILE": "rgba(230,81,0,0.12)",     # COLORS['volatile'] at ~12% opacity
                 }
                 _bg = bg_map.get(regime_val, "")
                 return [f"background-color:{_bg}" if _bg else ""] * len(row)

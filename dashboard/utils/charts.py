@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import html as _html
 
+# Re-export canonical color palette so all chart code can import from here.
+from dashboard.design import COLORS, REGIME_COLORS, regime_hex  # noqa: F401
+
 
 def safe_html(text: str) -> str:
     """Escape user-controlled or LLM-generated text before injecting into HTML."""
@@ -11,18 +14,20 @@ def safe_html(text: str) -> str:
 
 def color_pnl(val) -> str:
     """Pandas Styler applymap callback — color a P&L cell green/red/gray."""
-    color = "green" if val > 0 else ("red" if val < 0 else "gray")
-    return f"color: {color}; font-weight: bold"
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return f"color: {COLORS['neutral']}; font-weight: bold"
+    if v > 0:
+        return f"color: {COLORS['profit']}; font-weight: bold"
+    if v < 0:
+        return f"color: {COLORS['loss']}; font-weight: bold"
+    return f"color: {COLORS['neutral']}; font-weight: bold"
 
 
 def regime_color(regime: str) -> str:
     """Return a hex color string for a regime label."""
-    return {
-        "TREND": "#2ecc71",
-        "RANGE": "#3498db",
-        "VOLATILE": "#e74c3c",
-        "UNKNOWN": "#95a5a6",
-    }.get(regime, "#95a5a6")
+    return regime_hex(regime)
 
 
 def fmt_inr(value: float) -> str:

@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from dashboard.design import COLORS, _metric_card, _section
 from dashboard.utils.charts import color_pnl, fmt_inr, pnl_by_period
 from dashboard.utils.db import DB_PATH, get_equity_snapshots, get_trades, query_df
 
@@ -101,7 +102,7 @@ def render(snap: dict, config: dict, conn) -> None:
 
         # Summary metrics above chart
         st.subheader("Equity Curve — Paper Agent")
-        _ret_color = "green" if _total_return_pct >= 0 else "red"
+        _ret_color = COLORS["profit"] if _total_return_pct >= 0 else COLORS["loss"]
         _ret_sign = "+" if _total_return_pct >= 0 else ""
         st.markdown(
             f"<span style='font-size:1.1em;color:{_ret_color};font-weight:bold'>"
@@ -137,16 +138,16 @@ def render(snap: dict, config: dict, conn) -> None:
             specs=[[{"secondary_y": True}], [{"secondary_y": False}]],
         )
 
-        # Equity curve (green line + light fill)
+        # Equity curve (profit-green line + light fill)
         _fig_eq.add_trace(
             go.Scatter(
                 x=eq_df["ts"],
                 y=eq_df["equity"],
                 mode="lines",
                 name="Equity",
-                line=dict(color="#2ecc71", width=2.5),
+                line=dict(color=COLORS["profit"], width=2.5),
                 fill="tozeroy",
-                fillcolor="rgba(46,204,113,0.08)",
+                fillcolor="rgba(0,200,83,0.08)",
                 hovertemplate="<b>%{x|%Y-%m-%d %H:%M}</b><br>Equity: ₹%{y:,.0f}<extra></extra>",
             ),
             row=1,
@@ -221,7 +222,7 @@ def render(snap: dict, config: dict, conn) -> None:
                                 name="Entry",
                                 marker=dict(
                                     symbol="triangle-up",
-                                    color="#27ae60",
+                                    color=COLORS["profit"],
                                     size=9,
                                     line=dict(color="white", width=1),
                                 ),
@@ -245,7 +246,7 @@ def render(snap: dict, config: dict, conn) -> None:
                                 name="Exit",
                                 marker=dict(
                                     symbol="triangle-down",
-                                    color="#e74c3c",
+                                    color=COLORS["loss"],
                                     size=9,
                                     line=dict(color="white", width=1),
                                 ),
@@ -261,16 +262,16 @@ def render(snap: dict, config: dict, conn) -> None:
             except Exception:
                 pass
 
-        # Drawdown panel (red fill, negative direction)
+        # Drawdown panel (loss-red fill, negative direction)
         _fig_eq.add_trace(
             go.Scatter(
                 x=eq_df["ts"],
                 y=-eq_df["dd_pct"],
                 mode="lines",
                 name="Drawdown %",
-                line=dict(color="#e74c3c", width=1.5),
+                line=dict(color=COLORS["loss"], width=1.5),
                 fill="tozeroy",
-                fillcolor="rgba(231,76,60,0.18)",
+                fillcolor="rgba(255,23,68,0.18)",
                 hovertemplate="<b>%{x|%Y-%m-%d %H:%M}</b><br>Drawdown: %{y:.2f}%<extra></extra>",
             ),
             row=2,
@@ -316,7 +317,9 @@ def render(snap: dict, config: dict, conn) -> None:
                     st.info(f"No trades for {key} view.")
                     continue
                 pdata = pdata.sort_values("period")
-                pdata["color"] = pdata["pnl_net"].apply(lambda x: "#2ecc71" if x >= 0 else "#e74c3c")
+                pdata["color"] = pdata["pnl_net"].apply(
+                    lambda x: COLORS["profit"] if x >= 0 else COLORS["loss"]
+                )
                 total = pdata["pnl_net"].sum()
                 wins = (pdata["pnl_net"] > 0).sum()
                 losses = (pdata["pnl_net"] < 0).sum()
@@ -374,9 +377,9 @@ def render(snap: dict, config: dict, conn) -> None:
             except (TypeError, ValueError):
                 val = 0.0
             if val > 0:
-                return ["background-color: rgba(46,204,113,0.15)"] * len(row)
+                return ["background-color: rgba(0,200,83,0.15)"] * len(row)
             if val < 0:
-                return ["background-color: rgba(231,76,60,0.15)"] * len(row)
+                return ["background-color: rgba(255,23,68,0.15)"] * len(row)
             return [""] * len(row)
 
         _display_slice = _sorted_trades[display_cols].head(100)
