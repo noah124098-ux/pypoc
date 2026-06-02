@@ -336,3 +336,137 @@ def test_orchestrator_blackout_blocks_buy(tmp_path):
 
     # _handle_signal must NOT have been called — blackout blocked the BUY
     orch._handle_signal.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test 6: _handle_signal fires Telegram entry alert on FILLED order
+# ---------------------------------------------------------------------------
+
+def test_handle_signal_sends_telegram_entry_alert(tmp_path):
+    """When telegram_enabled and an order is FILLED, send_trade_alert must be called."""
+    from core.types import Signal, Side, Regime, OrderStatus
+    from unittest.mock import MagicMock, patch
+    from core.broker.paper import PaperBroker
+    from core.config import ExecutionCfg
+
+    s = _settings()
+    s.notifications.telegram_enabled = True
+
+    # Build a real PaperBroker so the order actually gets placed and filled
+    exec_cfg = ExecutionCfg(
+        slippage_bps=5, brokerage_per_order_inr=20,
+        stt_pct=0.025, exchange_txn_pct=0.00345, gst_pct=18.0,
+        signal_cooldown_minutes=30,
+    )
+    real_broker = PaperBroker(starting_cash=500_000.0, exec_cfg=exec_cfg)
+    real_broker.update_market_prices({"RELIANCE": 2500.0})
+
+    feed = _make_mock_feed()
+    store = _make_mock_store()
+    events = _make_mock_events(tmp_path)
+
+    mock_telegram = MagicMock()
+
+    with patch("core.execution.orchestrator.write_snapshot"), \
+         patch("core.execution.orchestrator.get_vix", return_value=None), \
+         patch("core.execution.orchestrator.get_nifty_pcr", return_value=None):
+        orch = Orchestrator(settings=s, feed=feed, broker=real_broker, store=store, events=events)
+
+    orch.telegram = mock_telegram
+
+    sig = Signal(
+        symbol="RELIANCE",
+        side=Side.BUY,
+        strategy="trend_breakout",
+        regime=Regime.TREND,
+        entry_price=2500.0,
+        stop_loss=2450.0,
+        target=2600.0,
+        confidence=0.8,
+        rationale="test",
+        ts=datetime.utcnow(),
+    )
+    orch.current_regime = RegimeSnapshot(Regime.TREND, 30.0, 0.05, 15.0, "test")
+    orch.starting_equity_today = real_broker.equity()
+    orch.peak_equity = real_broker.equity()
+
+    # Bypass guardrails so the order always goes through
+    with patch.object(orch.guardrails, "check") as mock_check:
+        from core.risk.guardrails import GuardrailDecision
+        mock_check.return_value = GuardrailDecision(allow=True, rule="", reason="")
+        orch._handle_signal(sig)
+
+    mock_telegram.send_trade_alert.assert_called_once()
+    call_kwargs = mock_telegram.send_trade_alert.call_args
+    args, kwargs = call_kwargs
+    combined = {**dict(zip(["symbol", "side", "strategy", "pnl", "reason"], args)), **kwargs}
+    assert combined.get("reason") == "entry" or "entry" in str(args)
+
+
+# ---------------------------------------------------------------------------
+# Test 7: on_exit callback is wired to orchestrator._on_position_exit
+# ---------------------------------------------------------------------------
+
+def test_orchestrator_wires_on_exit_callback(tmp_path):
+    """After __init__, PaperBroker.on_exit must point to _on_position_exit."""
+    from core.broker.paper import PaperBroker
+    from core.config import ExecutionCfg
+
+    s = _settings()
+    exec_cfg = ExecutionCfg(
+        slippage_bps=5, brokerage_per_order_inr=20,
+        stt_pct=0.025, exchange_txn_pct=0.00345, gst_pct=18.0,
+        signal_cooldown_minutes=30,
+    )
+    real_broker = PaperBroker(starting_cash=500_000.0, exec_cfg=exec_cfg)
+    real_broker.update_market_prices({"RELIANCE": 2500.0})
+
+    feed = _make_mock_feed()
+    store = _make_mock_store()
+    events = _make_mock_events(tmp_path)
+
+    with patch("core.execution.orchestrator.write_snapshot"), \
+         patch("core.execution.orchestrator.get_vix", return_value=None), \
+         patch("core.execution.orchestrator.get_nifty_pcr", return_value=None):
+        orch = Orchestrator(settings=s, feed=feed, broker=real_broker, store=store, events=events)
+
+    assert real_broker.on_exit is not None
+    assert real_broker.on_exit == orch._on_position_exit
+
+
+# ---------------------------------------------------------------------------
+# Test 8: _on_position_exit sends Telegram exit alert when enabled
+# ---------------------------------------------------------------------------
+
+def test_on_position_exit_sends_telegram_alert(tmp_path):
+    """_on_position_exit must call telegram.send_trade_alert with side='EXIT'."""
+    from unittest.mock import MagicMock
+
+    s = _settings()
+    s.notifications.telegram_enabled = True
+
+    orch = _make_orchestrator(tmp_path, settings=s)
+    mock_telegram = MagicMock()
+    orch.telegram = mock_telegram
+
+    orch._on_position_exit("INFY", 1234.56, "stop_loss", "trend_breakout")
+
+    mock_telegram.send_trade_alert.assert_called_once_with(
+        symbol="INFY",
+        side="EXIT",
+        strategy="trend_breakout",
+        pnl=1234.56,
+        reason="stop_loss",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: _on_position_exit is silent when telegram is None or disabled
+# ---------------------------------------------------------------------------
+
+def test_on_position_exit_silent_when_telegram_disabled(tmp_path):
+    """_on_position_exit must not raise when telegram is None."""
+    orch = _make_orchestrator(tmp_path)
+    orch.telegram = None  # explicitly disabled
+    # Should not raise
+    orch._on_position_exit("HDFC", -500.0, "target", "mean_reversion")

@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from core.broker.base import IBroker
 from core.broker.charges import compute_charges
@@ -44,6 +44,7 @@ class PaperBroker(IBroker):
         self.trade_log: list[TradeRecord] = []
         self.realized_pnl: float = 0.0
         self.sim_time: datetime | None = None  # set by backtest engine to override wall-clock
+        self.on_exit: Optional[Callable[[str, float, str, str], None]] = None  # set by orchestrator
 
     def _now(self) -> datetime:
         return self.sim_time if self.sim_time is not None else datetime.utcnow()
@@ -228,6 +229,8 @@ class PaperBroker(IBroker):
                 exit_reason=exit_reason,
             )
         )
+        if self.on_exit is not None:
+            self.on_exit(symbol, pnl, exit_reason, pos.strategy)
         if qty >= pos.qty:
             del self._positions[symbol]
         else:
@@ -275,6 +278,8 @@ class PaperBroker(IBroker):
             pnl=pnl, charges=charges, strategy=pos.strategy,
             opened_at=pos.opened_at, closed_at=self._now(), exit_reason=exit_reason,
         ))
+        if self.on_exit is not None:
+            self.on_exit(symbol, pnl, exit_reason, pos.strategy)
         if qty >= pos.qty:
             del self._short_positions[symbol]
         else:

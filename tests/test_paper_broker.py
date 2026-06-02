@@ -66,3 +66,61 @@ def test_equity_includes_unrealized(broker):
     broker.update_market_prices({"RELIANCE": 1320.0})
     eq = broker.equity()
     assert eq > 100_000  # cash dropped but mark-up exceeds it
+
+
+# ---------- on_exit callback tests ----------
+
+def test_on_exit_callback_fires_on_stop_loss(broker):
+    """on_exit must be called with (symbol, pnl, 'stop_loss', strategy) on auto-exit."""
+    calls = []
+    broker.on_exit = lambda sym, pnl, reason, strat: calls.append((sym, pnl, reason, strat))
+
+    broker.place_order("RELIANCE", Side.BUY, 10, OrderType.MARKET, 1280, 1360, strategy="t")
+    broker.update_market_prices({"RELIANCE": 1279.0})  # trigger stop loss
+
+    assert len(calls) == 1
+    sym, pnl, reason, strat = calls[0]
+    assert sym == "RELIANCE"
+    assert reason == "stop_loss"
+    assert strat == "t"
+    assert isinstance(pnl, float)
+
+
+def test_on_exit_callback_fires_on_target(broker):
+    """on_exit must be called with exit_reason='target' on target hit."""
+    calls = []
+    broker.on_exit = lambda sym, pnl, reason, strat: calls.append((sym, pnl, reason, strat))
+
+    broker.place_order("RELIANCE", Side.BUY, 10, OrderType.MARKET, 1280, 1360, strategy="tb")
+    broker.update_market_prices({"RELIANCE": 1361.0})  # trigger target
+
+    assert len(calls) == 1
+    assert calls[0][2] == "target"
+
+
+def test_on_exit_callback_fires_on_short_stop_loss(execution_cfg):
+    """on_exit fires for short positions auto-exited via stop loss."""
+    b = PaperBroker(starting_cash=200_000.0, exec_cfg=execution_cfg)
+    b.update_market_prices({"RELIANCE": 1300.0})
+
+    calls = []
+    b.on_exit = lambda sym, pnl, reason, strat: calls.append((sym, pnl, reason, strat))
+
+    # Open a short: stop = 1320 (above entry), target = 1250 (below entry)
+    b.place_order("RELIANCE", Side.SELL, 10, OrderType.MARKET, stop_loss=1320, target=1250, strategy="ss")
+    b.update_market_prices({"RELIANCE": 1321.0})  # price rises above stop → stop loss
+
+    assert len(calls) == 1
+    sym, pnl, reason, strat = calls[0]
+    assert sym == "RELIANCE"
+    assert reason == "stop_loss"
+    assert strat == "ss"
+
+
+def test_on_exit_callback_not_set_does_not_raise(broker):
+    """With on_exit=None (default), stop-loss exit must not raise."""
+    assert broker.on_exit is None
+    broker.place_order("RELIANCE", Side.BUY, 10, OrderType.MARKET, 1280, 1360, strategy="t")
+    broker.update_market_prices({"RELIANCE": 1279.0})  # trigger stop loss
+    # No exception; position is gone
+    assert broker.get_position("RELIANCE") is None
