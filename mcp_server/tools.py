@@ -185,7 +185,7 @@ class TradingAgentTools:
     def update_risk_param(self, param: str, value: float) -> dict:
         """Enqueue a risk-parameter update. Only pre-approved params within safe bounds are accepted."""
         SAFE_BOUNDS = {
-            "per_trade_risk_pct": (0.5, 2.0),
+            "per_trade_risk_pct": (0.25, 2.0),
             "max_open_positions": (1, 5),  # design cap: max 5 positions (CLAUDE.md locked decision)
             "daily_loss_circuit_pct": (2.0, 5.0),
         }

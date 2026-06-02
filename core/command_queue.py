@@ -7,6 +7,10 @@ from typing import Any, Optional
 log = logging.getLogger("agent.command_queue")
 QUEUE_PATH = Path("data/commands.jsonl")
 
+ALLOWED_TYPES: frozenset = frozenset(
+    ["halt_agent", "resume_agent", "update_risk_param", "place_paper_order", "reload_config"]
+)
+
 @dataclass
 class Command:
     id: str
@@ -17,6 +21,8 @@ class Command:
     result: Optional[str] = None
 
 def enqueue(cmd_type: str, params: dict) -> Command:
+    if cmd_type not in ALLOWED_TYPES:
+        raise ValueError(f"Unknown command type: {cmd_type!r}")
     cmd = Command(id=str(uuid.uuid4()), type=cmd_type, params=params,
                   requested_at=datetime.utcnow().isoformat())
     QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
