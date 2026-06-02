@@ -30,6 +30,13 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 try:
+    from streamlit_autorefresh import st_autorefresh as _st_autorefresh
+    _AUTOREFRESH_AVAILABLE = True
+except ImportError:
+    _st_autorefresh = None  # type: ignore[assignment]
+    _AUTOREFRESH_AVAILABLE = False
+
+try:
     import pytz as _pytz
     _PYTZ_AVAILABLE = True
 except ImportError:
@@ -490,6 +497,8 @@ with st.sidebar:
     st.title("NSE Trading Agent")
     auto_refresh = st.toggle("Auto-refresh (30s)", key="auto_refresh", value=False)
     if auto_refresh:
+        if _AUTOREFRESH_AVAILABLE and _st_autorefresh is not None:
+            _st_autorefresh(interval=30000, key="data_refresh")
         st.caption(f"Last refresh: {datetime.now().strftime('%H:%M:%S')}")
 
     st.divider()
@@ -612,9 +621,13 @@ with st.sidebar:
     except Exception:
         pass
 
-    # PCR — cached 5 min, non-blocking
+    # PCR — cached 5 min, non-blocking; spinner only shows on first uncached load
     try:
-        pcr = _get_pcr_cached()
+        _pcr_placeholder = st.sidebar.empty()
+        with _pcr_placeholder:
+            with st.spinner("Loading PCR..."):
+                pcr = _get_pcr_cached()
+        _pcr_placeholder.empty()
         if pcr:
             pcr_color = "🟢" if pcr > 1.0 else ("🔴" if pcr < 0.7 else "🟡")
             st.sidebar.metric(
@@ -625,9 +638,13 @@ with st.sidebar:
     except Exception:
         pass
 
-    # FII sentiment — cached 5 min, non-blocking
+    # FII sentiment — cached 5 min, non-blocking; spinner only shows on first uncached load
     try:
-        sent = _get_fii_sentiment_cached()
+        _fii_placeholder = st.sidebar.empty()
+        with _fii_placeholder:
+            with st.spinner("Loading FII data..."):
+                sent = _get_fii_sentiment_cached()
+        _fii_placeholder.empty()
         if sent:
             sent_display = {"BULLISH": "🟢 FII Buy", "BEARISH": "🔴 FII Sell"}.get(sent, "⚪ Neutral")
             st.sidebar.metric("FII Sentiment", sent_display)
@@ -738,14 +755,8 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    # Auto-refresh: use session-state countdown — no sleep, non-blocking
-    if auto_refresh:
-        _ar_count = st.session_state.get("_sidebar_ar_count", 30)
-        if _ar_count <= 1:
-            st.session_state["_sidebar_ar_count"] = 30
-            st.rerun()
-        else:
-            st.session_state["_sidebar_ar_count"] = _ar_count - 1
+    # Auto-refresh is handled by st_autorefresh (30s interval, non-blocking).
+    # No manual countdown needed here — st_autorefresh triggers rerun automatically.
 
 
 # ── dark mode CSS injection ───────────────────────────────────────────────────
@@ -990,20 +1001,13 @@ with tab_live:
         except Exception:
             pass
 
-    # ── Auto-refresh countdown during market hours ────────────────────────────
-    # No time.sleep() — all waits use session-state counters so the render
-    # thread is never blocked.
+    # ── Market hours / auto-refresh status caption ───────────────────────────
     _in_market = _is_market_hours()
     if _in_market:
-        _refresh_key = "live_tab_refresh_counter"
-        _count = st.session_state.get(_refresh_key, 30)
-        _countdown_placeholder = st.empty()
-        _countdown_placeholder.caption(f"Auto-refreshing in {_count}s (market hours active)")
-        if _count <= 1:
-            st.session_state[_refresh_key] = 30
-            st.rerun()
+        if auto_refresh:
+            st.caption("Auto-refresh active (30s interval via sidebar toggle)")
         else:
-            st.session_state[_refresh_key] = _count - 1
+            st.caption("Market hours active. Enable Auto-refresh in sidebar for live updates.")
     else:
         _now_utc = datetime.utcnow()
         _now_ist = _now_utc + timedelta(hours=5, minutes=30)
@@ -1165,19 +1169,24 @@ with tab_live:
 
     # Paper agent open positions (always shown regardless of Angel One creds)
     st.subheader("Paper Agent — Open Positions")
-    positions_list = snap.get("open_positions", [])
-    if positions_list:
-        pos_df = pd.DataFrame(positions_list)
-        display_cols = [c for c in ["symbol", "qty", "avg_price", "last_price",
-                                     "unrealized_pnl", "stop_loss", "target", "strategy", "opened_at"]
-                        if c in pos_df.columns]
-        pnl_cols = [c for c in ["unrealized_pnl"] if c in display_cols]
-        styled = pos_df[display_cols].style
-        if pnl_cols:
-            styled = styled.applymap(_color_pnl, subset=pnl_cols)
-        st.dataframe(styled, use_container_width=True)
+    if not snap:
+        st.warning("Agent is not running. Start it from the sidebar.")
+        st.code("scripts\\service_manager.bat start-agent", language="batch")
     else:
-        st.info("Paper agent has no open positions." + (" (Agent not running)" if not snap else ""))
+        positions_list = snap.get("open_positions", [])
+        if positions_list:
+            pos_df = pd.DataFrame(positions_list)
+            display_cols = [c for c in ["symbol", "qty", "avg_price", "last_price",
+                                         "unrealized_pnl", "stop_loss", "target", "strategy", "opened_at"]
+                            if c in pos_df.columns]
+            pnl_cols = [c for c in ["unrealized_pnl"] if c in display_cols]
+            styled = pos_df[display_cols].style
+            if pnl_cols:
+                styled = styled.applymap(_color_pnl, subset=pnl_cols)
+            st.dataframe(styled, use_container_width=True)
+        else:
+            st.info("No open positions yet. Start the paper agent to begin trading.")
+            st.code("scripts\\start_agent.bat", language="batch")
 
     st.divider()
 
@@ -1401,7 +1410,8 @@ with tab_pnl:
     st.divider()
 
     # ── Equity curve ─────────────────────────────────────────────────────────
-    eq_df = _get_equity_snapshots(str(DB_PATH))
+    with st.spinner("Loading equity curve..."):
+        eq_df = _get_equity_snapshots(str(DB_PATH))
 
     # Query trades for entry/exit markers
     _trades_for_markers = _query_df(
@@ -1664,16 +1674,18 @@ with tab_pnl:
 
         st.plotly_chart(_fig_eq, use_container_width=True)
     else:
-        st.info("No equity snapshots yet. Run the agent to see the equity curve.")
+        st.info("No equity snapshots yet. Start the paper agent to begin recording equity data.")
+        st.code("scripts\\start_agent.bat", language="batch")
 
     st.divider()
 
     # P&L breakdown by period
     st.subheader("P&L Breakdown")
-    trades_df = _get_trades(str(DB_PATH))
+    with st.spinner("Loading trade data..."):
+        trades_df = _get_trades(str(DB_PATH))
     pnl_periods = _pnl_by_period(trades_df)
 
-    if pnl_periods:
+    if not trades_df.empty and pnl_periods:
         period_tab_labels = ["Daily", "Weekly", "Monthly", "Last 3 Months"]
         period_keys = ["daily", "weekly", "monthly", "3month"]
         ptabs = st.tabs(period_tab_labels)
@@ -1705,7 +1717,8 @@ with tab_pnl:
                                        yaxis_title="P&L (INR)", xaxis_title="Period")
                 st.plotly_chart(fig_bar, use_container_width=True)
     else:
-        st.info("No closed trades yet.")
+        st.info("No trades yet. Start the paper agent to begin trading.")
+        st.code("scripts\\start_agent.bat", language="batch")
 
     st.divider()
 
@@ -1786,7 +1799,8 @@ with tab_pnl:
             key="export_trades_csv",
         )
     else:
-        st.info("No closed trades yet.")
+        st.info("No closed trades yet. Start the paper agent to begin trading.")
+        st.code("scripts\\start_agent.bat", language="batch")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -1980,7 +1994,11 @@ with tab_positions:
 
                 st.markdown("</div>", unsafe_allow_html=True)
     else:
-        st.info("No open positions." + (" Agent not running." if not snap else ""))
+        if not snap:
+            st.warning("Agent is not running. Start it from the sidebar to see open positions.")
+            st.code("scripts\\start_agent.bat", language="batch")
+        else:
+            st.info("No open positions yet. The agent is running but has no active trades.")
 
     # ── RISK EXPOSURE SECTION ────────────────────────────────────────────────
     st.divider()
@@ -2258,7 +2276,8 @@ with tab_replay:
         _replay_trades_list = []
 
     if not _replay_trades_list:
-        st.info("No trades found. Run the paper agent to generate trades.")
+        st.info("No trades found. Start the paper agent to begin trading.")
+        st.code("scripts\\start_agent.bat", language="batch")
         st.stop()
 
     _trade_options = {
@@ -2393,15 +2412,16 @@ with tab_replay:
     st.subheader("Price Chart")
 
     _df_chart: pd.DataFrame | None = None
-    try:
-        from backtest.data_loader import HistoricalLoader as _HistLoader
-        _hist_loader = _HistLoader()
-        _stock_data = _hist_loader.load_universe([_replay.symbol], days=60)
-        _df_chart = _stock_data.get(_replay.symbol)
-        if _df_chart is not None and _df_chart.empty:
+    with st.spinner("Loading price data..."):
+        try:
+            from backtest.data_loader import HistoricalLoader as _HistLoader
+            _hist_loader = _HistLoader()
+            _stock_data = _hist_loader.load_universe([_replay.symbol], days=60)
+            _df_chart = _stock_data.get(_replay.symbol)
+            if _df_chart is not None and _df_chart.empty:
+                _df_chart = None
+        except Exception:
             _df_chart = None
-    except Exception:
-        _df_chart = None
 
     # Determine if trade was profitable for chart title
     _rpl_pnl_sign = "✅" if _rpl_pnl >= 0 else "❌"
@@ -3061,7 +3081,8 @@ with tab_regime:
             fig_ind.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0), showlegend=False)
             st.plotly_chart(fig_ind, use_container_width=True)
     else:
-        st.info("No regime history yet. Run the agent to populate.")
+        st.info("No regime history yet. Start the paper agent to populate regime data.")
+        st.code("scripts\\start_agent.bat", language="batch")
 
     st.divider()
 
@@ -3096,7 +3117,8 @@ with tab_backtest:
     # ── Backtest vs Live Equity Comparison ────────────────────────────────────
     st.subheader("Backtest vs Live (Paper) Equity Comparison")
 
-    _bt_live_eq_df = _get_equity_snapshots(str(DB_PATH))
+    with st.spinner("Loading backtest data..."):
+        _bt_live_eq_df = _get_equity_snapshots(str(DB_PATH))
     _bt_gate = gate  # already loaded at sidebar
 
     # ── Build backtest trend line from gate JSON ──────────────────────────────
