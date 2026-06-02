@@ -822,25 +822,269 @@ with tab_pnl:
 
     st.divider()
 
-    # Equity curve
+    # ── Equity curve ─────────────────────────────────────────────────────────
     eq_df = _query_df(conn, "SELECT ts, equity FROM equity_snapshots ORDER BY ts")
+
+    # Query trades for entry/exit markers
+    _trades_for_markers = _query_df(
+        conn,
+        "SELECT opened_at, closed_at, entry_price, exit_price, pnl, symbol FROM trades ORDER BY opened_at",
+    )
+
     if not eq_df.empty:
         eq_df["ts"] = pd.to_datetime(eq_df["ts"])
-        eq_df = eq_df.sort_values("ts")
+        eq_df = eq_df.sort_values("ts").reset_index(drop=True)
         eq_df["peak"] = eq_df["equity"].cummax()
         eq_df["dd_pct"] = (eq_df["peak"] - eq_df["equity"]) / eq_df["peak"] * 100
 
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3],
-                            subplot_titles=("Equity Curve (INR)", "Drawdown (%)"),
-                            vertical_spacing=0.08)
-        fig.add_trace(go.Scatter(x=eq_df["ts"], y=eq_df["equity"], mode="lines", name="Equity",
-                                  line=dict(color="#2ecc71", width=2),
-                                  fill="tozeroy", fillcolor="rgba(46,204,113,0.1)"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=eq_df["ts"], y=-eq_df["dd_pct"], mode="lines", name="Drawdown",
-                                  line=dict(color="#e74c3c", width=1.5),
-                                  fill="tozeroy", fillcolor="rgba(231,76,60,0.15)"), row=2, col=1)
-        fig.update_layout(height=500, showlegend=False, margin=dict(l=0, r=0, t=30, b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        _start_equity = float(capital or eq_df["equity"].iloc[0])
+        _end_equity = float(eq_df["equity"].iloc[-1])
+        _total_return_pct = (_end_equity - _start_equity) / _start_equity * 100 if _start_equity else 0.0
+
+        # CAGR: use timestamp span
+        _ts_start = eq_df["ts"].iloc[0]
+        _ts_end = eq_df["ts"].iloc[-1]
+        _years_span = max((_ts_end - _ts_start).total_seconds() / (365.25 * 86400), 1 / 365.25)
+        _cagr_pct = ((_end_equity / _start_equity) ** (1.0 / _years_span) - 1) * 100 if _start_equity > 0 else 0.0
+
+        # Sharpe from daily equity returns
+        _eq_daily = eq_df.set_index("ts")["equity"].resample("D").last().dropna()
+        _daily_returns = _eq_daily.pct_change().dropna()
+        _sharpe = (
+            (_daily_returns.mean() / _daily_returns.std() * (252 ** 0.5))
+            if len(_daily_returns) >= 2 and _daily_returns.std() > 0
+            else 0.0
+        )
+
+        # Best / worst day in absolute INR
+        _eq_shifted = _eq_daily.shift(1).dropna()
+        _eq_aligned = _eq_daily.iloc[1:]
+        _daily_pnl_arr = (_eq_aligned.values - _eq_shifted.values)
+        _best_day_inr = float(_daily_pnl_arr.max()) if len(_daily_pnl_arr) else 0.0
+        _worst_day_inr = float(_daily_pnl_arr.min()) if len(_daily_pnl_arr) else 0.0
+
+        # Avg trade duration
+        _avg_duration_str = "N/A"
+        if (
+            not _trades_for_markers.empty
+            and "opened_at" in _trades_for_markers.columns
+            and "closed_at" in _trades_for_markers.columns
+        ):
+            try:
+                _tdf = _trades_for_markers.copy()
+                _tdf["opened_at"] = pd.to_datetime(_tdf["opened_at"], errors="coerce")
+                _tdf["closed_at"] = pd.to_datetime(_tdf["closed_at"], errors="coerce")
+                _tdf = _tdf.dropna(subset=["opened_at", "closed_at"])
+                if not _tdf.empty:
+                    _durations = (_tdf["closed_at"] - _tdf["opened_at"]).dt.total_seconds() / 3600
+                    _avg_hours = _durations.mean()
+                    if _avg_hours >= 24:
+                        _avg_duration_str = f"{_avg_hours / 24:.1f} days"
+                    else:
+                        _avg_duration_str = f"{_avg_hours:.1f} h"
+            except Exception:
+                pass
+
+        # ── Summary metrics above chart ───────────────────────────────────────
+        st.subheader("Equity Curve — Paper Agent")
+        _ret_color = "green" if _total_return_pct >= 0 else "red"
+        _ret_sign = "+" if _total_return_pct >= 0 else ""
+        st.markdown(
+            f"<span style='font-size:1.1em;color:{_ret_color};font-weight:bold'>"
+            f"Total Return: {_ret_sign}{_total_return_pct:.2f}%</span>"
+            f"&nbsp;&nbsp;<span style='color:#888;font-size:0.9em'>"
+            f"(starting ₹{_start_equity:,.0f} → current ₹{_end_equity:,.0f})</span>",
+            unsafe_allow_html=True,
+        )
+
+        _sm1, _sm2, _sm3, _sm4, _sm5 = st.columns(5)
+        _sm1.metric(
+            "Total Return",
+            f"{_ret_sign}{_total_return_pct:.2f}%",
+            delta_color="normal" if _total_return_pct >= 0 else "inverse",
+        )
+        _cagr_sign = "+" if _cagr_pct >= 0 else ""
+        _sm2.metric("Ann. Return (CAGR)", f"{_cagr_sign}{_cagr_pct:.2f}%")
+        _sm3.metric("Sharpe Ratio", f"{_sharpe:.2f}")
+        _sm4.metric("Best Day", f"₹{_best_day_inr:+,.0f}")
+        _sm5.metric("Worst Day", f"₹{_worst_day_inr:+,.0f}")
+        _dur_col1, _dur_col2 = st.columns([1, 4])
+        _dur_col1.metric("Avg Trade Duration", _avg_duration_str)
+
+        st.divider()
+
+        # ── Build figure: equity + drawdown panel ─────────────────────────────
+        _fig_eq = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            row_heights=[0.72, 0.28],
+            vertical_spacing=0.06,
+            specs=[[{"secondary_y": True}], [{"secondary_y": False}]],
+        )
+
+        # Equity curve (green line + light fill)
+        _fig_eq.add_trace(
+            go.Scatter(
+                x=eq_df["ts"],
+                y=eq_df["equity"],
+                mode="lines",
+                name="Equity",
+                line=dict(color="#2ecc71", width=2.5),
+                fill="tozeroy",
+                fillcolor="rgba(46,204,113,0.08)",
+                hovertemplate="<b>%{x|%Y-%m-%d %H:%M}</b><br>Equity: ₹%{y:,.0f}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+            secondary_y=False,
+        )
+
+        # Reference line at starting equity
+        _fig_eq.add_hline(
+            y=_start_equity,
+            line_dash="dot",
+            line_color="rgba(150,150,150,0.6)",
+            line_width=1.5,
+            annotation_text=f"Start ₹{_start_equity:,.0f}",
+            annotation_position="bottom right",
+            annotation_font_size=11,
+            row=1,
+            col=1,
+        )
+
+        # Nifty benchmark reference line (constant at starting equity).
+        # Only drawn when nifty_ltp is available in snapshot as a visual anchor.
+        _nifty_ltp_bench = snap.get("nifty_ltp", None)
+        if _nifty_ltp_bench:
+            try:
+                _nifty_now = float(_nifty_ltp_bench)
+                if _nifty_now > 0:
+                    _fig_eq.add_trace(
+                        go.Scatter(
+                            x=[eq_df["ts"].iloc[0], eq_df["ts"].iloc[-1]],
+                            y=[_start_equity, _start_equity],
+                            mode="lines",
+                            name="Nifty B&H (ref)",
+                            line=dict(color="#3498db", width=1.5, dash="dash"),
+                            hovertemplate="Nifty B&H ref: ₹%{y:,.0f}<extra></extra>",
+                        ),
+                        row=1,
+                        col=1,
+                        secondary_y=False,
+                    )
+            except Exception:
+                pass
+
+        # Trade entry / exit markers on equity curve
+        if not _trades_for_markers.empty:
+            try:
+                _tdf2 = _trades_for_markers.copy()
+                _tdf2["opened_at"] = pd.to_datetime(_tdf2["opened_at"], errors="coerce")
+                _tdf2["closed_at"] = pd.to_datetime(_tdf2["closed_at"], errors="coerce")
+                _tdf2 = _tdf2.dropna(subset=["opened_at", "closed_at"])
+
+                if not _tdf2.empty:
+                    # Map each trade timestamp to nearest equity value
+                    _eq_idx = eq_df.set_index("ts")["equity"]
+
+                    def _nearest_equity(ts_val):
+                        try:
+                            i = _eq_idx.index.searchsorted(ts_val)
+                            i = min(i, len(_eq_idx) - 1)
+                            return float(_eq_idx.iloc[i])
+                        except Exception:
+                            return None
+
+                    _tdf2["entry_equity"] = _tdf2["opened_at"].apply(_nearest_equity)
+                    _tdf2["exit_equity"] = _tdf2["closed_at"].apply(_nearest_equity)
+
+                    # Entry markers -- green triangles up
+                    _entries = _tdf2.dropna(subset=["entry_equity"])
+                    if not _entries.empty:
+                        _fig_eq.add_trace(
+                            go.Scatter(
+                                x=_entries["opened_at"],
+                                y=_entries["entry_equity"],
+                                mode="markers",
+                                name="Entry",
+                                marker=dict(
+                                    symbol="triangle-up",
+                                    color="#27ae60",
+                                    size=9,
+                                    line=dict(color="white", width=1),
+                                ),
+                                hovertemplate=(
+                                    "<b>Entry</b><br>%{x|%Y-%m-%d %H:%M}<br>"
+                                    "Equity: ₹%{y:,.0f}<extra></extra>"
+                                ),
+                            ),
+                            row=1,
+                            col=1,
+                            secondary_y=False,
+                        )
+
+                    # Exit markers -- red triangles down
+                    _exits = _tdf2.dropna(subset=["exit_equity"])
+                    if not _exits.empty:
+                        _fig_eq.add_trace(
+                            go.Scatter(
+                                x=_exits["closed_at"],
+                                y=_exits["exit_equity"],
+                                mode="markers",
+                                name="Exit",
+                                marker=dict(
+                                    symbol="triangle-down",
+                                    color="#e74c3c",
+                                    size=9,
+                                    line=dict(color="white", width=1),
+                                ),
+                                hovertemplate=(
+                                    "<b>Exit</b><br>%{x|%Y-%m-%d %H:%M}<br>"
+                                    "Equity: ₹%{y:,.0f}<extra></extra>"
+                                ),
+                            ),
+                            row=1,
+                            col=1,
+                            secondary_y=False,
+                        )
+            except Exception:
+                pass
+
+        # Drawdown panel (red fill, negative direction)
+        _fig_eq.add_trace(
+            go.Scatter(
+                x=eq_df["ts"],
+                y=-eq_df["dd_pct"],
+                mode="lines",
+                name="Drawdown %",
+                line=dict(color="#e74c3c", width=1.5),
+                fill="tozeroy",
+                fillcolor="rgba(231,76,60,0.18)",
+                hovertemplate="<b>%{x|%Y-%m-%d %H:%M}</b><br>Drawdown: %{y:.2f}%<extra></extra>",
+            ),
+            row=2,
+            col=1,
+        )
+
+        # Axis and layout
+        _fig_eq.update_yaxes(
+            title_text="Equity (INR)", row=1, col=1, secondary_y=False,
+            tickprefix="₹", tickformat=",.0f",
+        )
+        _fig_eq.update_yaxes(title_text="Drawdown (%)", row=2, col=1,
+                              tickformat=".1f", ticksuffix="%")
+        _fig_eq.update_xaxes(title_text="Date", row=2, col=1)
+        _fig_eq.update_layout(
+            height=640,
+            margin=dict(l=0, r=0, t=10, b=0),
+            legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1),
+            hovermode="x unified",
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+        )
+
+        st.plotly_chart(_fig_eq, use_container_width=True)
     else:
         st.info("No equity snapshots yet. Run the agent to see the equity curve.")
 
@@ -891,11 +1135,45 @@ with tab_pnl:
     st.subheader("Recent Closed Trades")
     if not trades_df.empty:
         trades_df["pnl_net"] = trades_df["pnl"] - trades_df["charges"]
+
+        # Build W/L streak column
+        _sorted_trades = trades_df.sort_values("closed_at").reset_index(drop=True)
+        _streak_labels: list[str] = []
+        _run = 0
+        _run_type = ""
+        for _, _tr in _sorted_trades.iterrows():
+            _tr_pnl = float(_tr.get("pnl", 0) or 0)
+            _this_type = "W" if _tr_pnl > 0 else ("L" if _tr_pnl < 0 else "=")
+            if _this_type == _run_type:
+                _run += 1
+            else:
+                _run = 1
+                _run_type = _this_type
+            _streak_labels.append(f"{_this_type}{_run}")
+        _sorted_trades["streak"] = _streak_labels
+        # Re-sort descending for display (most recent first)
+        _sorted_trades = _sorted_trades.sort_values("closed_at", ascending=False).reset_index(drop=True)
+
         display_cols = ["closed_at", "symbol", "side", "qty", "entry_price", "exit_price",
-                        "pnl", "charges", "pnl_net", "strategy", "exit_reason"]
-        display_cols = [c for c in display_cols if c in trades_df.columns]
+                        "pnl", "charges", "pnl_net", "strategy", "exit_reason", "streak"]
+        display_cols = [c for c in display_cols if c in _sorted_trades.columns]
         pnl_cols = [c for c in ["pnl", "pnl_net"] if c in display_cols]
-        styled = trades_df[display_cols].head(100).style.applymap(_color_pnl, subset=pnl_cols)
+
+        def _row_bg(row):
+            """Color entire row green (profitable) or red (loss)."""
+            try:
+                val = float(row.get("pnl", 0) or 0)
+            except (TypeError, ValueError):
+                val = 0.0
+            if val > 0:
+                return ["background-color: rgba(46,204,113,0.15)"] * len(row)
+            if val < 0:
+                return ["background-color: rgba(231,76,60,0.15)"] * len(row)
+            return [""] * len(row)
+
+        _display_slice = _sorted_trades[display_cols].head(100)
+        styled = _display_slice.style.apply(_row_bg, axis=1)
+        styled = styled.applymap(_color_pnl, subset=[c for c in pnl_cols if c in _display_slice.columns])
         styled = styled.format({c: "₹{:.2f}" for c in ["entry_price", "exit_price"] + pnl_cols
                                  if c in display_cols})
         st.dataframe(styled, use_container_width=True, height=350)
@@ -921,19 +1199,210 @@ with tab_pnl:
 # TAB 3: POSITIONS & SIGNALS
 # ────────────────────────────────────────────────────────────────────────────
 
+def _time_ago(ts_str: str) -> str:
+    """Return a human-readable 'X ago' string from an ISO timestamp."""
+    if not ts_str:
+        return "unknown"
+    try:
+        opened = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00").replace("+00:00", ""))
+        delta = datetime.utcnow() - opened
+        total_secs = int(delta.total_seconds())
+        if total_secs < 60:
+            return f"{total_secs}s ago"
+        if total_secs < 3600:
+            return f"{total_secs // 60}m ago"
+        if total_secs < 86400:
+            return f"{total_secs // 3600}h {(total_secs % 3600) // 60}m ago"
+        return f"{total_secs // 86400}d ago"
+    except Exception:
+        return str(ts_str)[:16]
+
+
 with tab_positions:
     st.header("Open Positions & Recent Signals")
 
+    # ── Halt banner ───────────────────────────────────────────────────────────
+    _pos_halted = snap.get("halted", False)
+    _pos_halt_reason = snap.get("halt_reason", "")
+    if _pos_halted:
+        st.markdown(
+            f"<div style='background:#c0392b;color:white;padding:12px 16px;border-radius:8px;"
+            f"font-weight:bold;font-size:1.05em;margin-bottom:12px'>"
+            f"AGENT HALTED: {_pos_halt_reason or 'No reason recorded'}</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ── Summary metrics row ───────────────────────────────────────────────────
+    _max_pos = int(config.get("risk", {}).get("max_open_positions", 5))
+    _initial_capital = float(config.get("capital", {}).get("initial_inr", 0) or 0)
+    _current_equity = float(snap.get("equity", _initial_capital) or _initial_capital)
+    _n_open = len(positions_list)
+    _total_exposure = sum(
+        float(p.get("qty", 0)) * float(p.get("last_price") or p.get("avg_price", 0))
+        for p in positions_list
+    )
+    _total_unrealized = sum(float(p.get("unrealized_pnl", 0)) for p in positions_list)
+    _exposure_pct = (_total_exposure / _current_equity * 100) if _current_equity else 0.0
+
+    sm1, sm2, sm3, sm4 = st.columns(4)
+    sm1.metric(
+        "Open Positions",
+        f"{_n_open} / {_max_pos}",
+        help="Current open positions vs maximum allowed",
+    )
+    sm2.metric(
+        "Total Exposure",
+        f"₹{_total_exposure:,.0f}",
+        delta=f"{_exposure_pct:.1f}% of equity",
+        delta_color="off",
+    )
+    _unr_delta_color = "normal" if _total_unrealized >= 0 else "inverse"
+    sm3.metric(
+        "Total Unrealized P&L",
+        f"₹{_total_unrealized:,.0f}",
+        delta_color=_unr_delta_color,
+    )
+    sm4.metric(
+        "Equity",
+        f"₹{_current_equity:,.0f}",
+    )
+
+    st.divider()
+
     st.subheader("Open Positions")
     if positions_list:
-        pos_df = pd.DataFrame(positions_list)
-        pos_display_cols = [c for c in
-            ["symbol", "qty", "avg_price", "last_price", "unrealized_pnl", "stop_loss", "target", "strategy", "opened_at"]
-            if c in pos_df.columns]
-        styled_pos = pos_df[pos_display_cols].style
-        if "unrealized_pnl" in pos_df.columns:
-            styled_pos = styled_pos.applymap(_color_pnl, subset=["unrealized_pnl"])
-        st.dataframe(styled_pos, use_container_width=True)
+        _STRATEGY_COLORS = {
+            "trend_breakout": "#1a6ba0",
+            "rsi_momentum": "#7b2fa0",
+            "mean_reversion": "#a06b1a",
+            "bb_squeeze": "#1a7a4a",
+            "supertrend": "#7a1a1a",
+            "supertrend_short": "#c0392b",
+        }
+
+        for _pos in positions_list:
+            _sym = str(_pos.get("symbol", "?"))
+            _strategy = str(_pos.get("strategy", ""))
+            _side = str(_pos.get("side", "BUY")).upper()
+            _qty = int(_pos.get("qty", 0) or 0)
+            _avg_price = float(_pos.get("avg_price", 0) or 0)
+            _last_price = float(_pos.get("last_price") or _pos.get("avg_price", 0) or 0)
+            _stop = float(_pos.get("stop_loss", 0) or 0)
+            _target = float(_pos.get("target", 0) or 0)
+            _unr = float(_pos.get("unrealized_pnl", 0) or 0)
+            _opened_at = str(_pos.get("opened_at", ""))
+            _pos_value = _qty * _last_price
+
+            # Derived metrics
+            _pnl_pct = (_unr / (_avg_price * _qty) * 100) if (_avg_price * _qty) != 0 else 0.0
+            _rr_ratio = (
+                abs(_target - _avg_price) / abs(_avg_price - _stop)
+                if _stop and _target and abs(_avg_price - _stop) > 0
+                else None
+            )
+            _portfolio_pct = (_pos_value / _current_equity * 100) if _current_equity else 0.0
+
+            # Progress bar: price position between stop and target
+            _progress_val: float | None = None
+            if _stop and _target and _stop != _target:
+                _progress_val = (_last_price - _stop) / (_target - _stop)
+                _progress_val = max(0.0, min(1.0, _progress_val))
+
+            _side_color = "#1a7a4a" if _side == "BUY" else "#7a1a1a"
+            _pnl_color = "#2ecc71" if _unr >= 0 else "#e74c3c"
+            _strat_color = _STRATEGY_COLORS.get(_strategy.lower(), "#555")
+
+            # Card container
+            with st.container():
+                st.markdown(
+                    f"<div style='border:1px solid #333;border-radius:10px;padding:14px 18px;"
+                    f"margin-bottom:14px;background:#1a1a1a'>",
+                    unsafe_allow_html=True,
+                )
+
+                # Header row: Symbol + Strategy badge + Side badge
+                _hc1, _hc2, _hc3 = st.columns([3, 2, 1])
+                _hc1.markdown(
+                    f"<span style='font-size:1.3em;font-weight:700;color:#f0f0f0'>{_sym}</span>",
+                    unsafe_allow_html=True,
+                )
+                _hc2.markdown(
+                    f"<span style='background:{_strat_color};color:white;padding:3px 10px;"
+                    f"border-radius:12px;font-size:0.8em;font-weight:600'>{_strategy}</span>",
+                    unsafe_allow_html=True,
+                )
+                _hc3.markdown(
+                    f"<span style='background:{_side_color};color:white;padding:3px 10px;"
+                    f"border-radius:12px;font-size:0.8em;font-weight:700'>{_side}</span>",
+                    unsafe_allow_html=True,
+                )
+
+                # Row 1: Entry | Current | P&L ₹ | P&L %
+                _r1c1, _r1c2, _r1c3, _r1c4 = st.columns(4)
+                _r1c1.metric("Entry Price", f"₹{_avg_price:,.2f}")
+                _r1c2.metric("Current Price", f"₹{_last_price:,.2f}")
+                _r1c3.metric(
+                    "P&L (₹)",
+                    f"₹{_unr:+,.2f}",
+                    delta_color="normal" if _unr >= 0 else "inverse",
+                )
+                _r1c4.metric(
+                    "P&L (%)",
+                    f"{_pnl_pct:+.2f}%",
+                    delta_color="normal" if _pnl_pct >= 0 else "inverse",
+                )
+
+                # Row 2: Stop Loss | Target | Risk:Reward
+                _r2c1, _r2c2, _r2c3 = st.columns(3)
+                _r2c1.markdown(
+                    f"<div style='text-align:center'>"
+                    f"<small style='color:#e74c3c;font-weight:600'>Stop Loss</small><br>"
+                    f"<span style='font-size:1.1em;color:#e74c3c;font-weight:700'>"
+                    f"{'₹' + f'{_stop:,.2f}' if _stop else 'N/A'}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+                _r2c2.markdown(
+                    f"<div style='text-align:center'>"
+                    f"<small style='color:#2ecc71;font-weight:600'>Target</small><br>"
+                    f"<span style='font-size:1.1em;color:#2ecc71;font-weight:700'>"
+                    f"{'₹' + f'{_target:,.2f}' if _target else 'N/A'}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+                _rr_display = f"{_rr_ratio:.2f}R" if _rr_ratio is not None else "N/A"
+                _rr_color = "#2ecc71" if (_rr_ratio or 0) >= 1.5 else ("#f39c12" if (_rr_ratio or 0) >= 1.0 else "#e74c3c")
+                _r2c3.markdown(
+                    f"<div style='text-align:center'>"
+                    f"<small style='color:#aaa;font-weight:600'>Risk:Reward</small><br>"
+                    f"<span style='font-size:1.1em;color:{_rr_color};font-weight:700'>"
+                    f"{_rr_display}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+                # Row 3: Qty | Position Value | % of Portfolio | Opened
+                _r3c1, _r3c2, _r3c3, _r3c4 = st.columns(4)
+                _r3c1.metric("Quantity", f"{_qty:,}")
+                _r3c2.metric("Position Value", f"₹{_pos_value:,.0f}")
+                _r3c3.metric("% of Portfolio", f"{_portfolio_pct:.1f}%")
+                _r3c4.metric("Opened", _time_ago(_opened_at))
+
+                # Progress bar: price between stop and target
+                if _progress_val is not None:
+                    _bar_color = "#2ecc71" if _progress_val >= 0.5 else "#f39c12"
+                    if _progress_val <= 0.2:
+                        _bar_color = "#e74c3c"
+                    st.markdown(
+                        f"<div style='margin-top:8px'>"
+                        f"<small style='color:#aaa'>Price position: stop"
+                        f" ← {_progress_val*100:.0f}% → target</small>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.progress(_progress_val)
+
+                st.markdown("</div>", unsafe_allow_html=True)
     else:
         st.info("No open positions." + (" Agent not running." if not snap else ""))
 
@@ -1659,19 +2128,262 @@ with tab_controls:
 
     st.divider()
 
-    # ── Multi-agent info (Phase 3 placeholder) ───────────────────────────────
-    st.subheader("Multi-Agent Architecture")
-    st.info(
-        "**Coming soon:** Multiple independent paper-trading agents with different strategy profiles.\n\n"
-        "Each agent will run as a separate process with its own capital allocation, strategy set, "
-        "and risk limits. Results will be aggregated here for comparison.\n\n"
-        "**Planned agent profiles:**\n"
-        "- `trend_agent` — TREND strategies only (TrendBreakout, EMA, OBV)\n"
-        "- `range_agent` — RANGE strategies only (MeanReversion, BbSqueeze)\n"
-        "- `short_agent` — Short-selling strategies (SupertrendShort)\n"
-        "- `full_agent` — All strategies (current default)\n\n"
-        "Track this on GitHub: https://github.com/noah124098-ux/pypoc"
+    # ── Multi-agent management UI ────────────────────────────────────────────
+    st.subheader("Agent Instances")
+
+    # Helper: discover all agent PID files in data/
+    def _discover_agent_pids() -> list[dict]:
+        """Scan data/ for agent*.pid files and return a list of agent info dicts."""
+        _data_dir = Path("data")
+        _agents_found: list[dict] = []
+        # Primary agent (agent.pid)
+        _primary_pid_path = _data_dir / "agent.pid"
+        if _primary_pid_path.exists():
+            try:
+                _pid = int(_primary_pid_path.read_text().strip())
+                import psutil as _psutil_ag
+                _alive = _psutil_ag.pid_exists(_pid)
+                _started = "—"
+                if _alive:
+                    try:
+                        _p = _psutil_ag.Process(_pid)
+                        _started = datetime.fromtimestamp(_p.create_time()).strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        _started = "unknown"
+                _agents_found.append({
+                    "agent_id": "default",
+                    "pid": _pid,
+                    "profile": "Full (all strategies)",
+                    "port": 8501,
+                    "alive": _alive,
+                    "started": _started,
+                    "is_current": True,
+                })
+            except Exception:
+                pass
+        # Additional agents (agent_<id>.pid pattern)
+        for _extra_pid_path in sorted(_data_dir.glob("agent_*.pid")):
+            try:
+                _ag_id = _extra_pid_path.stem.replace("agent_", "")
+                _pid = int(_extra_pid_path.read_text().strip())
+                import psutil as _psutil_ag
+                _alive = _psutil_ag.pid_exists(_pid)
+                _started = "—"
+                if _alive:
+                    try:
+                        _p = _psutil_ag.Process(_pid)
+                        _started = datetime.fromtimestamp(_p.create_time()).strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        pass
+                _profile_name = "Unknown"
+                _port = 8501
+                _meta_path = _data_dir / f"agent_{_ag_id}_meta.json"
+                if _meta_path.exists():
+                    try:
+                        _meta = json.loads(_meta_path.read_text(encoding="utf-8"))
+                        _profile_name = _meta.get("profile", "Unknown")
+                        _port = _meta.get("port", 8501)
+                    except Exception:
+                        pass
+                _agents_found.append({
+                    "agent_id": _ag_id,
+                    "pid": _pid,
+                    "profile": _profile_name,
+                    "port": _port,
+                    "alive": _alive,
+                    "started": _started,
+                    "is_current": False,
+                })
+            except Exception:
+                continue
+        return _agents_found
+
+    def _agent_equity_today_ctrl(agent_id: str) -> tuple[float, float]:
+        """Return (equity, today_pnl) for a given agent_id from its snapshot file."""
+        _snap_p = SNAPSHOT_PATH if agent_id == "default" else Path(f"data/snapshot_{agent_id}.json")
+        if not _snap_p.exists():
+            return 0.0, 0.0
+        try:
+            _s = json.loads(_snap_p.read_text(encoding="utf-8"))
+            _eq = float(_s.get("equity", 0.0))
+            _start = float(_s.get("starting_equity_today", _eq) or _eq)
+            return _eq, _eq - _start
+        except Exception:
+            return 0.0, 0.0
+
+    _ctrl_agents = _discover_agent_pids()
+
+    if _ctrl_agents:
+        _ctrl_agent_rows = []
+        for _cag in _ctrl_agents:
+            _cag_eq, _cag_pnl = _agent_equity_today_ctrl(_cag["agent_id"])
+            _ctrl_agent_rows.append({
+                "Agent ID": _cag["agent_id"] + (" (this)" if _cag["is_current"] else ""),
+                "Profile": _cag["profile"],
+                "Started": _cag["started"],
+                "Status": "RUNNING" if _cag["alive"] else "STOPPED",
+                "Equity (INR)": f"{_cag_eq:,.0f}" if _cag_eq else "—",
+                "Today P&L": f"{_cag_pnl:+,.0f}" if _cag_pnl != 0.0 else "—",
+            })
+        _ctrl_agents_df = pd.DataFrame(_ctrl_agent_rows)
+
+        def _ctrl_status_style(val: str) -> str:
+            if "RUNNING" in str(val):
+                return "background-color:#1a7a4a;color:white;font-weight:bold"
+            return "background-color:#7a1a1a;color:white;font-weight:bold"
+
+        def _ctrl_pnl_style(val: str) -> str:
+            s = str(val)
+            if s.startswith("+") or (s and s[0].isdigit() and float(s.replace(",", "") or 0) > 0):
+                return "color:#2ecc71;font-weight:bold"
+            if s.startswith("-"):
+                return "color:#e74c3c;font-weight:bold"
+            return ""
+
+        st.dataframe(
+            _ctrl_agents_df.style
+            .applymap(_ctrl_status_style, subset=["Status"])
+            .applymap(_ctrl_pnl_style, subset=["Today P&L"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("No agent PID files found in data/. Start the agent to see it listed here.")
+
+    st.divider()
+
+    # ── Current agent profile card (read-only) ────────────────────────────────
+    st.subheader("Current Agent Profile")
+
+    _profile_cfg = _read_config()
+    _risk_profile = _profile_cfg.get("risk", {})
+    _cap_profile = _profile_cfg.get("capital", {})
+    _strategies_cfg = _profile_cfg.get("strategies", {})
+
+    _enabled_count: int | str = sum(
+        1 for _sv in _strategies_cfg.values()
+        if isinstance(_sv, dict) and _sv.get("enabled", True)
+    ) if _strategies_cfg else "—"
+
+    _per_trade_pct = _risk_profile.get("per_trade_risk_pct", "—")
+    _max_pos_profile = _risk_profile.get("max_open_positions", "—")
+    _initial_inr_profile = int(_cap_profile.get("initial_inr", 0))
+    _mode_profile = _profile_cfg.get("mode", "paper").upper()
+    _mode_col_profile = "#e74c3c" if _mode_profile == "LIVE" else "#3498db"
+    _gate_col_profile = "#2ecc71" if gate.get("passed") else "#e74c3c"
+    _gate_lbl_profile = "PASSED" if gate.get("passed") else "FAILED"
+
+    _prof_c1, _prof_c2 = st.columns(2)
+    with _prof_c1:
+        st.markdown(
+            f"""
+            <div style='background:#1e2836;padding:16px;border-radius:8px;border:1px solid #2ecc71'>
+            <b style='color:#2ecc71;font-size:1.05em'>Agent Configuration</b><br><br>
+            <table style='width:100%;color:#ddd;border-collapse:collapse'>
+            <tr><td style='padding:3px 0'><b>Universe</b></td>
+                <td>Nifty 50 (50 symbols)</td></tr>
+            <tr><td style='padding:3px 0'><b>Active Strategies</b></td>
+                <td>{_enabled_count} enabled</td></tr>
+            <tr><td style='padding:3px 0'><b>Per-trade risk</b></td>
+                <td>{_per_trade_pct}% of equity</td></tr>
+            <tr><td style='padding:3px 0'><b>Max positions</b></td>
+                <td>{_max_pos_profile}</td></tr>
+            <tr><td style='padding:3px 0'><b>Starting capital</b></td>
+                <td>&#8377;{_initial_inr_profile:,}</td></tr>
+            </table>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with _prof_c2:
+        st.markdown(
+            f"""
+            <div style='background:#1e2836;padding:16px;border-radius:8px;border:1px solid #3498db'>
+            <b style='color:#3498db;font-size:1.05em'>Gate &amp; Mode</b><br><br>
+            <table style='width:100%;color:#ddd;border-collapse:collapse'>
+            <tr><td style='padding:3px 0'><b>Mode</b></td>
+                <td><span style='color:{_mode_col_profile};font-weight:bold'>{_mode_profile}</span></td></tr>
+            <tr><td style='padding:3px 0'><b>Backtest gate</b></td>
+                <td><span style='color:{_gate_col_profile};font-weight:bold'>{_gate_lbl_profile}</span></td></tr>
+            <tr><td style='padding:3px 0'><b>Daily loss circuit</b></td>
+                <td>-{_risk_profile.get("daily_loss_circuit_pct", "—")}%</td></tr>
+            <tr><td style='padding:3px 0'><b>Drawdown circuit</b></td>
+                <td>-{_risk_profile.get("drawdown_circuit_pct", "—")}%</td></tr>
+            <tr><td style='padding:3px 0'><b>Max position size</b></td>
+                <td>{_risk_profile.get("max_position_pct", "—")}% of equity</td></tr>
+            </table>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # ── Start new agent (placeholder UI for intended multi-agent capability) ──
+    st.subheader("Start New Agent Instance")
+    st.caption(
+        "Multiple agents are not yet supported in the execution layer. "
+        "This UI shows the intended multi-agent capability for a future phase."
     )
+
+    _AGENT_PROFILES = {
+        "Conservative": {
+            "description": "1% risk, 3 positions max, RANGE + VOLATILE regimes only",
+            "per_trade_risk_pct": 1.0,
+            "max_open_positions": 3,
+            "regimes": ["RANGE", "VOLATILE"],
+        },
+        "Aggressive": {
+            "description": "2% risk, 5 positions, all regimes",
+            "per_trade_risk_pct": 2.0,
+            "max_open_positions": 5,
+            "regimes": ["TREND", "RANGE", "VOLATILE"],
+        },
+        "Defensive": {
+            "description": "0.5% risk, 2 positions, RANGE / VOLATILE only",
+            "per_trade_risk_pct": 0.5,
+            "max_open_positions": 2,
+            "regimes": ["RANGE", "VOLATILE"],
+        },
+        "Full (default)": {
+            "description": "Standard config — all strategies, all regimes",
+            "per_trade_risk_pct": float(_risk_profile.get("per_trade_risk_pct", 1.0)),
+            "max_open_positions": int(_risk_profile.get("max_open_positions", 5)),
+            "regimes": ["TREND", "RANGE", "VOLATILE"],
+        },
+    }
+
+    _ma_col1, _ma_col2, _ma_col3 = st.columns(3)
+    _selected_profile_name = _ma_col1.selectbox(
+        "Agent Profile",
+        options=list(_AGENT_PROFILES.keys()),
+        index=0,
+        key="new_agent_profile",
+    )
+    _selected_port = _ma_col2.selectbox(
+        "Dashboard Port",
+        options=[8502, 8503, 8504, 8505],
+        index=0,
+        key="new_agent_port",
+    )
+    _sel_prof = _AGENT_PROFILES[_selected_profile_name]
+    _ma_col3.markdown(
+        f"<div style='padding:10px;background:#1e2836;border-radius:6px;"
+        f"font-size:0.85em;color:#aaa;height:100%'>"
+        f"<b style='color:#f39c12'>{_selected_profile_name}</b><br>"
+        f"{_sel_prof['description']}<br>"
+        f"Risk: {_sel_prof['per_trade_risk_pct']}% &nbsp;|&nbsp; "
+        f"Max pos: {_sel_prof['max_open_positions']}</div>",
+        unsafe_allow_html=True,
+    )
+
+    if st.button("Start New Agent", type="primary", key="btn_start_new_agent"):
+        st.warning(
+            "Multiple agents not yet supported — coming soon. "
+            f"Selected profile: **{_selected_profile_name}** on port **{_selected_port}**. "
+            "The execution layer will be extended in a future phase to run isolated agent "
+            "processes with separate SQLite databases, snapshot files, and PID tracking."
+        )
 
     st.divider()
 
