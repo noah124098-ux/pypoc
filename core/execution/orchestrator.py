@@ -25,7 +25,7 @@ from core.data.aggregator import CandleAggregator
 from core.data.feed_base import ILiveFeed
 from core.data.historical import fetch_daily
 from core.data.universe import resolve_universe
-from core.logging_setup import JsonlEventLogger
+from core.logging_setup import JsonlEventLogger, log_agent_halted, log_order_rejected, log_trade_filled
 from core.persistence.store import Store
 from core.regime.classifier import RegimeClassifier, RegimeSnapshot
 from core.runtime_snapshot import RuntimeSnapshot, now_iso, write as write_snapshot
@@ -42,7 +42,6 @@ from core.risk.sizing import position_size
 from core.strategies.base import IStrategy
 from core.strategies.mean_reversion import MeanReversion
 from core.strategies.supertrend_short import SupertrendShort
-from core.strategies.simple_trend_short import SimpleTrendShort
 from core.strategies.trend_breakout import TrendBreakout
 from core.strategies.volatility_compression import VolatilityCompression
 from core.types import Candle, OrderType, Regime, Side, Tick
@@ -88,6 +87,8 @@ class Orchestrator:
         self.halt_reason = ""
         self._last_vix_fetch: float = 0.0
         self._last_config_reload: float = 0.0
+        # Intraday regime tick distribution — reset at EOD
+        self._regime_ticks: dict[str, int] = {}
 
         try:
             from core.config import Secrets
@@ -115,6 +116,10 @@ class Orchestrator:
             )
         except Exception:
             self.email_notifier = None
+
+        # Wire exit callback so PaperBroker auto-exits fire Telegram alerts.
+        if isinstance(self.broker, PaperBroker):
+            self.broker.on_exit = self._on_position_exit
 
     # ---------- public API ----------
 
@@ -243,6 +248,9 @@ class Orchestrator:
     def _on_candle_close(self, candle: Candle) -> None:
         if candle.interval != "5m":
             return  # decisions on 5-min closes; tune via config later
+        # Track regime distribution for EOD daily_summary event
+        regime_key = self.current_regime.regime.value
+        self._regime_ticks[regime_key] = self._regime_ticks.get(regime_key, 0) + 1
         history = self.aggregator.history(candle.symbol, "5m")
         if len(history) < 30:
             return
@@ -393,7 +401,7 @@ class Orchestrator:
 
         if not decision.allow:
             self.store.record_guardrail(rule=decision.rule, symbol=sig.symbol, detail=decision.reason)
-            log.info("Signal rejected: %s %s — %s: %s", sig.symbol, sig.strategy, decision.rule, decision.reason)
+            log_order_rejected(log, symbol=sig.symbol, reason=f"{decision.rule}: {decision.reason}")
             return
 
         order = self.broker.place_order(
@@ -405,7 +413,18 @@ class Orchestrator:
             target=sig.target,
             strategy=sig.strategy,
         )
-        log.info("Order %s for %s qty=%d -> %s", order.id, sig.symbol, qty, order.status.value)
+        if order.status.value == "FILLED":
+            log_trade_filled(
+                log,
+                symbol=order.symbol,
+                side=order.side.value,
+                qty=order.filled_qty,
+                price=order.filled_price,
+                strategy=sig.strategy,
+                regime=sig.regime.value,
+            )
+        else:
+            log_order_rejected(log, symbol=order.symbol, reason=order.rejection_reason or order.status.value)
         self.events.emit(
             "order",
             id=order.id,
@@ -416,6 +435,31 @@ class Orchestrator:
             status=order.status.value,
             rejection=order.rejection_reason,
         )
+        if order.status.value == "FILLED" and self.telegram and self.s.notifications.telegram_enabled:
+            try:
+                self.telegram.send_trade_alert(
+                    symbol=order.symbol,
+                    side=order.side.value,
+                    strategy=sig.strategy,
+                    pnl=0.0,
+                    reason="entry",
+                )
+            except Exception as _e:
+                log.warning("Telegram entry alert failed: %s", _e)
+
+    def _on_position_exit(self, symbol: str, pnl: float, exit_reason: str, strategy: str) -> None:
+        """Called by PaperBroker whenever a position is auto-closed (stop/target/EOD)."""
+        if self.telegram and self.s.notifications.telegram_enabled:
+            try:
+                self.telegram.send_trade_alert(
+                    symbol=symbol,
+                    side="EXIT",
+                    strategy=strategy,
+                    pnl=pnl,
+                    reason=exit_reason,
+                )
+            except Exception as _e:
+                log.warning("Telegram exit alert failed: %s", _e)
 
     # ---------- helpers ----------
 
@@ -518,14 +562,6 @@ class Orchestrator:
                 target_r_multiple=cfg.get("target_r_multiple", 2.0),
                 stock_dma_period=cfg.get("stock_dma_period", 50),
             ))
-        if scfg.get("simple_trend_short", {}).get("enabled", False):
-            cfg = scfg["simple_trend_short"]
-            out.append(SimpleTrendShort(
-                atr_period=cfg.get("atr_period", 10),
-                multiplier=cfg.get("multiplier", 3.0),
-                target_r_multiple=cfg.get("target_r_multiple", 2.0),
-                stock_dma_period=cfg.get("stock_dma_period", 50),
-            ))
         return out
 
     def _maybe_squareoff_eod(self) -> None:
@@ -542,18 +578,37 @@ class Orchestrator:
             isinstance(self.broker, PaperBroker) and self.broker._auto_exit(  # type: ignore[attr-defined]
                 pos, pos.last_price or pos.avg_price, "eod_squareoff"
             )
+
+        equity = self.broker.equity()
+        pnl = getattr(self.broker, "realized_pnl", 0.0)
+        trades_today = len(getattr(self.broker, "trade_log", []))
+        day_pnl_pct = (
+            (equity - self.starting_equity_today) / self.starting_equity_today * 100.0
+            if self.starting_equity_today > 0 else 0.0
+        )
+
+        # Emit structured daily_summary event to events.jsonl
+        self.events.emit_daily_summary(
+            equity=equity,
+            day_pnl=pnl,
+            day_pnl_pct=round(day_pnl_pct, 4),
+            trades_today=trades_today,
+            regime_distribution=dict(self._regime_ticks),
+        )
+        # Reset intraday regime tick counter for the next trading day
+        self._regime_ticks = {}
+
         if getattr(self, 'telegram', None) and self.s.notifications.telegram_enabled:
-            pnl = getattr(self.broker, 'realized_pnl', 0.0)
-            self.telegram.send_daily_summary(self.broker.equity(), pnl, len(self.broker.trade_log), self.current_regime.regime.value)
+            self.telegram.send_daily_summary(equity, pnl, trades_today, self.current_regime.regime.value)
 
         if self.s.notifications.email_enabled and getattr(self, 'email_notifier', None):
             try:
                 from core.analytics.performance_report import generate_html_report
                 html = generate_html_report("data/agent.db", "data/snapshot.json")
                 self.email_notifier.send_eod_report(
-                    equity=self.broker.equity(),
-                    pnl=getattr(self.broker, "realized_pnl", 0.0),
-                    trades=len(self.broker.trade_log),
+                    equity=equity,
+                    pnl=pnl,
+                    trades=trades_today,
                     review_summary=html,
                 )
             except Exception as e:
@@ -568,12 +623,12 @@ class Orchestrator:
             if day_pnl_pct < -self.s.risk.daily_loss_circuit_pct:
                 self.halted = True
                 self.halt_reason = f"daily loss circuit hit ({day_pnl_pct:.2f}%)"
-                log.error("HALT: %s", self.halt_reason)
+                log_agent_halted(log, reason="daily_loss_circuit", pct=day_pnl_pct)
                 if getattr(self, 'telegram', None): self.telegram.send_halt_alert(self.halt_reason)
         if self.peak_equity > 0:
             dd_pct = (self.peak_equity - equity) / self.peak_equity * 100.0
             if dd_pct > self.s.risk.drawdown_circuit_pct:
                 self.halted = True
                 self.halt_reason = f"drawdown circuit hit ({dd_pct:.2f}%)"
-                log.error("HALT: %s", self.halt_reason)
+                log_agent_halted(log, reason="drawdown_circuit", pct=-dd_pct)
                 if getattr(self, 'telegram', None): self.telegram.send_halt_alert(self.halt_reason)

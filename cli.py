@@ -35,7 +35,12 @@ def _build_feed(settings, secrets: Secrets) -> ILiveFeed:
 def cmd_run(args):
     settings = load_settings(args.config)
     secrets = Secrets.from_env()
-    log = setup_logging(settings.logging.level, settings.logging.file)
+    log = setup_logging(
+        settings.logging.level,
+        settings.logging.file,
+        max_bytes=settings.logging.max_bytes,
+        backup_count=settings.logging.backup_count,
+    )
     events = JsonlEventLogger(settings.logging.json_log_file)
 
     # Strict gate: live mode requires a recent passing walk-forward run.
@@ -931,6 +936,258 @@ def cmd_schedule_gate_refresh(args):
         raise SystemExit(2)
 
 
+def cmd_preflight(args):
+    """Run all pre-flight checks before starting the live paper-trading agent.
+
+    Exit code 0 = all checks pass (safe to run).
+    Exit code 1 = one or more checks failed (fix before running).
+    """
+    import json as _json
+    import os
+    import subprocess
+    import sys
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    PASS = "✅"  # ✅
+    FAIL = "❌"  # ❌
+
+    # UTF-8-safe print (Windows terminals may use cp1252 which can't encode these chars)
+    if hasattr(sys.stdout, "buffer"):
+        _write = sys.stdout.buffer.write
+
+        def _uprint(s: str) -> None:
+            _write((s + "\n").encode("utf-8", errors="replace"))
+    else:
+        def _uprint(s: str) -> None:  # type: ignore[misc]
+            print(s)
+
+    results: list[tuple[bool, str]] = []
+
+    def check(label: str, ok: bool, detail: str = "") -> bool:
+        marker = PASS if ok else FAIL
+        suffix = f"  ({detail})" if detail else ""
+        _uprint(f"  {marker} {label}{suffix}")
+        results.append((ok, label))
+        return ok
+
+    _uprint("\n=== NSE Agent Pre-flight Check ===\n")
+
+    # ------------------------------------------------------------------
+    # 1. Virtual environment active
+    # ------------------------------------------------------------------
+    in_venv = (
+        os.getenv("VIRTUAL_ENV") is not None
+        or hasattr(sys, "real_prefix")
+        or (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix)
+    )
+    check("1. Virtual environment active", in_venv,
+          "" if in_venv else "activate with: .venv\\Scripts\\Activate.ps1")
+
+    # ------------------------------------------------------------------
+    # 2. Angel One credentials present
+    # ------------------------------------------------------------------
+    from dotenv import load_dotenv
+    load_dotenv(override=False)
+    creds_required = {
+        "ANGEL_ONE_API_KEY": os.getenv("ANGEL_ONE_API_KEY", ""),
+        "ANGEL_ONE_CLIENT_CODE": os.getenv("ANGEL_ONE_CLIENT_CODE", ""),
+        "ANGEL_ONE_PASSWORD": os.getenv("ANGEL_ONE_PASSWORD", ""),
+        "ANGEL_ONE_TOTP_SECRET": os.getenv("ANGEL_ONE_TOTP_SECRET", ""),
+    }
+    missing_creds = [k for k, v in creds_required.items() if not v]
+    creds_present = len(missing_creds) == 0
+    check("2. Angel One credentials present (.env has ANGEL_ONE_API_KEY etc.)",
+          creds_present,
+          f"missing: {', '.join(missing_creds)}" if missing_creds else "")
+
+    # ------------------------------------------------------------------
+    # 3. Angel One credentials have correct format (not placeholder values)
+    # ------------------------------------------------------------------
+    PLACEHOLDER_PATTERNS = {"your_", "<", "xxx", "test", "dummy", "placeholder", "changeme"}
+    bad_creds = []
+    for k, v in creds_required.items():
+        if v:
+            vl = v.lower()
+            if any(p in vl for p in PLACEHOLDER_PATTERNS):
+                bad_creds.append(k)
+    creds_format_ok = creds_present and len(bad_creds) == 0
+    check("3. Angel One credentials have correct format (not placeholder values)",
+          creds_format_ok,
+          f"likely placeholder: {', '.join(bad_creds)}" if bad_creds else (
+              "credentials missing (see check 2)" if not creds_present else ""))
+
+    # ------------------------------------------------------------------
+    # 4. Backtest gate passes (check data/backtest_gate.json, not expired)
+    # ------------------------------------------------------------------
+    from backtest.gate import GATE_MAX_AGE_DAYS, is_live_allowed, read_gate_result
+
+    gate_data = read_gate_result()
+    gate_allowed, gate_reason = is_live_allowed()
+    if gate_data is None:
+        gate_detail = "no gate file — run: python cli.py walk-forward --years 3"
+    elif not gate_data.get("passed", False):
+        failures = gate_data.get("failures", [])
+        gate_detail = f"FAILED: {', '.join(failures)}"
+    else:
+        ts_str = gate_data.get("timestamp", "")
+        gate_age_days: float | None = None
+        if ts_str:
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                gate_age_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400
+            except ValueError:
+                pass
+        if gate_age_days is not None and gate_age_days > GATE_MAX_AGE_DAYS:
+            gate_detail = f"EXPIRED ({gate_age_days:.0f} days old > {GATE_MAX_AGE_DAYS} day limit)"
+        else:
+            age_label = f"{gate_age_days:.0f} days old" if gate_age_days is not None else ""
+            gate_detail = age_label
+    check("4. Backtest gate passes (data/backtest_gate.json, not expired)",
+          gate_allowed, gate_detail)
+
+    # ------------------------------------------------------------------
+    # 5. Config validates (load_settings succeeds)
+    # ------------------------------------------------------------------
+    config_ok = False
+    config_detail = ""
+    try:
+        load_settings(args.config)
+        config_ok = True
+    except Exception as exc:
+        config_detail = str(exc)[:120]
+    check("5. Config validates (python cli.py check-config succeeds)",
+          config_ok, config_detail)
+
+    # ------------------------------------------------------------------
+    # 6. Tests pass (pytest -q --tb=no, timeout 60s)
+    # ------------------------------------------------------------------
+    tests_ok = False
+    tests_detail = ""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "--tb=no"],
+            capture_output=True, text=True, timeout=60,
+        )
+        output = (proc.stdout + proc.stderr).strip()
+        # Last line typically: "N passed in Xs"
+        summary_line = output.split("\n")[-1] if output else ""
+        if proc.returncode == 0:
+            tests_ok = True
+            tests_detail = summary_line
+        else:
+            tests_detail = summary_line or f"exit code {proc.returncode}"
+    except subprocess.TimeoutExpired:
+        tests_detail = "timed out after 60s"
+    except Exception as exc:
+        tests_detail = str(exc)[:80]
+    check("6. Tests pass (pytest -q --tb=no)", tests_ok, tests_detail)
+
+    # ------------------------------------------------------------------
+    # 7. Data directory exists and is writable
+    # ------------------------------------------------------------------
+    data_dir = Path("data")
+    data_exists = data_dir.exists() and data_dir.is_dir()
+    data_writable = False
+    if data_exists:
+        try:
+            probe = data_dir / ".preflight_write_probe"
+            probe.write_text("ok")
+            probe.unlink()
+            data_writable = True
+        except OSError:
+            pass
+    data_ok = data_exists and data_writable
+    if not data_exists:
+        data_detail = "directory does not exist — run: mkdir data"
+    elif not data_writable:
+        data_detail = "directory is not writable"
+    else:
+        data_detail = str(data_dir.resolve())
+    check("7. Data directory exists and is writable (data/)", data_ok, data_detail)
+
+    # ------------------------------------------------------------------
+    # 8. Logs directory exists
+    # ------------------------------------------------------------------
+    logs_dir = Path("logs")
+    logs_ok = logs_dir.exists() and logs_dir.is_dir()
+    logs_detail = "" if logs_ok else "directory does not exist — run: mkdir logs"
+    check("8. Logs directory exists (logs/)", logs_ok, logs_detail)
+
+    # ------------------------------------------------------------------
+    # 9. Market hours check — is NSE open right now? (IST 09:15–15:30 weekdays)
+    # ------------------------------------------------------------------
+    from zoneinfo import ZoneInfo
+
+    ist_tz = ZoneInfo("Asia/Kolkata")
+    now_ist = datetime.now(ist_tz)
+    weekday = now_ist.weekday()  # 0=Mon ... 6=Sun
+    market_open_time = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_close_time = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+    is_weekday = weekday < 5
+    is_open_hours = market_open_time <= now_ist <= market_close_time
+    market_open = is_weekday and is_open_hours
+    if not is_weekday:
+        market_detail = f"today is {now_ist.strftime('%A')} — market closed on weekends"
+    elif now_ist < market_open_time:
+        opens_in = (market_open_time - now_ist).seconds // 60
+        market_detail = f"pre-market — opens in {opens_in}m (IST {now_ist.strftime('%H:%M')})"
+    elif now_ist > market_close_time:
+        market_detail = f"post-market (IST {now_ist.strftime('%H:%M')}, closed at 15:30)"
+    else:
+        market_detail = f"NSE open (IST {now_ist.strftime('%H:%M')})"
+    # Market hours is a WARNING not a hard failure — you may want to start before open
+    check("9. Market hours — is NSE open right now? (IST 09:15-15:30 weekdays)",
+          market_open, market_detail)
+
+    # ------------------------------------------------------------------
+    # 10. Snapshot freshness — if agent.pid exists, is snapshot.json recent (<60s)?
+    # ------------------------------------------------------------------
+    pid_file = Path("data/agent.pid")
+    snapshot_file = Path("data/snapshot.json")
+    snap_ok = True
+    snap_detail = ""
+    if pid_file.exists():
+        # Agent may be running — check snapshot freshness
+        if not snapshot_file.exists():
+            snap_ok = False
+            snap_detail = "agent.pid exists but data/snapshot.json missing"
+        else:
+            try:
+                snap_data = _json.loads(snapshot_file.read_text(encoding="utf-8"))
+                ts_str = snap_data.get("ts", "")
+                if ts_str:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    age_s = (datetime.now(timezone.utc) - ts).total_seconds()
+                    if age_s > 60:
+                        snap_ok = False
+                        snap_detail = f"snapshot is {age_s:.0f}s old (>60s) — agent may be stuck"
+                    else:
+                        snap_detail = f"snapshot {age_s:.0f}s old — agent running OK"
+                else:
+                    snap_detail = "snapshot has no timestamp field"
+            except (OSError, _json.JSONDecodeError, ValueError) as exc:
+                snap_ok = False
+                snap_detail = f"could not read snapshot: {exc}"
+    else:
+        snap_detail = "no agent.pid — agent is not currently running"
+    check("10. Snapshot freshness (if agent.pid exists, snapshot.json < 60s old)",
+          snap_ok, snap_detail)
+
+    # ------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------
+    n_fail = sum(1 for ok, _ in results if not ok)
+    _uprint("")
+    if n_fail == 0:
+        _uprint(f"  {PASS} All checks passed — safe to run: python cli.py run")
+    else:
+        _uprint(f"  {FAIL} {n_fail} check{'s' if n_fail != 1 else ''} failed — fix before running")
+    _uprint("")
+
+    raise SystemExit(0 if n_fail == 0 else 1)
+
+
 def cmd_send_command(args):
     """Send a command to the running agent via the file-based command queue.
 
@@ -1029,6 +1286,11 @@ def main():
         help="Run each enabled strategy on 1 year of RELIANCE data and report signals/sec + us/call",
     )
     bs.set_defaults(func=cmd_benchmark_strategies)
+
+    sub.add_parser(
+        "preflight",
+        help="Run all 10 pre-flight checks before starting live paper trading",
+    ).set_defaults(func=cmd_preflight)
 
     sc = sub.add_parser(
         "send-command",

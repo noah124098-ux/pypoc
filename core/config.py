@@ -91,6 +91,8 @@ class LoggingCfg(BaseModel):
     level: str
     file: str
     json_log_file: str
+    max_bytes: int = 10_485_760   # 10 MB per file
+    backup_count: int = 5         # number of rotated backups to keep
 
 
 class UniverseCfg(BaseModel):
