@@ -2071,6 +2071,346 @@ with tab_backtest:
         "Then click **Refresh now** in the sidebar."
     )
 
+    st.divider()
+
+    # ── Strategy Performance Attribution ─────────────────────────────────────
+    st.header("Strategy Performance Attribution")
+
+    _bt_trades = _query_df(
+        conn,
+        "SELECT strategy, pnl, charges, closed_at, opened_at, regime FROM trades ORDER BY closed_at",
+    )
+
+    if _bt_trades.empty:
+        st.info("No closed trades in the database yet. Run the agent or a backtest first.")
+    else:
+        _bt_trades["pnl_net"] = _bt_trades["pnl"] - _bt_trades["charges"]
+        _bt_trades["closed_at"] = pd.to_datetime(_bt_trades["closed_at"], errors="coerce")
+        _bt_trades["opened_at"] = pd.to_datetime(_bt_trades["opened_at"], errors="coerce")
+
+        # ── 1. Strategy Performance Table ────────────────────────────────────
+        st.subheader("Strategy Performance Table")
+
+        def _pf_color(val: float) -> str:
+            """Return CSS color string for profit factor cell."""
+            try:
+                v = float(val)
+            except (TypeError, ValueError):
+                return ""
+            if v >= 1.5:
+                return "background-color: rgba(46,204,113,0.25); color: #2ecc71; font-weight: bold"
+            if v >= 1.0:
+                return "background-color: rgba(243,156,18,0.25); color: #f39c12; font-weight: bold"
+            return "background-color: rgba(231,76,60,0.25); color: #e74c3c; font-weight: bold"
+
+        _strat_rows = []
+        for _strat_name, _sg in _bt_trades.groupby("strategy"):
+            _n = len(_sg)
+            _wins = (_sg["pnl"] > 0).sum()
+            _losses = (_sg["pnl"] < 0).sum()
+            _win_pct = _wins / _n * 100 if _n > 0 else 0.0
+            _avg_win = float(_sg.loc[_sg["pnl"] > 0, "pnl"].mean()) if _wins > 0 else 0.0
+            _avg_loss = float(_sg.loc[_sg["pnl"] < 0, "pnl"].mean()) if _losses > 0 else 0.0
+            _gross_profit = float(_sg.loc[_sg["pnl"] > 0, "pnl"].sum()) if _wins > 0 else 0.0
+            _gross_loss = abs(float(_sg.loc[_sg["pnl"] < 0, "pnl"].sum())) if _losses > 0 else 0.0
+            _pf_val = (_gross_profit / _gross_loss) if _gross_loss > 0 else float("inf")
+            _net_pnl = float(_sg["pnl_net"].sum())
+            _strat_rows.append({
+                "Strategy": str(_strat_name),
+                "Trades": _n,
+                "Win %": round(_win_pct, 1),
+                "Avg Win ₹": round(_avg_win, 0),
+                "Avg Loss ₹": round(_avg_loss, 0),
+                "Profit Factor": round(_pf_val, 2) if _pf_val != float("inf") else 999.0,
+                "Net P&L ₹": round(_net_pnl, 0),
+            })
+
+        _strat_df = pd.DataFrame(_strat_rows).sort_values("Net P&L ₹", ascending=False)
+
+        def _strat_table_style(row):
+            styles = [""] * len(row)
+            if "Profit Factor" in row.index:
+                idx = list(row.index).index("Profit Factor")
+                styles[idx] = _pf_color(row["Profit Factor"])
+            if "Net P&L ₹" in row.index:
+                idx_pnl = list(row.index).index("Net P&L ₹")
+                try:
+                    v = float(row["Net P&L ₹"])
+                    if v > 0:
+                        styles[idx_pnl] = "color: #2ecc71; font-weight: bold"
+                    elif v < 0:
+                        styles[idx_pnl] = "color: #e74c3c; font-weight: bold"
+                except (TypeError, ValueError):
+                    pass
+            return styles
+
+        _strat_styled = (
+            _strat_df.style
+            .apply(_strat_table_style, axis=1)
+            .format({
+                "Win %": "{:.1f}%",
+                "Avg Win ₹": "₹{:,.0f}",
+                "Avg Loss ₹": "₹{:,.0f}",
+                "Profit Factor": "{:.2f}",
+                "Net P&L ₹": "₹{:,.0f}",
+            })
+        )
+        st.dataframe(_strat_styled, use_container_width=True, hide_index=True)
+
+        # Bar chart: Net P&L by strategy (horizontal)
+        _pnl_bar_colors = [
+            "#2ecc71" if v >= 0 else "#e74c3c"
+            for v in _strat_df["Net P&L ₹"]
+        ]
+        _fig_strat_bar = go.Figure(go.Bar(
+            x=_strat_df["Net P&L ₹"],
+            y=_strat_df["Strategy"],
+            orientation="h",
+            marker_color=_pnl_bar_colors,
+            text=_strat_df["Net P&L ₹"].apply(lambda v: f"₹{v:,.0f}"),
+            textposition="outside",
+            hovertemplate="<b>%{y}</b><br>Net P&L: ₹%{x:,.0f}<extra></extra>",
+        ))
+        _fig_strat_bar.update_layout(
+            height=max(200, len(_strat_rows) * 50 + 60),
+            margin=dict(l=0, r=80, t=20, b=0),
+            xaxis_title="Net P&L (₹)",
+            xaxis_tickprefix="₹",
+            xaxis_tickformat=",.0f",
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(_fig_strat_bar, use_container_width=True)
+
+        st.divider()
+
+        # ── 2. Monthly P&L Heatmap ────────────────────────────────────────────
+        st.subheader("Monthly P&L Heatmap")
+
+        _hm_df = _bt_trades.dropna(subset=["closed_at"]).copy()
+        _hm_df["year"] = _hm_df["closed_at"].dt.year
+        _hm_df["month"] = _hm_df["closed_at"].dt.month
+        _monthly_pnl = (
+            _hm_df.groupby(["year", "month"])["pnl_net"]
+            .sum()
+            .reset_index()
+        )
+
+        if not _monthly_pnl.empty:
+            _years_sorted = sorted(_monthly_pnl["year"].unique())
+            _month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+            # Build z matrix: rows=years, cols=months 1-12
+            _hm_matrix = []
+            _hm_text = []
+            for _yr in _years_sorted:
+                _row_vals = []
+                _row_text = []
+                for _mo in range(1, 13):
+                    _match = _monthly_pnl[
+                        (_monthly_pnl["year"] == _yr) & (_monthly_pnl["month"] == _mo)
+                    ]
+                    if not _match.empty:
+                        _v = float(_match["pnl_net"].iloc[0])
+                        _row_vals.append(_v)
+                        _row_text.append(f"₹{_v:,.0f}")
+                    else:
+                        _row_vals.append(None)
+                        _row_text.append("")
+                _hm_matrix.append(_row_vals)
+                _hm_text.append(_row_text)
+
+            _fig_hm = go.Figure(go.Heatmap(
+                z=_hm_matrix,
+                x=_month_labels,
+                y=[str(y) for y in _years_sorted],
+                text=_hm_text,
+                texttemplate="%{text}",
+                colorscale=[
+                    [0.0, "#c0392b"],
+                    [0.5, "#ffffff"],
+                    [1.0, "#27ae60"],
+                ],
+                zmid=0,
+                colorbar=dict(title="P&L (₹)", tickprefix="₹"),
+                hovertemplate="<b>%{y} %{x}</b><br>P&L: %{text}<extra></extra>",
+            ))
+            _fig_hm.update_layout(
+                height=max(200, len(_years_sorted) * 50 + 100),
+                margin=dict(l=60, r=60, t=20, b=40),
+                xaxis_title="Month",
+                yaxis_title="Year",
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(_fig_hm, use_container_width=True)
+            st.caption(
+                "Green = profit, red = loss, white/blank = no trades. "
+                "Reveals seasonal patterns and difficult market periods."
+            )
+        else:
+            st.info("Not enough trade data to build the monthly heatmap.")
+
+        st.divider()
+
+        # ── 3. Trade Distribution Charts ─────────────────────────────────────
+        st.subheader("Trade Distribution")
+        _dist_col1, _dist_col2 = st.columns(2)
+
+        with _dist_col1:
+            st.markdown("**P&L Distribution (Histogram)**")
+            _pnl_series = _bt_trades["pnl_net"].dropna()
+            if not _pnl_series.empty:
+                _fig_hist = go.Figure()
+                _fig_hist.add_trace(go.Histogram(
+                    x=_pnl_series,
+                    nbinsx=40,
+                    marker_color=[
+                        "#2ecc71" if v >= 0 else "#e74c3c"
+                        for v in _pnl_series
+                    ],
+                    hovertemplate="P&L bin: ₹%{x:,.0f}<br>Count: %{y}<extra></extra>",
+                    name="Trades",
+                ))
+                _fig_hist.add_vline(
+                    x=0, line_dash="dash", line_color="rgba(200,200,200,0.7)", line_width=1.5
+                )
+                _fig_hist.add_vline(
+                    x=float(_pnl_series.mean()),
+                    line_dash="dot",
+                    line_color="#f39c12",
+                    line_width=1.5,
+                    annotation_text=f"Mean ₹{_pnl_series.mean():,.0f}",
+                    annotation_font_color="#f39c12",
+                )
+                _fig_hist.update_layout(
+                    height=350,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis_title="Net P&L (₹)",
+                    yaxis_title="Number of Trades",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    showlegend=False,
+                )
+                st.plotly_chart(_fig_hist, use_container_width=True)
+            else:
+                st.info("No P&L data available.")
+
+        with _dist_col2:
+            st.markdown("**Entry Time of Day vs P&L**")
+            _tod_df = _bt_trades.dropna(subset=["opened_at", "pnl_net"]).copy()
+            if not _tod_df.empty:
+                _tod_df["hour_frac"] = (
+                    _tod_df["opened_at"].dt.hour
+                    + _tod_df["opened_at"].dt.minute / 60.0
+                )
+                _tod_df["color_flag"] = _tod_df["pnl_net"].apply(
+                    lambda v: "Win" if v >= 0 else "Loss"
+                )
+                _fig_tod = px.scatter(
+                    _tod_df,
+                    x="hour_frac",
+                    y="pnl_net",
+                    color="color_flag",
+                    color_discrete_map={"Win": "#2ecc71", "Loss": "#e74c3c"},
+                    labels={"hour_frac": "Entry Hour (IST)", "pnl_net": "Net P&L (₹)"},
+                    opacity=0.65,
+                )
+                _fig_tod.add_hline(
+                    y=0,
+                    line_dash="dash",
+                    line_color="rgba(200,200,200,0.5)",
+                    line_width=1,
+                )
+                _fig_tod.update_layout(
+                    height=350,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis=dict(
+                        tickvals=[9.25, 10, 11, 12, 13, 14, 15, 15.5],
+                        ticktext=["9:15", "10:00", "11:00", "12:00",
+                                  "13:00", "14:00", "15:00", "15:30"],
+                    ),
+                    yaxis_tickprefix="₹",
+                    yaxis_tickformat=",.0f",
+                    legend_title_text="",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(_fig_tod, use_container_width=True)
+                st.caption("Shows whether certain entry times produce better or worse outcomes.")
+            else:
+                st.info("No entry timestamp data available.")
+
+        st.divider()
+
+        # ── 4. Regime Performance Table ───────────────────────────────────────
+        st.subheader("Performance by Regime")
+
+        _reg_col = "regime"
+        if _reg_col in _bt_trades.columns:
+            _regime_rows = []
+            _regime_groups = _bt_trades.dropna(subset=[_reg_col]).groupby(_reg_col)
+            for _reg_name, _rg in _regime_groups:
+                _rn = len(_rg)
+                _rw = (_rg["pnl"] > 0).sum()
+                _rw_pct = _rw / _rn * 100 if _rn > 0 else 0.0
+                _avg_pnl = float(_rg["pnl_net"].mean())
+                _best = float(_rg["pnl_net"].max())
+                _worst = float(_rg["pnl_net"].min())
+                _regime_rows.append({
+                    "Regime": str(_reg_name),
+                    "Trades": _rn,
+                    "Win %": round(_rw_pct, 1),
+                    "Avg P&L ₹": round(_avg_pnl, 0),
+                    "Best Trade ₹": round(_best, 0),
+                    "Worst Trade ₹": round(_worst, 0),
+                })
+
+            if _regime_rows:
+                _regime_perf_df = pd.DataFrame(_regime_rows).sort_values("Trades", ascending=False)
+
+                def _regime_row_style(row):
+                    _bg = ""
+                    regime_val = str(row.get("Regime", ""))
+                    bg_map = {
+                        "TREND": "rgba(46,204,113,0.12)",
+                        "RANGE": "rgba(52,152,219,0.12)",
+                        "VOLATILE": "rgba(231,76,60,0.12)",
+                    }
+                    _bg = bg_map.get(regime_val, "")
+                    return [f"background-color:{_bg}" if _bg else ""] * len(row)
+
+                def _avg_pnl_color(val):
+                    try:
+                        v = float(val)
+                        if v > 0:
+                            return "color: #2ecc71; font-weight: bold"
+                        if v < 0:
+                            return "color: #e74c3c; font-weight: bold"
+                    except (TypeError, ValueError):
+                        pass
+                    return ""
+
+                _regime_styled = (
+                    _regime_perf_df.style
+                    .apply(_regime_row_style, axis=1)
+                    .applymap(_avg_pnl_color, subset=["Avg P&L ₹", "Best Trade ₹", "Worst Trade ₹"])
+                    .format({
+                        "Win %": "{:.1f}%",
+                        "Avg P&L ₹": "₹{:,.0f}",
+                        "Best Trade ₹": "₹{:,.0f}",
+                        "Worst Trade ₹": "₹{:,.0f}",
+                    })
+                )
+                st.dataframe(_regime_styled, use_container_width=True, hide_index=True)
+            else:
+                st.info("No regime data found in trades.")
+        else:
+            st.info(
+                "Regime column not present in the trades table. "
+                "Trades logged after the regime column was added will show here."
+            )
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # TAB 6: AI REVIEW
@@ -2280,22 +2620,53 @@ with tab_controls:
     # ── Agent start/stop ─────────────────────────────────────────────────────
     st.subheader("Agent Process")
     ctrl_running = _agent_is_running()
-    c1, c2 = st.columns([1, 3])
-    ctrl_color = "#2ecc71" if ctrl_running else "#e74c3c"
-    c1.markdown(
-        f"<div style='background:{ctrl_color};padding:12px;border-radius:6px;text-align:center'>"
-        f"<b style='color:white'>{'RUNNING' if ctrl_running else 'STOPPED'}</b></div>",
+    _ctrl_halted = snap.get("halted", False)
+    _ctrl_halt_reason = snap.get("halt_reason", "")
+    _ctrl_regime = snap.get("regime", "UNKNOWN")
+    _ctrl_last_sig_df = _query_df(conn, "SELECT ts FROM signals ORDER BY id DESC LIMIT 1")
+    _ctrl_last_sig = (
+        _time_ago(str(_ctrl_last_sig_df["ts"].iloc[0]))
+        if not _ctrl_last_sig_df.empty and "ts" in _ctrl_last_sig_df.columns
+        else "No signals"
+    )
+    _ctrl_in_market = _is_market_hours()
+
+    # Status badge: RUNNING / HALTED / STOPPED, with real-time details
+    if _ctrl_halted:
+        _ctrl_status_label = "HALTED"
+        _ctrl_status_bg = "#c0392b"
+        _ctrl_status_detail = f"Halt reason: {_ctrl_halt_reason or 'unknown'}"
+    elif ctrl_running:
+        _ctrl_status_label = "RUNNING"
+        _ctrl_status_bg = "#1a7a4a"
+        _ctrl_status_detail = (
+            f"Regime: {_ctrl_regime} &nbsp;|&nbsp; Last signal: {_ctrl_last_sig} "
+            f"&nbsp;|&nbsp; Market: {'OPEN' if _ctrl_in_market else 'CLOSED'}"
+        )
+    else:
+        _ctrl_status_label = "STOPPED"
+        _ctrl_status_bg = "#555"
+        _ctrl_status_detail = "Agent process is not running."
+
+    _ctrl_c1, _ctrl_c2 = st.columns([2, 2])
+    _ctrl_c1.markdown(
+        f"<div style='background:{_ctrl_status_bg};padding:14px 18px;border-radius:8px'>"
+        f"<b style='color:white;font-size:1.15em'>{_ctrl_status_label}</b><br>"
+        f"<span style='color:#ccc;font-size:0.85em'>{_ctrl_status_detail}</span>"
+        f"</div>",
         unsafe_allow_html=True,
     )
-    with c2:
+    with _ctrl_c2:
         if ctrl_running:
-            if st.button("Stop Agent", type="secondary", key="ctrl_stop"):
+            if st.button("Stop Agent", type="secondary", key="ctrl_stop", use_container_width=True):
                 st.toast(_stop_agent())
                 st.rerun()
         else:
-            if st.button("Start Agent", type="primary", key="ctrl_start"):
+            if st.button("Start Agent", type="primary", key="ctrl_start", use_container_width=True):
                 st.toast(_start_agent())
                 st.rerun()
+        _ctrl_ts = datetime.now().strftime("%H:%M:%S")
+        st.caption(f"Status last checked: {_ctrl_ts} — click Refresh (sidebar) to update")
 
     st.divider()
 
@@ -2547,8 +2918,6 @@ with tab_controls:
 
     st.divider()
 
-    # ── Multi-agent management UI     st.divider()
-
     # ── Multi-agent management UI ────────────────────────────────────────────
     st.subheader("Agent Instances")
 
@@ -2638,8 +3007,18 @@ with tab_controls:
         _ctrl_agent_rows = []
         for _cag in _ctrl_agents:
             _cag_eq, _cag_pnl = _agent_equity_today_ctrl(_cag["agent_id"])
+            # Read mode from snapshot; fall back to config
+            _cag_snap_p = SNAPSHOT_PATH if _cag["agent_id"] == "default" else Path(f"data/snapshot_{_cag['agent_id']}.json")
+            _cag_mode = "PAPER"
+            if _cag_snap_p.exists():
+                try:
+                    _cag_s = json.loads(_cag_snap_p.read_text(encoding="utf-8"))
+                    _cag_mode = str(_cag_s.get("mode", config.get("mode", "paper"))).upper()
+                except Exception:
+                    _cag_mode = str(config.get("mode", "paper")).upper()
             _ctrl_agent_rows.append({
                 "Agent ID": _cag["agent_id"] + (" (this)" if _cag["is_current"] else ""),
+                "Mode": _cag_mode,
                 "Profile": _cag["profile"],
                 "Started": _cag["started"],
                 "Status": "RUNNING" if _cag["alive"] else "STOPPED",
@@ -2653,6 +3032,11 @@ with tab_controls:
                 return "background-color:#1a7a4a;color:white;font-weight:bold"
             return "background-color:#7a1a1a;color:white;font-weight:bold"
 
+        def _ctrl_mode_style(val: str) -> str:
+            if str(val).upper() == "LIVE":
+                return "color:#e74c3c;font-weight:bold"
+            return "color:#3498db;font-weight:bold"
+
         def _ctrl_pnl_style(val: str) -> str:
             s = str(val)
             if s.startswith("+") or (s and s[0].isdigit() and float(s.replace(",", "") or 0) > 0):
@@ -2664,9 +3048,15 @@ with tab_controls:
         st.dataframe(
             _ctrl_agents_df.style
             .applymap(_ctrl_status_style, subset=["Status"])
+            .applymap(_ctrl_mode_style, subset=["Mode"])
             .applymap(_ctrl_pnl_style, subset=["Today P&L"]),
             use_container_width=True,
             hide_index=True,
+        )
+        st.caption(
+            f"Showing {len(_ctrl_agents)} agent instance(s). "
+            "Current agent is highlighted with '(this)'. "
+            "Equity and Today P&L are read from per-agent snapshot files."
         )
     else:
         st.info("No agent PID files found in data/. Start the agent to see it listed here.")
