@@ -6,6 +6,7 @@
 *.key
 secrets/
 credentials.json
+deploy/.htpasswd
 
 # --- Local tool config ---
 # Track .claude/memory + shared operating files; NOT per-machine state.

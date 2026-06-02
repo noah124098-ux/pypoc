@@ -66,6 +66,63 @@ docker compose exec agent python cli.py check-gate   # gate status
 
 ---
 
+## Nginx basic auth (EC2 Windows)
+
+The Streamlit dashboard runs on port 8501. nginx sits in front on port 80 and
+requires HTTP Basic Authentication so the dashboard is not publicly accessible
+without credentials.
+
+### One-time setup
+
+1. **Install nginx** (already done via Chocolatey on the EC2 instance):
+
+   ```powershell
+   choco install nginx -y
+   ```
+
+2. **Set your password** — run the setup script once:
+
+   ```powershell
+   cd C:\Users\Administrator\pypoc
+   .\deploy\setup_nginx_auth.ps1 -Password "your_secure_password"
+   ```
+
+   This writes `deploy/.htpasswd` (which is git-ignored — never committed).
+   The default user is `admin`; pass `-User yourname` to change it.
+
+3. **Start nginx** with the project config:
+
+   ```powershell
+   nginx -c C:\Users\Administrator\pypoc\deploy\nginx.conf
+   ```
+
+4. **Reload after config changes** (no downtime):
+
+   ```powershell
+   nginx -s reload
+   ```
+
+5. **Stop nginx**:
+
+   ```powershell
+   nginx -s stop
+   ```
+
+### nginx.conf highlights
+
+- `auth_basic` enabled on `location /` — all dashboard traffic requires login.
+- `/healthz` has `auth_basic off` so monitoring scripts can hit it without creds.
+- WebSocket upgrade headers are set so Streamlit's live reload works through the proxy.
+- `proxy_read_timeout 86400s` keeps long-lived WebSocket connections alive.
+
+### Security notes
+
+- Change the default password (`changeme`) before opening port 80 inbound.
+- For HTTPS, obtain a cert (Let's Encrypt or ACM) and uncomment the redirect in `nginx.conf`.
+- The `.htpasswd` file is in `.gitignore` — never commit it to the repo.
+
+---
+
 ## Backup
 
 SQLite database and snapshots live in `data/`. Back up with:
