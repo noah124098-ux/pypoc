@@ -24,6 +24,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 import streamlit as st
 from plotly.subplots import make_subplots
 
@@ -391,6 +392,7 @@ def _pnl_by_period(trades_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 # ── sidebar ──────────────────────────────────────────────────────────────────
 
 with st.sidebar:
+    dark_mode = st.sidebar.toggle("🌙 Dark Mode", key="dark_mode", value=False)
     st.title("NSE Trading Agent")
     auto_refresh = st.toggle("Auto-refresh (30s)", key="auto_refresh", value=False)
     if auto_refresh:
@@ -652,6 +654,56 @@ with st.sidebar:
         _sidebar_time.sleep(30)
         st.rerun()
 
+
+# ── dark mode CSS injection ───────────────────────────────────────────────────
+
+DARK_CSS = """
+<style>
+/* Main background */
+.stApp { background-color: #0e1117; color: #fafafa; }
+/* Sidebar */
+[data-testid="stSidebar"] { background-color: #1a1f2e; }
+/* Cards and containers */
+[data-testid="stMetric"] { background-color: #1e2130; border-radius: 8px; padding: 8px; }
+[data-testid="stExpander"] { background-color: #1e2130; }
+/* Dataframes */
+.stDataFrame { background-color: #1e2130; }
+/* Input widgets */
+.stTextInput input, .stNumberInput input, .stSelectbox select {
+  background-color: #262b3d; color: #fafafa; border-color: #3d4460;
+}
+/* Buttons */
+.stButton button { background-color: #2d3250; color: #fafafa; border-color: #4a5080; }
+.stButton button:hover { background-color: #3d4460; }
+/* Success/warning/error boxes */
+.stSuccess { background-color: #1a3a1a; }
+.stWarning { background-color: #3a2a1a; }
+.stError { background-color: #3a1a1a; }
+/* Tab bar */
+.stTabs [data-baseweb="tab-list"] { background-color: #1a1f2e; }
+.stTabs [data-baseweb="tab"] { color: #aaaaaa; }
+.stTabs [aria-selected="true"] { color: #4fc3f7; border-bottom-color: #4fc3f7; }
+/* Headers */
+h1, h2, h3, h4 { color: #e0e0e0; }
+/* Caption / small text */
+.caption { color: #888888; }
+/* Form elements */
+[data-testid="stForm"] { background-color: #1e2130; border-color: #3d4460; }
+/* Badges / code */
+code { background-color: #2d3250; color: #4fc3f7; }
+/* Dividers */
+hr { border-color: #3d4460; }
+</style>
+"""
+
+LIGHT_CSS = """<style>.stApp { background-color: #ffffff; }</style>"""
+
+if st.session_state.get("dark_mode", False):
+    st.markdown(DARK_CSS, unsafe_allow_html=True)
+    pio.templates.default = "plotly_dark"
+else:
+    st.markdown(LIGHT_CSS, unsafe_allow_html=True)
+    pio.templates.default = "plotly"
 
 # ── tabs ─────────────────────────────────────────────────────────────────────
 
