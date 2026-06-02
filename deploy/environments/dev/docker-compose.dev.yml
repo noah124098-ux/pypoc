@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  dashboard-dev:
+    build: ../../..
+    container_name: pypoc-dashboard-dev
+    command: python -m streamlit run dashboard.py --server.port=8502 --server.address=0.0.0.0 --server.headless=true
+    ports:
+      - "8502:8502"
+    environment:
+      - APP_ENV=dev
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ../../../data:/app/data
+      - ../../../config:/app/config:ro
+    env_file:
+      - ../../../.env.dev
+    restart: "no"
+    mem_limit: 512m
+    cpus: "0.5"
+
+  mcp-server-dev:
+    build: ../../..
+    container_name: pypoc-mcp-dev
+    command: python cli.py mcp-server
+    ports:
+      - "8010:8010"
+    environment:
+      - APP_ENV=dev
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ../../../data:/app/data
+      - ../../../config:/app/config:ro
+    env_file:
+      - ../../../.env.dev
+    restart: "no"
+    mem_limit: 256m
+    cpus: "0.25"
+    depends_on:
+      - dashboard-dev

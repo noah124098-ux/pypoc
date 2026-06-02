@@ -1,0 +1,93 @@
+version: "3.9"
+
+services:
+  dashboard:
+    build: ../../..
+    container_name: pypoc-dashboard
+    command: python -m streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+    ports:
+      - "8501:8501"
+    environment:
+      - APP_ENV=prod
+      - LOG_LEVEL=WARNING
+    volumes:
+      - ../../../data:/app/data
+      - ../../../config:/app/config:ro
+    env_file:
+      - ../../../.env
+    restart: always
+    mem_limit: 2g
+    mem_reservation: 512m
+    cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  agent:
+    build: ../../..
+    container_name: pypoc-agent
+    command: python cli.py run
+    environment:
+      - APP_ENV=prod
+      - LOG_LEVEL=WARNING
+    volumes:
+      - ../../../data:/app/data
+      - ../../../config:/app/config:ro
+    env_file:
+      - ../../../.env
+    restart: always
+    mem_limit: 2g
+    mem_reservation: 512m
+    cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "python", "cli.py", "status"]
+      interval: 60s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+
+  mcp-server:
+    build: ../../..
+    container_name: pypoc-mcp
+    command: python cli.py mcp-server
+    ports:
+      - "8010:8010"
+    environment:
+      - APP_ENV=prod
+      - LOG_LEVEL=WARNING
+    volumes:
+      - ../../../data:/app/data:ro
+      - ../../../config:/app/config:ro
+    env_file:
+      - ../../../.env
+    restart: always
+    mem_limit: 512m
+    mem_reservation: 128m
+    cpus: "0.5"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('localhost',8010)); s.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+    depends_on:
+      agent:
+        condition: service_healthy

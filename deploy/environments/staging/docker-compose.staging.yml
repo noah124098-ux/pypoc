@@ -1,0 +1,68 @@
+version: "3.9"
+
+services:
+  dashboard-staging:
+    build: ../../..
+    container_name: pypoc-dashboard-staging
+    command: python -m streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+    ports:
+      - "8501:8501"
+    environment:
+      - APP_ENV=staging
+      - LOG_LEVEL=INFO
+    volumes:
+      - ../../../data:/app/data
+      - ../../../config:/app/config:ro
+    env_file:
+      - ../../../.env.staging
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: "1.0"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  agent-staging:
+    build: ../../..
+    container_name: pypoc-agent-staging
+    command: python cli.py run
+    environment:
+      - APP_ENV=staging
+      - LOG_LEVEL=INFO
+    volumes:
+      - ../../../data:/app/data
+      - ../../../config:/app/config:ro
+    env_file:
+      - ../../../.env.staging
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: "1.0"
+    healthcheck:
+      test: ["CMD", "python", "cli.py", "status"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+
+  mcp-server-staging:
+    build: ../../..
+    container_name: pypoc-mcp-staging
+    command: python cli.py mcp-server
+    ports:
+      - "8011:8010"
+    environment:
+      - APP_ENV=staging
+      - LOG_LEVEL=INFO
+    volumes:
+      - ../../../data:/app/data
+      - ../../../config:/app/config:ro
+    env_file:
+      - ../../../.env.staging
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.5"
+    depends_on:
+      - agent-staging
