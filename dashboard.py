@@ -431,6 +431,31 @@ with st.sidebar:
     _run_label = "RUNNING" if _running else "STOPPED"
     st.markdown(f"**Agent:** <span style='color:{_run_color}'>{_run_label}</span>", unsafe_allow_html=True)
 
+    # Show uptime if the agent process is alive
+    if snap.get("pid"):
+        try:
+            import psutil as _psutil_up
+            import time as _time_up
+            _uptime_proc = _psutil_up.Process(int(snap["pid"]))
+            _uptime_secs = _time_up.time() - _uptime_proc.create_time()
+            if _uptime_secs > 3600:
+                _uptime_str = f"{_uptime_secs / 3600:.1f}h"
+            else:
+                _uptime_str = f"{_uptime_secs / 60:.0f}m"
+            st.sidebar.caption(f"Uptime: {_uptime_str}")
+        except Exception:
+            pass
+
+    # Start/Stop buttons live here — single authoritative location in the sidebar
+    if _running:
+        if st.sidebar.button("Stop Agent", type="secondary", key="sb_stop_agent", use_container_width=True):
+            st.toast(_stop_agent())
+            st.rerun()
+    else:
+        if st.sidebar.button("Start Agent", type="primary", key="sb_start_agent", use_container_width=True):
+            st.toast(_start_agent())
+            st.rerun()
+
     # ── Snapshot staleness indicator ──────────────────────────────────────────
     st.sidebar.divider()
     if snap and snap.get("ts"):
@@ -848,27 +873,17 @@ with tab_live:
 
     st.divider()
 
-    # ── Agent start/stop controls ────────────────────────────────────────────
+    # ── Agent status display (read-only — controls are in the sidebar) ──────────
     agent_running = _agent_is_running()
-    agent_col1, agent_col2, agent_col3 = st.columns([1, 1, 3])
     status_color = "#2ecc71" if agent_running else "#e74c3c"
     status_label = "RUNNING" if agent_running else "STOPPED"
-    agent_col1.markdown(
-        f"<div style='background:{status_color};padding:10px;border-radius:6px;text-align:center'>"
+    st.markdown(
+        f"<div style='background:{status_color};padding:10px;border-radius:6px;"
+        f"display:inline-block;min-width:160px;text-align:center'>"
         f"<b style='color:white'>Agent: {status_label}</b></div>",
         unsafe_allow_html=True,
     )
-    with agent_col2:
-        if agent_running:
-            if st.button("Stop Agent", type="secondary", use_container_width=True):
-                msg = _stop_agent()
-                st.toast(msg)
-                st.rerun()
-        else:
-            if st.button("Start Agent", type="primary", use_container_width=True):
-                msg = _start_agent()
-                st.toast(msg)
-                st.rerun()
+    st.info("Agent controls are in the sidebar ↑")
 
     st.divider()
 
@@ -1208,11 +1223,14 @@ with tab_portfolio:
         elif _port_summary is not None:
             st.warning("Could not fetch live portfolio. Check credentials.")
 
-        # Auto-refresh via session flag (60s rerun)
+        # Auto-refresh: use a refresh button to avoid blocking the Streamlit thread
         if _port_auto_refresh:
-            import time as _time
-            _time.sleep(60)
-            st.rerun()
+            st.caption("Click Refresh to update portfolio data.")
+            st.button(
+                "Refresh Portfolio",
+                key="refresh_portfolio",
+                on_click=lambda: st.rerun(),
+            )
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -3552,14 +3570,7 @@ with tab_controls:
         unsafe_allow_html=True,
     )
     with _ctrl_c2:
-        if ctrl_running:
-            if st.button("Stop Agent", type="secondary", key="ctrl_stop", use_container_width=True):
-                st.toast(_stop_agent())
-                st.rerun()
-        else:
-            if st.button("Start Agent", type="primary", key="ctrl_start", use_container_width=True):
-                st.toast(_start_agent())
-                st.rerun()
+        st.info("Agent controls are in the sidebar ↑")
         _ctrl_ts = datetime.now().strftime("%H:%M:%S")
         st.caption(f"Status last checked: {_ctrl_ts} — click Refresh (sidebar) to update")
 
