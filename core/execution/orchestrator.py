@@ -44,7 +44,7 @@ from core.strategies.mean_reversion import MeanReversion
 from core.strategies.supertrend_short import SupertrendShort
 from core.strategies.trend_breakout import TrendBreakout
 from core.strategies.volatility_compression import VolatilityCompression
-from core.types import Candle, OrderType, Regime, Side, Tick
+from core.types import Candle, OrderType, Regime, Side, Signal, Tick
 
 log = logging.getLogger("agent.orchestrator")
 
@@ -463,15 +463,28 @@ class Orchestrator:
 
     # ---------- helpers ----------
 
+    # Allowlist of valid command types — unknown types are rejected immediately.
+    _ALLOWED_COMMAND_TYPES: frozenset[str] = frozenset(
+        ["halt_agent", "resume_agent", "update_risk_param", "place_paper_order", "reload_config"]
+    )
+
     def _process_command_queue(self) -> None:
         from core.command_queue import read_pending, update_status
         try:
             for cmd in read_pending():
                 update_status(cmd.id, "processing")
                 try:
+                    # Reject any command type not in the explicit allowlist.
+                    if cmd.type not in self._ALLOWED_COMMAND_TYPES:
+                        update_status(cmd.id, "rejected", f"unknown command type: {cmd.type}")
+                        log.warning("Command queue: rejected unknown command type '%s'", cmd.type)
+                        continue
+
                     if cmd.type == "halt_agent":
                         self.halted = True
-                        self.halt_reason = cmd.params.get("reason", "manual halt via MCP")
+                        # Cap halt reason at 200 chars to prevent memory/snapshot abuse.
+                        reason = str(cmd.params.get("reason", "manual halt via MCP"))[:200]
+                        self.halt_reason = reason
                         update_status(cmd.id, "done", f"halted: {self.halt_reason}")
 
                     elif cmd.type == "resume_agent":
@@ -492,22 +505,61 @@ class Orchestrator:
                         update_status(cmd.id, "done", f"set {param}={value}")
 
                     elif cmd.type == "place_paper_order":
-                        from core.types import Side, OrderType
                         side = Side.BUY if cmd.params["side"] == "BUY" else Side.SELL
                         ltp = self.broker._latest_prices.get(cmd.params["symbol"])
                         if ltp is None:
                             update_status(cmd.id, "rejected", "no market price")
                         else:
-                            order = self.broker.place_order(
+                            qty = int(cmd.params["qty"])
+                            stop_loss = ltp * (0.98 if side == Side.BUY else 1.02)
+                            target = ltp * (1.04 if side == Side.BUY else 0.96)
+                            strategy_name = cmd.params.get("strategy", "manual")
+                            # Build a minimal signal so it can pass through guardrails.
+                            sig = Signal(
                                 symbol=cmd.params["symbol"],
                                 side=side,
-                                qty=int(cmd.params["qty"]),
-                                order_type=OrderType.MARKET,
-                                stop_loss=ltp * 0.98,
-                                target=ltp * 1.04,
-                                strategy=cmd.params.get("strategy", "manual"),
+                                entry_price=ltp,
+                                stop_loss=stop_loss,
+                                target=target,
+                                strategy=strategy_name,
+                                regime=self.current_regime.regime,
+                                confidence=1.0,
+                                rationale="manual MCP order",
                             )
-                            update_status(cmd.id, "done", f"order {order.id} {order.status.value}")
+                            market_ctx = MarketContext(
+                                now=datetime.now(),
+                                nifty_ltp=self.nifty_ltp,
+                                nifty_change_pct_15m=self.nifty_change_pct_15m,
+                                vix=self.vix,
+                                vix_change_pct_15m=self.vix_change_pct_15m,
+                                last_tick_age_seconds=self.last_tick_age_seconds,
+                                avg_daily_volumes=self.adv_by_symbol,
+                                spread_pct_by_symbol=self.spread_pct_by_symbol,
+                            )
+                            portfolio = PortfolioState(
+                                equity=self.broker.equity(),
+                                starting_equity_today=self.starting_equity_today,
+                                peak_equity=self.peak_equity,
+                                open_positions=self.broker.get_positions(),
+                                realized_pnl_today=getattr(self.broker, "realized_pnl", 0.0),
+                                last_exit_by_symbol=self.last_exit_by_symbol,
+                                halted=self.halted,
+                                halt_reason=self.halt_reason,
+                            )
+                            decision: GuardrailDecision = self.guardrails.check(sig, qty, portfolio, market_ctx)
+                            if not decision.allow:
+                                update_status(cmd.id, "rejected", f"guardrail blocked: {decision.rule}: {decision.reason}")
+                            else:
+                                order = self.broker.place_order(
+                                    symbol=cmd.params["symbol"],
+                                    side=side,
+                                    qty=qty,
+                                    order_type=OrderType.MARKET,
+                                    stop_loss=stop_loss,
+                                    target=target,
+                                    strategy=strategy_name,
+                                )
+                                update_status(cmd.id, "done", f"order {order.id} {order.status.value}")
 
                     elif cmd.type == "reload_config":
                         try:

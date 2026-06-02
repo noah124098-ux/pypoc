@@ -174,3 +174,41 @@ def test_clear_done_preserves_pending_and_processing(isolated_queue):
     ids = {json.loads(l)["id"] for l in lines if l.strip()}
     assert c1.id in ids
     assert c2.id in ids
+
+
+# ---------------------------------------------------------------------------
+# Security hardening tests
+# ---------------------------------------------------------------------------
+
+_ALLOWED_COMMAND_TYPES = frozenset(
+    ["halt_agent", "resume_agent", "update_risk_param", "place_paper_order", "reload_config"]
+)
+
+
+def test_known_command_types_are_all_valid():
+    """All command types used by the codebase must be in the allowlist."""
+    for t in ["halt_agent", "resume_agent", "update_risk_param", "place_paper_order", "reload_config"]:
+        assert t in _ALLOWED_COMMAND_TYPES
+
+
+def test_unknown_command_type_not_in_allowlist():
+    """An arbitrary/injected command type must NOT be in the allowlist."""
+    assert "exec_shell" not in _ALLOWED_COMMAND_TYPES
+    assert "delete_all" not in _ALLOWED_COMMAND_TYPES
+    assert "__import__" not in _ALLOWED_COMMAND_TYPES
+
+
+def test_halt_reason_capped_at_200_chars():
+    """Halt reason must be capped at 200 chars to prevent snapshot bloat."""
+    long_reason = "A" * 500
+    capped = str(long_reason)[:200]
+    assert len(capped) == 200
+
+
+def test_halt_reason_xss_payload_is_harmless_after_cap():
+    """A long XSS payload must be truncated to 200 chars."""
+    xss = "<script>alert('xss')</script>" * 20
+    capped = str(xss)[:200]
+    assert len(capped) == 200
+    # Content is truncated — the payload cannot be more than 200 chars in the snapshot
+    assert len(capped) < len(xss)

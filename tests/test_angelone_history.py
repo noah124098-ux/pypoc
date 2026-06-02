@@ -101,10 +101,26 @@ def test_order_methods_are_neutralized_after_login(fake_smart_api, monkeypatch, 
     This test is the safety guarantee that even if a future refactor accidentally
     wires the Angel One client to order placement code, the call will fail loudly
     rather than transmit a real order.
+
+    All four order methods are individually asserted — placeOrder, modifyOrder,
+    cancelOrder, and placeOrderFullResponse.
     """
     fake_smart_api.placeOrder = MagicMock(return_value={"status": True, "orderid": "X"})
+    fake_smart_api.modifyOrder = MagicMock(return_value={"status": True})
+    fake_smart_api.cancelOrder = MagicMock(return_value={"status": True})
+    fake_smart_api.placeOrderFullResponse = MagicMock(return_value={"status": True, "orderid": "X"})
+
     h = _client(monkeypatch, tmp_path)
     h.fetch_daily("RELIANCE", days=10)  # triggers login, which neutralizes order methods
 
     with pytest.raises(RuntimeError, match="DATA-ONLY"):
         fake_smart_api.placeOrder({"symbol": "RELIANCE", "qty": 1})
+
+    with pytest.raises(RuntimeError, match="DATA-ONLY"):
+        fake_smart_api.modifyOrder({"orderid": "X", "qty": 2})
+
+    with pytest.raises(RuntimeError, match="DATA-ONLY"):
+        fake_smart_api.cancelOrder({"orderid": "X"})
+
+    with pytest.raises(RuntimeError, match="DATA-ONLY"):
+        fake_smart_api.placeOrderFullResponse({"symbol": "RELIANCE", "qty": 1})

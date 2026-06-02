@@ -186,7 +186,7 @@ class TradingAgentTools:
         """Enqueue a risk-parameter update. Only pre-approved params within safe bounds are accepted."""
         SAFE_BOUNDS = {
             "per_trade_risk_pct": (0.5, 2.0),
-            "max_open_positions": (2, 8),
+            "max_open_positions": (1, 5),  # design cap: max 5 positions (CLAUDE.md locked decision)
             "daily_loss_circuit_pct": (2.0, 5.0),
         }
         if param not in SAFE_BOUNDS:
