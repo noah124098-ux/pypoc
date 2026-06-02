@@ -123,11 +123,6 @@ class BacktestEngine:
             )
 
         adv_by_symbol = self._compute_adv(symbol_history)
-        # Pre-compute 50-DMA series for all symbols (used in market breadth filter each day).
-        dma50_by_symbol: dict[str, pd.Series] = {
-            sym: df["close"].rolling(50).mean()
-            for sym, df in symbol_history.items()
-        }
         equity_records: list[tuple[datetime, float]] = []
         signal_count = accepted = rejected = qty_zero_count = 0
         rejection_breakdown: dict[str, int] = {}
@@ -198,22 +193,24 @@ class BacktestEngine:
             nifty_allow_range = above_200 and rising_50   # RANGE longs need upward DMA slope
             nifty_allow_any   = above_200
 
-            # Market breadth filter: only enter TREND BUYs when 40%+ of Nifty50 stocks
-            # are above their 50-DMA. Pre-computed DMA series used for performance (~10x faster).
-            # In bull markets 70-80% qualify; in corrections 30-40% → filter gates entries.
+            # Market breadth filter: only enter TREND BUYs when majority of Nifty50 stocks
+            # are above their 50-DMA. In bull markets 70-80% qualify; in corrections 30-50%.
+            # Uses symbol_history already loaded — no extra data needed.
             _b_above = _b_total = 0
-            for _sym in symbol_history:
-                _dma_series = dma50_by_symbol.get(_sym)
-                if _dma_series is None or yday not in _dma_series.index:
+            for _sym, _df in symbol_history.items():
+                _hist = _df.loc[:yday]
+                if len(_hist) < 50:
                     continue
-                _dma_val = _dma_series.loc[yday]
-                if pd.isna(_dma_val):
+                _dma = _hist["close"].rolling(50).mean().iloc[-1]
+                if pd.isna(_dma):
                     continue
                 _b_total += 1
-                if symbol_history[_sym]["close"].loc[yday] > _dma_val:
+                if _hist["close"].iloc[-1] > _dma:
                     _b_above += 1
             breadth_pct = (_b_above / _b_total * 100.0) if _b_total > 0 else 50.0
-            if breadth_pct < 40.0:
+            _breadth_threshold = 40.0
+            _breadth_blocked = breadth_pct < _breadth_threshold
+            if _breadth_blocked:
                 nifty_allow_trend = False
 
             # PCR filter (live mode only).
