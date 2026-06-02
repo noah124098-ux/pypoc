@@ -10,6 +10,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from dashboard.design import COLORS, regime_hex
 from dashboard.utils.charts import safe_html, time_ago
 from dashboard.utils.db import db_connect, query_df
 from dashboard.utils.snapshot import read_config, read_gate, read_snapshot
@@ -191,7 +192,7 @@ def render_sidebar(snap: dict, config: dict, gate: dict) -> bool:
                         if not _vix_df.empty and len(_vix_df) >= 2:
                             _vix_df = _vix_df.sort_values("ts").reset_index(drop=True)
                             _vix_series = _vix_df["vix"].tolist()
-                            _spark_color = "#2ecc71" if vix_val < 15 else ("#f39c12" if vix_val < 20 else "#e74c3c")
+                            _spark_color = COLORS["profit"] if vix_val < 15 else (COLORS["warning"] if vix_val < 20 else COLORS["loss"])
                             _fig_spark = _go_vix.Figure()
                             _fig_spark.add_trace(_go_vix.Scatter(
                                 y=_vix_series,
@@ -294,14 +295,14 @@ def render_sidebar(snap: dict, config: dict, gate: dict) -> bool:
         # ── Section: Agent Controls ───────────────────────────────────────────
         with st.sidebar.expander("⚙️ Agent Controls", expanded=True):
             mode = config.get("mode", "unknown").upper()
-            mode_color = "#e74c3c" if mode == "LIVE" else "#2ecc71"
+            mode_color = COLORS["loss"] if mode == "LIVE" else COLORS["profit"]
             st.markdown(f"**Mode:** <span style='color:{mode_color}'>{safe_html(mode)}</span>", unsafe_allow_html=True)
 
             capital = config.get("capital", {}).get("initial_inr", 0)
             st.markdown(f"**Capital:** ₹{capital:,.0f}")
 
             gate_passed = gate.get("passed", False)
-            gate_color = "#2ecc71" if gate_passed else "#e74c3c"
+            gate_color = COLORS["profit"] if gate_passed else COLORS["loss"]
             gate_label = "PASSED" if gate_passed else "FAILED"
             st.markdown(f"**Gate:** <span style='color:{gate_color}'>{gate_label}</span>", unsafe_allow_html=True)
             if gate.get("timestamp"):
@@ -317,7 +318,7 @@ def render_sidebar(snap: dict, config: dict, gate: dict) -> bool:
 
             st.divider()
             _running = _agent_is_running()
-            _run_color = "#2ecc71" if _running else "#e74c3c"
+            _run_color = COLORS["profit"] if _running else COLORS["loss"]
             _run_label = "RUNNING" if _running else "STOPPED"
             st.markdown(f"**Agent:** <span style='color:{_run_color}'>{_run_label}</span>", unsafe_allow_html=True)
 

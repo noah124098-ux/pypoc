@@ -16,7 +16,7 @@ import plotly.io as pio
 import streamlit as st
 
 st.set_page_config(
-    page_title="NSE Trading Agent",
+    page_title="pypoc | NSE Agent",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -84,9 +84,12 @@ LIGHT_CSS = """<style>.stApp { background-color: #ffffff; }</style>"""
 
 def main() -> None:
     """Main entry point - render sidebar then all tabs."""
+    _load_progress = st.progress(0, text="Loading dashboard data…")
     snap = read_snapshot()
+    _load_progress.progress(30, text="Reading gate & config…")
     gate = read_gate()
     config = read_config()
+    _load_progress.progress(70, text="Connecting to database…")
 
     dark_mode = render_sidebar(snap, config, gate)
 
@@ -98,6 +101,8 @@ def main() -> None:
         pio.templates.default = "plotly"
 
     conn = db_connect()
+    _load_progress.progress(100, text="Ready.")
+    _load_progress.empty()
 
     (
         tab_live,
@@ -111,8 +116,8 @@ def main() -> None:
         tab_controls,
         tab_costs,
     ) = st.tabs([
-        "🔴 Paper Agent",
-        "📊 Angel One Account",
+        "🟢 Paper Agent",
+        "🏦 Angel One Account",
         "📊 P&L & Equity",
         "📋 Positions & Signals",
         "🎬 Trade Replay",
