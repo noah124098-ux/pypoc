@@ -3,8 +3,14 @@
     "allow": [
       "Bash(*)",
       "Read(*)",
+      "Write(*)",
+      "Edit(*)",
       "Glob(*)",
-      "Grep(*)"
+      "Grep(*)",
+      "WebFetch(*)",
+      "WebSearch(*)",
+      "NotebookEdit(*)",
+      "mcp__nse-trading-agent__*"
     ]
   }
 }
