@@ -89,70 +89,12 @@ def render_sidebar(snap: dict, config: dict, gate: dict) -> bool:
     """Render the full sidebar. Returns dark_mode bool."""
     with st.sidebar:
         dark_mode = st.sidebar.toggle("🌙 Dark Mode", key="dark_mode", value=False)
-        st.title("NSE Trading Agent")
+        st.title("pypoc | NSE Agent")
         auto_refresh = st.toggle("Auto-refresh (30s)", key="auto_refresh", value=False)
         if auto_refresh:
             st.caption(f"Last refresh: {datetime.now().strftime('%H:%M:%S')}")
 
-        st.divider()
-
-        mode = config.get("mode", "unknown").upper()
-        mode_color = "#e74c3c" if mode == "LIVE" else "#2ecc71"
-        st.markdown(f"**Mode:** <span style='color:{mode_color}'>{safe_html(mode)}</span>", unsafe_allow_html=True)
-
-        capital = config.get("capital", {}).get("initial_inr", 0)
-        st.markdown(f"**Capital:** ₹{capital:,.0f}")
-
-        st.divider()
-        gate_passed = gate.get("passed", False)
-        gate_color = "#2ecc71" if gate_passed else "#e74c3c"
-        gate_label = "PASSED" if gate_passed else "FAILED"
-        st.markdown(f"**Gate:** <span style='color:{gate_color}'>{gate_label}</span>", unsafe_allow_html=True)
-        if gate.get("timestamp"):
-            ts = gate["timestamp"][:19].replace("T", " ")
-            st.caption(f"Last run: {ts}")
-
-        st.divider()
-        risk_cfg = config.get("risk", {})
-        st.markdown("**Risk config**")
-        st.caption(f"Per-trade risk: {risk_cfg.get('per_trade_risk_pct', '-')}%")
-        st.caption(f"Max positions: {risk_cfg.get('max_open_positions', '-')}")
-        st.caption(f"Daily loss circuit: -{risk_cfg.get('daily_loss_circuit_pct', '-')}%")
-        st.caption(f"Drawdown circuit: -{risk_cfg.get('drawdown_circuit_pct', '-')}%")
-
-        st.divider()
-        _running = _agent_is_running()
-        _run_color = "#2ecc71" if _running else "#e74c3c"
-        _run_label = "RUNNING" if _running else "STOPPED"
-        st.markdown(f"**Agent:** <span style='color:{_run_color}'>{_run_label}</span>", unsafe_allow_html=True)
-
-        # Show uptime if the agent process is alive
-        if snap.get("pid"):
-            try:
-                import psutil as _psutil_up
-                import time as _time_up
-                _uptime_proc = _psutil_up.Process(int(snap["pid"]))
-                _uptime_secs = _time_up.time() - _uptime_proc.create_time()
-                if _uptime_secs > 3600:
-                    _uptime_str = f"{_uptime_secs / 3600:.1f}h"
-                else:
-                    _uptime_str = f"{_uptime_secs / 60:.0f}m"
-                st.sidebar.caption(f"Uptime: {_uptime_str}")
-            except Exception:
-                pass
-
-        # Start/Stop buttons live here — single authoritative location in the sidebar
-        if _running:
-            if st.sidebar.button("Stop Agent", type="secondary", key="sb_stop_agent", use_container_width=True):
-                st.toast(_stop_agent())
-                st.rerun()
-        else:
-            if st.sidebar.button("Start Agent", type="primary", key="sb_start_agent", use_container_width=True):
-                st.toast(_start_agent())
-                st.rerun()
-
-        # Snapshot staleness indicator
-        st.sidebar.divider()
+        # Snapshot staleness indicator (top of sidebar for quick status)
         if snap and snap.get("ts"):
             try:
                 _snap_ts = datetime.fromisoformat(str(snap["ts"]).replace("Z", ""))
@@ -197,8 +139,6 @@ def render_sidebar(snap: dict, config: dict, gate: dict) -> bool:
 
             if _is_weekday and _in_market_hours:
                 # Countdown to close
-                _now_dt = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-                _close_dt = _now_dt.replace(hour=15, minute=30)
                 try:
                     _now_for_close = datetime(_now_ist.year, _now_ist.month, _now_ist.day,
                                               _now_time_naive.hour, _now_time_naive.minute,
@@ -227,138 +167,187 @@ def render_sidebar(snap: dict, config: dict, gate: dict) -> bool:
         except Exception:
             pass
 
-        st.sidebar.divider()
-        st.sidebar.subheader("Market Pulse")
-
-        # VIX with sparkline from recent equity_snapshots
-        try:
-            vix_val = snap.get("vix", 0) if snap else 0
-            if vix_val and vix_val > 0:
-                vix_color = "🟢" if vix_val < 15 else ("🟡" if vix_val < 20 else "🔴")
-                st.sidebar.metric(
-                    f"{vix_color} India VIX",
-                    f"{vix_val:.1f}",
-                    help="<15 calm, 15-20 normal, >20 volatile",
-                )
-                # VIX sparkline: query last 10 vix readings from equity_snapshots
-                try:
-                    import pandas as _pd_vix
-                    import plotly.graph_objects as _go_vix
-                    _vix_conn = db_connect()
-                    _vix_df = query_df(
-                        _vix_conn,
-                        "SELECT ts, vix FROM equity_snapshots WHERE vix IS NOT NULL "
-                        "ORDER BY ts DESC LIMIT 10",
+        # ── Section: Market Pulse ─────────────────────────────────────────────
+        with st.sidebar.expander("📡 Market Pulse", expanded=True):
+            # VIX with sparkline from recent equity_snapshots
+            try:
+                vix_val = snap.get("vix", 0) if snap else 0
+                if vix_val and vix_val > 0:
+                    vix_color = "🟢" if vix_val < 15 else ("🟡" if vix_val < 20 else "🔴")
+                    st.metric(
+                        f"{vix_color} India VIX",
+                        f"{vix_val:.1f}",
+                        help="<15 calm, 15-20 normal, >20 volatile",
                     )
-                    if not _vix_df.empty and len(_vix_df) >= 2:
-                        _vix_df = _vix_df.sort_values("ts").reset_index(drop=True)
-                        _vix_series = _vix_df["vix"].tolist()
-                        _spark_color = "#2ecc71" if vix_val < 15 else ("#f39c12" if vix_val < 20 else "#e74c3c")
-                        _fig_spark = _go_vix.Figure()
-                        _fig_spark.add_trace(_go_vix.Scatter(
-                            y=_vix_series,
-                            mode="lines",
-                            line=dict(color=_spark_color, width=2),
-                            fill="tozeroy",
-                            fillcolor=_spark_color.replace(")", ",0.2)").replace("rgb", "rgba")
-                            if _spark_color.startswith("rgb") else _spark_color + "33",
-                        ))
-                        _fig_spark.update_layout(
-                            height=60,
-                            margin=dict(l=0, r=0, t=0, b=0),
-                            xaxis=dict(visible=False),
-                            yaxis=dict(visible=False),
-                            showlegend=False,
-                            paper_bgcolor="rgba(0,0,0,0)",
-                            plot_bgcolor="rgba(0,0,0,0)",
+                    # VIX sparkline: query last 10 vix readings from equity_snapshots
+                    try:
+                        import plotly.graph_objects as _go_vix
+                        _vix_conn = db_connect()
+                        _vix_df = query_df(
+                            _vix_conn,
+                            "SELECT ts, vix FROM equity_snapshots WHERE vix IS NOT NULL "
+                            "ORDER BY ts DESC LIMIT 10",
                         )
-                        st.sidebar.plotly_chart(_fig_spark, use_container_width=True,
-                                                config={"displayModeBar": False})
-                        st.sidebar.caption(
-                            f"VIX range (last {len(_vix_series)}): "
-                            f"{min(_vix_series):.1f} – {max(_vix_series):.1f}"
+                        if not _vix_df.empty and len(_vix_df) >= 2:
+                            _vix_df = _vix_df.sort_values("ts").reset_index(drop=True)
+                            _vix_series = _vix_df["vix"].tolist()
+                            _spark_color = "#2ecc71" if vix_val < 15 else ("#f39c12" if vix_val < 20 else "#e74c3c")
+                            _fig_spark = _go_vix.Figure()
+                            _fig_spark.add_trace(_go_vix.Scatter(
+                                y=_vix_series,
+                                mode="lines",
+                                line=dict(color=_spark_color, width=2),
+                                fill="tozeroy",
+                                fillcolor=_spark_color.replace(")", ",0.2)").replace("rgb", "rgba")
+                                if _spark_color.startswith("rgb") else _spark_color + "33",
+                            ))
+                            _fig_spark.update_layout(
+                                height=60,
+                                margin=dict(l=0, r=0, t=0, b=0),
+                                xaxis=dict(visible=False),
+                                yaxis=dict(visible=False),
+                                showlegend=False,
+                                paper_bgcolor="rgba(0,0,0,0)",
+                                plot_bgcolor="rgba(0,0,0,0)",
+                            )
+                            st.plotly_chart(_fig_spark, use_container_width=True,
+                                            config={"displayModeBar": False})
+                            st.caption(
+                                f"VIX range (last {len(_vix_series)}): "
+                                f"{min(_vix_series):.1f} – {max(_vix_series):.1f}"
+                            )
+                    except Exception:
+                        pass  # sparkline is best-effort
+            except Exception:
+                pass
+
+            # PCR
+            try:
+                if _PCR_AVAILABLE and _get_nifty_pcr is not None:
+                    pcr = _get_nifty_pcr()
+                    if pcr:
+                        pcr_color = "🟢" if pcr > 1.0 else ("🔴" if pcr < 0.7 else "🟡")
+                        st.metric(
+                            f"{pcr_color} PCR",
+                            f"{pcr:.2f}",
+                            help="Put-Call Ratio. >1.0 bullish, <0.7 bearish",
                         )
-                except Exception:
-                    pass  # sparkline is best-effort
-        except Exception:
-            pass
+            except Exception:
+                pass
 
-        # PCR
-        try:
-            if _PCR_AVAILABLE and _get_nifty_pcr is not None:
-                pcr = _get_nifty_pcr()
-                if pcr:
-                    pcr_color = "🟢" if pcr > 1.0 else ("🔴" if pcr < 0.7 else "🟡")
-                    st.sidebar.metric(
-                        f"{pcr_color} PCR",
-                        f"{pcr:.2f}",
-                        help="Put-Call Ratio. >1.0 bullish, <0.7 bearish",
-                    )
-        except Exception:
-            pass
+            # FII sentiment
+            try:
+                if _FII_AVAILABLE:
+                    sent = get_institutional_sentiment()
+                    if sent:
+                        sent_display = {"BULLISH": "🟢 FII Buy", "BEARISH": "🔴 FII Sell"}.get(sent, "⚪ Neutral")
+                        st.metric("FII Sentiment", sent_display)
+            except Exception:
+                pass
 
-        # FII sentiment
-        try:
-            if _FII_AVAILABLE:
-                sent = get_institutional_sentiment()
-                if sent:
-                    sent_display = {"BULLISH": "🟢 FII Buy", "BEARISH": "🔴 FII Sell"}.get(sent, "⚪ Neutral")
-                    st.sidebar.metric("FII Sentiment", sent_display)
-        except Exception:
-            pass
-
-        # Live Signals widget
-        st.sidebar.divider()
-        st.sidebar.subheader("📡 Live Signals")
-
-        # Signal quality from last 30 trades
-        try:
-            _sb_conn = db_connect()
-            _sb_trades_df = query_df(
-                _sb_conn,
-                "SELECT pnl FROM trades ORDER BY closed_at DESC LIMIT 30",
-            )
-            if not _sb_trades_df.empty and "pnl" in _sb_trades_df.columns and len(_sb_trades_df) > 0:
-                _sb_n = len(_sb_trades_df)
-                _sb_wins = int((_sb_trades_df["pnl"] > 0).sum())
-                _sb_win_rate = _sb_wins / _sb_n * 100
-                _sb_sig_color = "🟢" if _sb_win_rate > 50 else ("🟡" if _sb_win_rate > 35 else "🔴")
-                st.sidebar.metric(
-                    f"{_sb_sig_color} Signal Quality",
-                    f"{_sb_win_rate:.0f}% win",
-                    help=f"Last {_sb_n} trades win rate",
-                )
-            else:
-                st.sidebar.caption("No trades yet — signal quality N/A")
-        except Exception:
-            pass
-
-        # Active filters status
-        st.sidebar.caption("Active Filters:")
-        st.sidebar.text("✅ VIX<18 trend gate")
-        st.sidebar.text("✅ Hurst H>0.5 persistence")
-        st.sidebar.text("✅ Market breadth 50%")
-
-        # Last accepted signal
-        try:
-            if _sb_conn is not None:
-                _sb_last_sig_df = query_df(
+            # Signal quality from last 30 trades
+            try:
+                _sb_conn = db_connect()
+                _sb_trades_df = query_df(
                     _sb_conn,
-                    "SELECT symbol, strategy, ts FROM signals WHERE accepted = 1 ORDER BY id DESC LIMIT 1",
+                    "SELECT pnl FROM trades ORDER BY closed_at DESC LIMIT 30",
                 )
-                if not _sb_last_sig_df.empty:
-                    _sb_sym = str(_sb_last_sig_df["symbol"].iloc[0])
-                    _sb_strat = str(_sb_last_sig_df["strategy"].iloc[0])
-                    _sb_ts = str(_sb_last_sig_df["ts"].iloc[0])
-                    _sb_ago = time_ago(_sb_ts)
-                    st.sidebar.caption(f"Last signal: {_sb_sym} {_sb_strat} {_sb_ago}")
+                if not _sb_trades_df.empty and "pnl" in _sb_trades_df.columns and len(_sb_trades_df) > 0:
+                    _sb_n = len(_sb_trades_df)
+                    _sb_wins = int((_sb_trades_df["pnl"] > 0).sum())
+                    _sb_win_rate = _sb_wins / _sb_n * 100
+                    _sb_sig_color = "🟢" if _sb_win_rate > 50 else ("🟡" if _sb_win_rate > 35 else "🔴")
+                    st.metric(
+                        f"{_sb_sig_color} Signal Quality",
+                        f"{_sb_win_rate:.0f}% win",
+                        help=f"Last {_sb_n} trades win rate",
+                    )
                 else:
-                    st.sidebar.caption("Last signal: none recorded")
-        except Exception:
-            pass
+                    st.caption("No trades yet — signal quality N/A")
+            except Exception:
+                _sb_conn = None
 
-        # Quick Stats expander
-        with st.sidebar.expander("Quick Stats", expanded=False):
+            # Active filters status
+            st.caption("Active Filters:")
+            st.text("✅ VIX<18 trend gate")
+            st.text("✅ Hurst H>0.5 persistence")
+            st.text("✅ Market breadth 50%")
+
+            # Last accepted signal
+            try:
+                if _sb_conn is not None:
+                    _sb_last_sig_df = query_df(
+                        _sb_conn,
+                        "SELECT symbol, strategy, ts FROM signals WHERE accepted = 1 ORDER BY id DESC LIMIT 1",
+                    )
+                    if not _sb_last_sig_df.empty:
+                        _sb_sym = str(_sb_last_sig_df["symbol"].iloc[0])
+                        _sb_strat = str(_sb_last_sig_df["strategy"].iloc[0])
+                        _sb_ts = str(_sb_last_sig_df["ts"].iloc[0])
+                        _sb_ago = time_ago(_sb_ts)
+                        st.caption(f"Last signal: {_sb_sym} {_sb_strat} {_sb_ago}")
+                    else:
+                        st.caption("Last signal: none recorded")
+            except Exception:
+                pass
+
+        # ── Section: Agent Controls ───────────────────────────────────────────
+        with st.sidebar.expander("⚙️ Agent Controls", expanded=True):
+            mode = config.get("mode", "unknown").upper()
+            mode_color = "#e74c3c" if mode == "LIVE" else "#2ecc71"
+            st.markdown(f"**Mode:** <span style='color:{mode_color}'>{safe_html(mode)}</span>", unsafe_allow_html=True)
+
+            capital = config.get("capital", {}).get("initial_inr", 0)
+            st.markdown(f"**Capital:** ₹{capital:,.0f}")
+
+            gate_passed = gate.get("passed", False)
+            gate_color = "#2ecc71" if gate_passed else "#e74c3c"
+            gate_label = "PASSED" if gate_passed else "FAILED"
+            st.markdown(f"**Gate:** <span style='color:{gate_color}'>{gate_label}</span>", unsafe_allow_html=True)
+            if gate.get("timestamp"):
+                ts = gate["timestamp"][:19].replace("T", " ")
+                st.caption(f"Last run: {ts}")
+
+            risk_cfg = config.get("risk", {})
+            st.markdown("**Risk config**")
+            st.caption(f"Per-trade risk: {risk_cfg.get('per_trade_risk_pct', '-')}%")
+            st.caption(f"Max positions: {risk_cfg.get('max_open_positions', '-')}")
+            st.caption(f"Daily loss circuit: -{risk_cfg.get('daily_loss_circuit_pct', '-')}%")
+            st.caption(f"Drawdown circuit: -{risk_cfg.get('drawdown_circuit_pct', '-')}%")
+
+            st.divider()
+            _running = _agent_is_running()
+            _run_color = "#2ecc71" if _running else "#e74c3c"
+            _run_label = "RUNNING" if _running else "STOPPED"
+            st.markdown(f"**Agent:** <span style='color:{_run_color}'>{_run_label}</span>", unsafe_allow_html=True)
+
+            # Show uptime if the agent process is alive
+            if snap.get("pid"):
+                try:
+                    import psutil as _psutil_up
+                    import time as _time_up
+                    _uptime_proc = _psutil_up.Process(int(snap["pid"]))
+                    _uptime_secs = _time_up.time() - _uptime_proc.create_time()
+                    if _uptime_secs > 3600:
+                        _uptime_str = f"{_uptime_secs / 3600:.1f}h"
+                    else:
+                        _uptime_str = f"{_uptime_secs / 60:.0f}m"
+                    st.caption(f"Uptime: {_uptime_str}")
+                except Exception:
+                    pass
+
+            # Start/Stop buttons
+            if _running:
+                if st.button("Stop Agent", type="secondary", key="sb_stop_agent", use_container_width=True):
+                    st.toast(_stop_agent())
+                    st.rerun()
+            else:
+                if st.button("Start Agent", type="primary", key="sb_start_agent", use_container_width=True):
+                    st.toast(_start_agent())
+                    st.rerun()
+
+        # ── Section: Quick Stats ──────────────────────────────────────────────
+        with st.sidebar.expander("📊 Quick Stats", expanded=False):
             try:
                 _qs_conn = db_connect()
 
@@ -408,7 +397,8 @@ def render_sidebar(snap: dict, config: dict, gate: dict) -> bool:
             except Exception:
                 st.caption("Stats unavailable")
 
-        st.divider()
+        st.sidebar.divider()
+        st.sidebar.caption("Keyboard shortcuts: R = refresh, D = dark mode")
         if st.button("Refresh now"):
             st.cache_data.clear()
             st.rerun()

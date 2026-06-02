@@ -6,6 +6,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from dashboard.design import COLORS, _badge, _metric_card, regime_hex
 from dashboard.utils.charts import fmt_inr, time_ago, is_market_hours
 from dashboard.utils.db import db_connect, query_df
 
@@ -83,12 +84,8 @@ def render_kpi_row(snap: dict, config: dict, conn) -> None:
     else:
         _kpi_agent_status = "⚫ Offline"
 
-    # Regime color badge (markdown)
-    _kpi_regime_colors = {
-        "TREND": "#2ecc71", "RANGE": "#3498db",
-        "VOLATILE": "#e74c3c", "UNKNOWN": "#95a5a6",
-    }
-    _kpi_regime_bg = _kpi_regime_colors.get(_kpi_regime, "#95a5a6")
+    # Regime color badge — use canonical palette
+    _kpi_regime_bg = regime_hex(_kpi_regime)
 
     # Row 1: 6-column primary KPI row
     _kr1, _kr2, _kr3, _kr4, _kr5, _kr6 = st.columns(6)
@@ -165,7 +162,7 @@ def render_kpi_row(snap: dict, config: dict, conn) -> None:
     )
     if _kpi_dd_pct > 5.0:
         _ks2.markdown(
-            f"<small style='color:#e74c3c;font-weight:600'>Drawdown >5%</small>",
+            f"<small style='color:{COLORS['loss']};font-weight:600'>Drawdown >5%</small>",
             unsafe_allow_html=True,
         )
 
@@ -193,8 +190,8 @@ def render_kpi_row(snap: dict, config: dict, conn) -> None:
             # breadth_pct is percentage of 50 stocks above 50-DMA → convert to count
             _kpi_breadth_count = int(round(_kpi_breadth_float / 100 * 50))
             _breadth_color = (
-                "#2ecc71" if _kpi_breadth_float >= 60
-                else ("#f39c12" if _kpi_breadth_float >= 40 else "#e74c3c")
+                COLORS["profit"] if _kpi_breadth_float >= 60
+                else (COLORS["warning"] if _kpi_breadth_float >= 40 else COLORS["loss"])
             )
             _breadth_emoji = "🟢" if _kpi_breadth_float >= 60 else ("🟡" if _kpi_breadth_float >= 40 else "🔴")
             st.markdown(
