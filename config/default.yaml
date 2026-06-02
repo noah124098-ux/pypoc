@@ -41,7 +41,7 @@ regime:
 strategies:
   # --- Original strategies (retained, parameters relaxed) ---
   trend_breakout:
-    enabled: true
+    enabled: false                   # EXPERIMENT A: disabled for defensive-only portfolio
     regimes: [TREND]
     donchian_period: 15
     atr_period: 14
@@ -64,7 +64,7 @@ strategies:
 
   # --- New strategies ---
   ema_crossover:
-    enabled: true
+    enabled: false                   # EXPERIMENT A: disabled for defensive-only portfolio
     regimes: [TREND]
     fast_period: 9
     slow_period: 21
@@ -74,7 +74,7 @@ strategies:
     volume_confirmation: true
 
   rsi_momentum:
-    enabled: true
+    enabled: false                   # EXPERIMENT A: disabled for defensive-only portfolio
     regimes: [TREND]
     rsi_period: 14
     rsi_pullback_low: 40
@@ -86,7 +86,7 @@ strategies:
     volume_confirm_ratio: 1.1        # Volume must be 10% above avg on RSI recovery day
 
   bb_squeeze:
-    enabled: true
+    enabled: false                   # EXPERIMENT A: disabled for defensive-only portfolio
     regimes: [TREND, RANGE]
     bb_period: 20
     bb_std: 2.0
@@ -97,14 +97,14 @@ strategies:
     stock_dma_period: 50             # Block entries if stock 50-DMA falling >1% in 5 days
 
   supertrend:
-    enabled: true
+    enabled: false                   # EXPERIMENT A: disabled for defensive-only portfolio
     regimes: [TREND, VOLATILE]
     atr_period: 10
     multiplier: 3.0
     target_r_multiple: 2.0
 
   obv_trend:
-    enabled: true
+    enabled: false                   # EXPERIMENT A: disabled for defensive-only portfolio
     regimes: [TREND]
     breakout_period: 15
     atr_period: 14
