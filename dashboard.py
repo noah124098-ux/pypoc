@@ -374,8 +374,9 @@ def _write_config_risk(updates: dict) -> str:
         return f"Save failed: {e}"
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def _read_last_review() -> dict:
-    """Read data/last_review.json if it exists."""
+    """Read data/last_review.json if it exists. Cached 60s — reviews are generated infrequently."""
     if not LAST_REVIEW_PATH.exists():
         return {}
     try:
@@ -637,13 +638,10 @@ with st.sidebar:
     st.sidebar.divider()
     st.sidebar.subheader("📡 Live Signals")
 
-    # Signal quality from last 30 trades
+    # Signal quality from last 30 trades — uses cached _get_trades
     try:
-        _sb_conn = _db_connect()
-        _sb_trades_df = _query_df(
-            _sb_conn,
-            "SELECT pnl FROM trades ORDER BY closed_at DESC LIMIT 30",
-        )
+        _sb_trades_all = _get_trades(str(DB_PATH))
+        _sb_trades_df = _sb_trades_all.head(30) if not _sb_trades_all.empty else _sb_trades_all
         if not _sb_trades_df.empty and "pnl" in _sb_trades_df.columns and len(_sb_trades_df) > 0:
             _sb_n = len(_sb_trades_df)
             _sb_wins = int((_sb_trades_df["pnl"] > 0).sum())
@@ -665,52 +663,48 @@ with st.sidebar:
     st.sidebar.text("✅ Hurst H>0.5 persistence")
     st.sidebar.text("✅ Market breadth 50%")
 
-    # Last accepted signal
+    # Last accepted signal — uses cached _get_signals
     try:
-        if _sb_conn is not None:
-            _sb_last_sig_df = _query_df(
-                _sb_conn,
-                "SELECT symbol, strategy, ts FROM signals WHERE accepted = 1 ORDER BY id DESC LIMIT 1",
-            )
-            if not _sb_last_sig_df.empty:
-                _sb_sym = str(_sb_last_sig_df["symbol"].iloc[0])
-                _sb_strat = str(_sb_last_sig_df["strategy"].iloc[0])
-                _sb_ts = str(_sb_last_sig_df["ts"].iloc[0])
-                _sb_ago = _time_ago(_sb_ts)
-                st.sidebar.caption(f"Last signal: {_sb_sym} {_sb_strat} {_sb_ago}")
-            else:
-                st.sidebar.caption("Last signal: none recorded")
+        _sb_last_sig_df = _get_signals(str(DB_PATH), accepted_only=True, limit=1)
+        if not _sb_last_sig_df.empty:
+            _sb_sym = str(_sb_last_sig_df["symbol"].iloc[0])
+            _sb_strat = str(_sb_last_sig_df["strategy"].iloc[0])
+            _sb_ts = str(_sb_last_sig_df["ts"].iloc[0])
+            _sb_ago = _time_ago(_sb_ts)
+            st.sidebar.caption(f"Last signal: {_sb_sym} {_sb_strat} {_sb_ago}")
+        else:
+            st.sidebar.caption("Last signal: none recorded")
     except Exception:
         pass
 
-    # ── Quick Stats expander ──────────────────────────────────────────────────
+    # ── Quick Stats expander — uses cached _get_trades ────────────────────────
     with st.sidebar.expander("Quick Stats", expanded=False):
         try:
-            _qs_conn = _db_connect()
+            _qs_all_trades = _get_trades(str(DB_PATH))
+            _cutoff_7d = (datetime.utcnow() - timedelta(days=7)).isoformat()
 
             # Trades this week
-            _qs_week_df = _query_df(
-                _qs_conn,
-                "SELECT id FROM trades WHERE closed_at >= datetime('now', '-7 days')",
-            )
+            if not _qs_all_trades.empty and "closed_at" in _qs_all_trades.columns:
+                _qs_week_df = _qs_all_trades[_qs_all_trades["closed_at"] >= _cutoff_7d]
+            else:
+                _qs_week_df = pd.DataFrame()
             st.metric("Trades this week", len(_qs_week_df))
 
             # Best performing strategy (last 7 days)
-            _qs_strat_df = _query_df(
-                _qs_conn,
-                "SELECT strategy, SUM(pnl) as total_pnl FROM trades "
-                "WHERE closed_at >= datetime('now', '-7 days') "
-                "GROUP BY strategy ORDER BY total_pnl DESC LIMIT 1",
-            )
-            if not _qs_strat_df.empty and "strategy" in _qs_strat_df.columns:
-                _qs_best_strat = str(_qs_strat_df["strategy"].iloc[0])
-                _qs_best_pnl = float(_qs_strat_df["total_pnl"].iloc[0])
-                st.metric(
-                    "Best strategy (7d)",
-                    _qs_best_strat,
-                    delta=f"₹{_qs_best_pnl:+,.0f}",
-                    delta_color="normal" if _qs_best_pnl >= 0 else "inverse",
-                )
+            if not _qs_week_df.empty and "strategy" in _qs_week_df.columns and "pnl" in _qs_week_df.columns:
+                _qs_strat_agg = _qs_week_df.groupby("strategy")["pnl"].sum().reset_index()
+                _qs_strat_agg = _qs_strat_agg.sort_values("pnl", ascending=False)
+                if not _qs_strat_agg.empty:
+                    _qs_best_strat = str(_qs_strat_agg["strategy"].iloc[0])
+                    _qs_best_pnl = float(_qs_strat_agg["pnl"].iloc[0])
+                    st.metric(
+                        "Best strategy (7d)",
+                        _qs_best_strat,
+                        delta=f"₹{_qs_best_pnl:+,.0f}",
+                        delta_color="normal" if _qs_best_pnl >= 0 else "inverse",
+                    )
+                else:
+                    st.caption("Best strategy (7d): N/A")
             else:
                 st.caption("Best strategy (7d): N/A")
 
@@ -724,11 +718,16 @@ with st.sidebar:
             else:
                 st.caption("Market breadth: N/A (placeholder)")
 
-            # Today's rejected signals
-            _qs_rejected_df = _query_df(
-                _qs_conn,
-                "SELECT id FROM signals WHERE accepted = 0 AND date(ts) = date('now')",
-            )
+            # Today's rejected signals — use cached _get_signals
+            _qs_all_sigs = _get_signals(str(DB_PATH), accepted_only=False, limit=500)
+            if not _qs_all_sigs.empty and "accepted" in _qs_all_sigs.columns and "ts" in _qs_all_sigs.columns:
+                _today_str = datetime.utcnow().strftime("%Y-%m-%d")
+                _qs_rejected_df = _qs_all_sigs[
+                    (_qs_all_sigs["accepted"] == 0) &
+                    (_qs_all_sigs["ts"].astype(str).str.startswith(_today_str))
+                ]
+            else:
+                _qs_rejected_df = pd.DataFrame()
             st.metric("Rejected signals today", len(_qs_rejected_df))
 
         except Exception:
@@ -739,11 +738,14 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    # Auto-refresh: rerun after 30s if toggle is on
+    # Auto-refresh: use session-state countdown — no sleep, non-blocking
     if auto_refresh:
-        import time as _sidebar_time
-        _sidebar_time.sleep(30)
-        st.rerun()
+        _ar_count = st.session_state.get("_sidebar_ar_count", 30)
+        if _ar_count <= 1:
+            st.session_state["_sidebar_ar_count"] = 30
+            st.rerun()
+        else:
+            st.session_state["_sidebar_ar_count"] = _ar_count - 1
 
 
 # ── dark mode CSS injection ───────────────────────────────────────────────────
@@ -989,23 +991,19 @@ with tab_live:
             pass
 
     # ── Auto-refresh countdown during market hours ────────────────────────────
+    # No time.sleep() — all waits use session-state counters so the render
+    # thread is never blocked.
     _in_market = _is_market_hours()
     if _in_market:
-        # Use a session counter to implement countdown without blocking
         _refresh_key = "live_tab_refresh_counter"
         _count = st.session_state.get(_refresh_key, 30)
         _countdown_placeholder = st.empty()
         _countdown_placeholder.caption(f"Auto-refreshing in {_count}s (market hours active)")
         if _count <= 1:
             st.session_state[_refresh_key] = 30
-            import time as _time_mod
-            _time_mod.sleep(0.5)
             st.rerun()
         else:
             st.session_state[_refresh_key] = _count - 1
-            import time as _time_mod
-            _time_mod.sleep(1)
-            st.rerun()
     else:
         _now_utc = datetime.utcnow()
         _now_ist = _now_utc + timedelta(hours=5, minutes=30)
@@ -1186,8 +1184,8 @@ with tab_live:
     # ── Market Intelligence: FII/DII Flows ───────────────────────────────────
     with st.expander("📊 Institutional Flows (FII/DII)", expanded=False):
         if _FII_AVAILABLE:
-            flows = get_fii_dii_flows(days=5)
-            sentiment = get_institutional_sentiment()
+            flows = _get_fii_flows_cached(days=5)
+            sentiment = _get_fii_sentiment_cached()
 
             # Sentiment badge
             if sentiment == "BULLISH":
@@ -1751,12 +1749,19 @@ with tab_pnl:
                 return ["background-color: rgba(231,76,60,0.15)"] * len(row)
             return [""] * len(row)
 
-        _display_slice = _sorted_trades[display_cols].head(100)
+        # Paginated display — render 50 rows initially, expand with "Load more"
+        _page_size = 50
+        _trade_page = st.session_state.get("_trades_page_size", _page_size)
+        _display_slice = _sorted_trades[display_cols].head(_trade_page)
         styled = _display_slice.style.apply(_row_bg, axis=1)
         styled = styled.applymap(_color_pnl, subset=[c for c in pnl_cols if c in _display_slice.columns])
         styled = styled.format({c: "₹{:.2f}" for c in ["entry_price", "exit_price"] + pnl_cols
                                  if c in display_cols})
         st.dataframe(styled, use_container_width=True, height=350)
+        if len(_sorted_trades) > _trade_page:
+            if st.button(f"Load more ({len(_sorted_trades) - _trade_page} remaining)", key="load_more_trades"):
+                st.session_state["_trades_page_size"] = _trade_page + _page_size
+                st.rerun()
 
         total_trades = len(trades_df)
         wins = (trades_df["pnl"] > 0).sum()
@@ -1976,6 +1981,211 @@ with tab_positions:
                 st.markdown("</div>", unsafe_allow_html=True)
     else:
         st.info("No open positions." + (" Agent not running." if not snap else ""))
+
+    # ── RISK EXPOSURE SECTION ────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Risk Exposure")
+
+    # ── 1. POSITION SIZE BARS ────────────────────────────────────────────────
+    st.markdown("**Position Size as % of Equity**")
+    if positions_list and _current_equity > 0:
+        _max_conc_pct = 0.0
+        for _rexp_pos in positions_list:
+            _rexp_sym = str(_rexp_pos.get("symbol", "?"))
+            _rexp_qty = float(_rexp_pos.get("qty", 0) or 0)
+            _rexp_price = float(
+                _rexp_pos.get("last_price") or _rexp_pos.get("avg_price", 0) or 0
+            )
+            _rexp_val = _rexp_qty * _rexp_price
+            _rexp_pct = (_rexp_val / _current_equity * 100) if _current_equity else 0.0
+            if _rexp_pct > _max_conc_pct:
+                _max_conc_pct = _rexp_pct
+
+            # Colour thresholds: <10% green, 10-15% yellow, >15% red
+            if _rexp_pct < 10.0:
+                _rexp_bar_color = "#2ecc71"
+            elif _rexp_pct <= 15.0:
+                _rexp_bar_color = "#f39c12"
+            else:
+                _rexp_bar_color = "#e74c3c"
+
+            _rexp_bar_pct_clamped = min(_rexp_pct, 100.0)
+            _rexp_col_label, _rexp_col_bar, _rexp_col_metric = st.columns([1, 4, 1])
+            _rexp_col_label.markdown(
+                f"<div style='padding-top:6px;font-weight:600'>{_safe_html(_rexp_sym)}</div>",
+                unsafe_allow_html=True,
+            )
+            _rexp_col_bar.markdown(
+                f"<div style='background:#333;border-radius:6px;height:22px;margin-top:4px'>"
+                f"<div style='background:{_rexp_bar_color};width:{_rexp_bar_pct_clamped:.1f}%;"
+                f"height:22px;border-radius:6px'></div></div>",
+                unsafe_allow_html=True,
+            )
+            _rexp_col_metric.metric(
+                label="",
+                value=f"{_rexp_pct:.1f}%",
+                label_visibility="collapsed",
+            )
+
+        st.metric(
+            "Largest single-position concentration",
+            f"{_max_conc_pct:.1f}%",
+            help="Position value as % of current equity. Green <10%, Yellow 10-15%, Red >15%.",
+        )
+    else:
+        st.caption("No open positions — no exposure to display.")
+
+    st.divider()
+
+    # ── 2. SYMBOL CONCENTRATION TABLE ───────────────────────────────────────
+    st.markdown("**Symbol Concentration (last 30 trades)**")
+
+    @st.cache_data(ttl=30, show_spinner=False)
+    def _get_symbol_concentration(db_path: str) -> pd.DataFrame:
+        """Compute per-symbol trade count, win rate, net P&L from last 30 trades."""
+        if not Path(db_path).exists():
+            return pd.DataFrame()
+        try:
+            import sqlite3 as _sqlite3
+            _c = _sqlite3.connect(db_path)
+            _df = pd.read_sql_query(
+                """
+                SELECT symbol,
+                       COUNT(*) AS trades,
+                       SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                       SUM(pnl - COALESCE(charges, 0)) AS net_pnl
+                FROM (
+                    SELECT symbol, pnl, charges
+                    FROM trades
+                    ORDER BY closed_at DESC
+                    LIMIT 30
+                ) t
+                GROUP BY symbol
+                ORDER BY trades DESC
+                """,
+                _c,
+            )
+            _c.close()
+            if _df.empty:
+                return _df
+            _df["win_rate_pct"] = (_df["wins"] / _df["trades"] * 100).round(1)
+            _df = _df.drop(columns=["wins"])
+            _df["net_pnl"] = _df["net_pnl"].round(2)
+            return _df
+        except Exception:
+            return pd.DataFrame()
+
+    _sym_conc_df = _get_symbol_concentration(str(DB_PATH))
+    if not _sym_conc_df.empty:
+        def _style_net_pnl(val):
+            try:
+                v = float(val)
+            except (TypeError, ValueError):
+                return ""
+            if v > 0:
+                return "color: #2ecc71; font-weight: bold"
+            if v < 0:
+                return "color: #e74c3c; font-weight: bold"
+            return "color: gray"
+
+        _sym_styled = (
+            _sym_conc_df.rename(columns={
+                "symbol": "Symbol",
+                "trades": "Trades",
+                "win_rate_pct": "Win Rate %",
+                "net_pnl": "Net P&L (Rs)",
+            })
+            .style.applymap(_style_net_pnl, subset=["Net P&L (Rs)"])
+            .format({"Net P&L (Rs)": "Rs{:,.2f}", "Win Rate %": "{:.1f}%"})
+        )
+        st.dataframe(_sym_styled, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No trade data yet — symbol concentration unavailable.")
+
+    st.divider()
+
+    # ── 3. STRATEGY-SYMBOL MATRIX (heatmap) ─────────────────────────────────
+    st.markdown("**Strategy x Symbol P&L Matrix (last 30 trades)**")
+
+    @st.cache_data(ttl=30, show_spinner=False)
+    def _get_strategy_symbol_matrix(db_path: str) -> pd.DataFrame:
+        """Return net P&L grouped by strategy x symbol for the last 30 trades."""
+        if not Path(db_path).exists():
+            return pd.DataFrame()
+        try:
+            import sqlite3 as _sqlite3
+            _c = _sqlite3.connect(db_path)
+            _df = pd.read_sql_query(
+                """
+                SELECT strategy, symbol,
+                       SUM(pnl - COALESCE(charges, 0)) AS net_pnl
+                FROM (
+                    SELECT strategy, symbol, pnl, charges
+                    FROM trades
+                    ORDER BY closed_at DESC
+                    LIMIT 30
+                ) t
+                GROUP BY strategy, symbol
+                """,
+                _c,
+            )
+            _c.close()
+            return _df
+        except Exception:
+            return pd.DataFrame()
+
+    _matrix_df = _get_strategy_symbol_matrix(str(DB_PATH))
+    if not _matrix_df.empty and len(_matrix_df) >= 2:
+        # Top 10 symbols by appearance count across all strategies
+        _top_syms = (
+            _matrix_df.groupby("symbol")["net_pnl"]
+            .count()
+            .nlargest(10)
+            .index.tolist()
+        )
+        _matrix_filtered = _matrix_df[_matrix_df["symbol"].isin(_top_syms)]
+
+        # Pivot to strategy x symbol
+        _pivot = _matrix_filtered.pivot_table(
+            index="strategy", columns="symbol", values="net_pnl", aggfunc="sum"
+        ).reindex(columns=_top_syms).fillna(0.0)
+
+        _z = _pivot.values.tolist()
+        _x = list(_pivot.columns)
+        _y = list(_pivot.index)
+
+        _hm_colorscale = [
+            [0.0, "#8b0000"],
+            [0.45, "#e74c3c"],
+            [0.5, "#555555"],
+            [0.55, "#2ecc71"],
+            [1.0, "#006400"],
+        ]
+
+        _fig_heatmap = go.Figure(
+            go.Heatmap(
+                z=_z,
+                x=_x,
+                y=_y,
+                colorscale=_hm_colorscale,
+                zmid=0,
+                text=[[f"Rs{v:+,.0f}" for v in row] for row in _z],
+                texttemplate="%{text}",
+                hovertemplate="<b>%{y} x %{x}</b><br>Net P&L: Rs%{z:+,.0f}<extra></extra>",
+                showscale=True,
+                colorbar=dict(title="Net P&L (Rs)"),
+            )
+        )
+        _fig_heatmap.update_layout(
+            title="Strategy x Symbol Net P&L (last 30 trades)",
+            height=max(300, 60 * len(_y) + 80),
+            margin=dict(l=10, r=10, t=50, b=10),
+            xaxis_title="Symbol",
+            yaxis_title="Strategy",
+        )
+        st.plotly_chart(_fig_heatmap, use_container_width=True)
+    else:
+        st.caption("Not enough trade data to build strategy-symbol matrix (need at least 2 rows).")
 
     st.divider()
 
@@ -2879,6 +3089,9 @@ with tab_regime:
 
 with tab_backtest:
     st.header("Backtest & Walk-Forward Results")
+    # Lazy load: mark tab as loaded on first visit; show placeholder until then
+    if not st.session_state.get("tab_backtest_loaded"):
+        st.session_state["tab_backtest_loaded"] = True
 
     # ── Backtest vs Live Equity Comparison ────────────────────────────────────
     st.subheader("Backtest vs Live (Paper) Equity Comparison")
@@ -5532,8 +5745,12 @@ with tab_costs:
 
 
 # ── auto-refresh ─────────────────────────────────────────────────────────────
-
+# Uses session-state countdown; no blocking sleep on the render thread.
 if auto_refresh:
-    import time
-    time.sleep(30)
-    st.rerun()
+    _ar_main_count = st.session_state.get("_main_ar_count", 30)
+    if _ar_main_count <= 1:
+        st.session_state["_main_ar_count"] = 30
+        st.cache_data.clear()
+        st.rerun()
+    else:
+        st.session_state["_main_ar_count"] = _ar_main_count - 1
