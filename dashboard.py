@@ -18,7 +18,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -26,6 +26,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
+
+try:
+    import pytz as _pytz
+    _PYTZ_AVAILABLE = True
+except ImportError:
+    _pytz = None  # type: ignore[assignment]
+    _PYTZ_AVAILABLE = False
 
 st.set_page_config(
     page_title="NSE Trading Agent",
@@ -385,7 +392,7 @@ def _pnl_by_period(trades_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
 with st.sidebar:
     st.title("NSE Trading Agent")
-    auto_refresh = st.checkbox("Auto-refresh (30s)", value=False)
+    auto_refresh = st.toggle("Auto-refresh (30s)", key="auto_refresh", value=False)
     if auto_refresh:
         st.caption(f"Last refresh: {datetime.now().strftime('%H:%M:%S')}")
 
@@ -423,6 +430,50 @@ with st.sidebar:
     _run_color = "#2ecc71" if _running else "#e74c3c"
     _run_label = "RUNNING" if _running else "STOPPED"
     st.markdown(f"**Agent:** <span style='color:{_run_color}'>{_run_label}</span>", unsafe_allow_html=True)
+
+    # ── Snapshot staleness indicator ──────────────────────────────────────────
+    st.sidebar.divider()
+    if snap and snap.get("ts"):
+        try:
+            _snap_ts = datetime.fromisoformat(str(snap["ts"]).replace("Z", ""))
+            _snap_age_seconds = (datetime.now() - _snap_ts).total_seconds()
+            if _snap_age_seconds < 30:
+                st.sidebar.success(f"🟢 Live — {_snap_age_seconds:.0f}s ago")
+            elif _snap_age_seconds < 120:
+                st.sidebar.warning(f"🟡 Stale — {_snap_age_seconds:.0f}s ago")
+            else:
+                st.sidebar.error(f"🔴 Offline — {_snap_age_seconds / 60:.0f}m ago")
+        except Exception:
+            st.sidebar.caption("Snapshot timestamp unavailable")
+    else:
+        st.sidebar.caption("No snapshot data")
+
+    # ── NSE market hours indicator ────────────────────────────────────────────
+    try:
+        if _PYTZ_AVAILABLE and _pytz is not None:
+            _ist = _pytz.timezone("Asia/Kolkata")
+            _now_ist = datetime.now(_ist)
+        else:
+            # Fallback: UTC + 5:30
+            _now_ist_naive = datetime.utcnow() + timedelta(hours=5, minutes=30)
+            _now_ist = _now_ist_naive  # type: ignore[assignment]
+
+        _is_weekday = _now_ist.weekday() < 5
+        _market_open_time = time(9, 15)
+        _market_close_time = time(15, 30)
+        _now_time = _now_ist.time()
+        if hasattr(_now_time, "replace"):
+            _now_time = _now_time.replace(tzinfo=None)
+        _in_market_hours = _market_open_time <= _now_time <= _market_close_time
+
+        if _is_weekday and _in_market_hours:
+            st.sidebar.success("📈 Market OPEN")
+        elif _is_weekday:
+            st.sidebar.info("💤 Market CLOSED (weekday)")
+        else:
+            st.sidebar.info("📅 Weekend — Market CLOSED")
+    except Exception:
+        pass
 
     st.sidebar.divider()
     st.sidebar.subheader("Market Pulse")
@@ -464,9 +515,116 @@ with st.sidebar:
     except Exception:
         pass
 
+    # ── Live Signals widget ───────────────────────────────────────────────────
+    st.sidebar.divider()
+    st.sidebar.subheader("📡 Live Signals")
+
+    # Signal quality from last 30 trades
+    try:
+        _sb_conn = _db_connect()
+        _sb_trades_df = _query_df(
+            _sb_conn,
+            "SELECT pnl FROM trades ORDER BY closed_at DESC LIMIT 30",
+        )
+        if not _sb_trades_df.empty and "pnl" in _sb_trades_df.columns and len(_sb_trades_df) > 0:
+            _sb_n = len(_sb_trades_df)
+            _sb_wins = int((_sb_trades_df["pnl"] > 0).sum())
+            _sb_win_rate = _sb_wins / _sb_n * 100
+            _sb_sig_color = "🟢" if _sb_win_rate > 50 else ("🟡" if _sb_win_rate > 35 else "🔴")
+            st.sidebar.metric(
+                f"{_sb_sig_color} Signal Quality",
+                f"{_sb_win_rate:.0f}% win",
+                help=f"Last {_sb_n} trades win rate",
+            )
+        else:
+            st.sidebar.caption("No trades yet — signal quality N/A")
+    except Exception:
+        pass
+
+    # Active filters status
+    st.sidebar.caption("Active Filters:")
+    st.sidebar.text("✅ VIX<18 trend gate")
+    st.sidebar.text("✅ Hurst H>0.5 persistence")
+    st.sidebar.text("✅ Market breadth 50%")
+
+    # Last accepted signal
+    try:
+        if _sb_conn is not None:
+            _sb_last_sig_df = _query_df(
+                _sb_conn,
+                "SELECT symbol, strategy, ts FROM signals WHERE accepted = 1 ORDER BY id DESC LIMIT 1",
+            )
+            if not _sb_last_sig_df.empty:
+                _sb_sym = str(_sb_last_sig_df["symbol"].iloc[0])
+                _sb_strat = str(_sb_last_sig_df["strategy"].iloc[0])
+                _sb_ts = str(_sb_last_sig_df["ts"].iloc[0])
+                _sb_ago = _time_ago(_sb_ts)
+                st.sidebar.caption(f"Last signal: {_sb_sym} {_sb_strat} {_sb_ago}")
+            else:
+                st.sidebar.caption("Last signal: none recorded")
+    except Exception:
+        pass
+
+    # ── Quick Stats expander ──────────────────────────────────────────────────
+    with st.sidebar.expander("Quick Stats", expanded=False):
+        try:
+            _qs_conn = _db_connect()
+
+            # Trades this week
+            _qs_week_df = _query_df(
+                _qs_conn,
+                "SELECT id FROM trades WHERE closed_at >= datetime('now', '-7 days')",
+            )
+            st.metric("Trades this week", len(_qs_week_df))
+
+            # Best performing strategy (last 7 days)
+            _qs_strat_df = _query_df(
+                _qs_conn,
+                "SELECT strategy, SUM(pnl) as total_pnl FROM trades "
+                "WHERE closed_at >= datetime('now', '-7 days') "
+                "GROUP BY strategy ORDER BY total_pnl DESC LIMIT 1",
+            )
+            if not _qs_strat_df.empty and "strategy" in _qs_strat_df.columns:
+                _qs_best_strat = str(_qs_strat_df["strategy"].iloc[0])
+                _qs_best_pnl = float(_qs_strat_df["total_pnl"].iloc[0])
+                st.metric(
+                    "Best strategy (7d)",
+                    _qs_best_strat,
+                    delta=f"₹{_qs_best_pnl:+,.0f}",
+                    delta_color="normal" if _qs_best_pnl >= 0 else "inverse",
+                )
+            else:
+                st.caption("Best strategy (7d): N/A")
+
+            # Market breadth placeholder
+            _qs_breadth = snap.get("market_breadth_pct", None)
+            if _qs_breadth is not None:
+                try:
+                    st.metric("Market breadth", f"{float(_qs_breadth):.1f}%")
+                except Exception:
+                    st.caption("Market breadth: N/A")
+            else:
+                st.caption("Market breadth: N/A (placeholder)")
+
+            # Today's rejected signals
+            _qs_rejected_df = _query_df(
+                _qs_conn,
+                "SELECT id FROM signals WHERE accepted = 0 AND date(ts) = date('now')",
+            )
+            st.metric("Rejected signals today", len(_qs_rejected_df))
+
+        except Exception:
+            st.caption("Stats unavailable")
+
     st.divider()
     if st.button("Refresh now"):
         st.cache_data.clear()
+        st.rerun()
+
+    # Auto-refresh: rerun after 30s if toggle is on
+    if auto_refresh:
+        import time as _sidebar_time
+        _sidebar_time.sleep(30)
         st.rerun()
 
 
