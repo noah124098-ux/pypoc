@@ -632,8 +632,8 @@ with st.sidebar:
 
 conn = _db_connect()
 tab_live, tab_portfolio, tab_pnl, tab_positions, tab_regime, tab_backtest, tab_ai_review, tab_controls, tab_costs = st.tabs([
-    "🔴 Live Account",
-    "📊 Live Account",
+    "🔴 Paper Agent",
+    "📊 Angel One Account",
     "📊 P&L & Equity",
     "📋 Positions & Signals",
     "🌡️ Regime & Market",
@@ -649,7 +649,7 @@ tab_live, tab_portfolio, tab_pnl, tab_positions, tab_regime, tab_backtest, tab_a
 # ────────────────────────────────────────────────────────────────────────────
 
 with tab_live:
-    st.header("Live Angel One Account")
+    st.header("Paper Agent — Live State")
 
     # ── KPI rows ─────────────────────────────────────────────────────────────
     # Gather data once for KPI display
@@ -808,6 +808,16 @@ with tab_live:
     )
 
     st.markdown("<hr style='margin:4px 0 12px 0;border-color:#333'>", unsafe_allow_html=True)
+
+    # ── Snapshot staleness inline caption ────────────────────────────────────
+    if snap and snap.get("ts"):
+        try:
+            _live_snap_ts = datetime.fromisoformat(str(snap["ts"]).replace("Z", ""))
+            _live_snap_age = (datetime.now() - _live_snap_ts).total_seconds()
+            _live_offline_note = " — agent may be offline" if _live_snap_age > 120 else ""
+            st.caption(f"Data from {_live_snap_age:.0f}s ago{_live_offline_note}")
+        except Exception:
+            pass
 
     # ── Auto-refresh countdown during market hours ────────────────────────────
     _in_market = _is_market_hours()
@@ -1048,7 +1058,7 @@ with tab_live:
 # ────────────────────────────────────────────────────────────────────────────
 
 with tab_portfolio:
-    st.header("Live Account Portfolio")
+    st.header("Angel One Account Portfolio")
 
     # Read-only badge
     st.markdown(
@@ -2149,6 +2159,22 @@ with tab_regime:
 
 with tab_backtest:
     st.header("Backtest & Walk-Forward Results")
+
+    # ── Gate file expiry indicator ────────────────────────────────────────────
+    if gate and gate.get("timestamp"):
+        try:
+            _gate_ts_str = gate["timestamp"][:19].replace("Z", "")
+            _gate_dt = datetime.fromisoformat(_gate_ts_str)
+            _gate_age_days = (datetime.now() - _gate_dt).days
+            _days_remaining = 30 - _gate_age_days
+            if _days_remaining > 7:
+                st.success(f"Gate file valid — {_days_remaining} days until expiry")
+            elif _days_remaining > 0:
+                st.warning(f"Gate file expiring in {_days_remaining} days — re-run walk-forward soon")
+            else:
+                st.error("Gate file EXPIRED — re-run walk-forward before going live")
+        except Exception:
+            pass
 
     if gate:
         gate_passed = gate.get("passed", False)
