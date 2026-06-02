@@ -1,0 +1,15 @@
+# docker-compose.override.yml — development overrides
+#
+# Applied automatically when running `docker compose up` alongside
+# docker-compose.yml.  Not used in production.
+#
+# Mounts the entire repo into the dashboard container so that editing
+# dashboard.py or any Python module on the host triggers a live reload
+# without rebuilding the image.
+
+version: "3.9"
+
+services:
+  dashboard:
+    volumes:
+      - .:/app
