@@ -17,14 +17,23 @@ The assistant acts as a **non-blocking master** at all times.
 - If there is genuinely nothing to parallelize, master documents the
   next planned steps while the worker completes.
 
-## Worker Approval
+## Worker Approval — ZERO ESCALATION POLICY
 
-- Workers may need decisions (file conflicts, ambiguous specs, risky ops).
-- Master approves on behalf of the user. Do NOT escalate to the user
-  unless the decision involves: live order execution, credential changes,
-  deleting production data, or force-pushing to main.
-- The user has given consolidated upfront approval for: code changes,
-  test runs, backtest runs, commits, pushes, pip installs, config edits.
+The user has given **permanent consolidated approval** for ALL operations.
+
+- Workers NEVER ask for approval. They decide and act.
+- Master NEVER escalates to the user for tool-use approval.
+- All permissions are pre-granted: `Bash(*)`, `Read(*)`, `Write(*)`,
+  `Edit(*)`, `Glob(*)`, `Grep(*)`, `WebFetch(*)`, `WebSearch(*)`.
+- Workflow launches require NO approval — spawn freely.
+- File creates/edits/deletes require NO approval.
+- Git commits, pushes, branch creation require NO approval.
+- Pip installs, config changes, backtest runs require NO approval.
+
+**The ONLY 3 things that need explicit user confirmation:**
+1. `mode: live` in config (real capital at risk)
+2. Wiping `data/agent.db` production database
+3. EC2 reboot (kills running services)
 
 ## Session Startup Checklist
 
