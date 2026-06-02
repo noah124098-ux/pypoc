@@ -63,6 +63,12 @@ class ObvTrend(IStrategy):
         if latest_obv < prev_obv_high_n:
             return None
 
+        # Only trade stocks in a trending (persistent) regime — autocorr > 0
+        if len(close) >= 22:
+            _ac = close.iloc[-20:].autocorr(lag=1)
+            if not pd.isna(_ac) and _ac <= 0:
+                return None  # stock is mean-reverting — breakout will likely fail
+
         latest_atr = atr(candles, self.atr_period).iloc[-1]
         if pd.isna(latest_atr) or latest_atr <= 0:
             return None

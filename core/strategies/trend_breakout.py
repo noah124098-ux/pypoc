@@ -49,6 +49,13 @@ class TrendBreakout(IStrategy):
         if pd.isna(vr) or vr < self.volume_confirm_ratio:
             return None
 
+        # Only generate breakout signal when the stock is in a trending (persistent) regime.
+        # Autocorr > 0 means price is momentum/trending. Autocorr <= 0 means mean-reverting.
+        if len(close) >= 22:
+            _ac = close.iloc[-20:].autocorr(lag=1)
+            if not pd.isna(_ac) and _ac <= 0:
+                return None  # stock is mean-reverting — Donchian breakout will likely be a trap
+
         if latest_close <= prev_upper:
             return None
 
