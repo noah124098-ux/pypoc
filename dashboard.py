@@ -12,6 +12,7 @@ Reads from:
 """
 from __future__ import annotations
 
+import html as _html
 import json
 import os
 import signal
@@ -1743,10 +1744,11 @@ with tab_positions:
     _pos_halted = snap.get("halted", False)
     _pos_halt_reason = snap.get("halt_reason", "")
     if _pos_halted:
+        _pos_halt_reason_safe = _html.escape(str(_pos_halt_reason or "No reason recorded"))
         st.markdown(
             f"<div style='background:#c0392b;color:white;padding:12px 16px;border-radius:8px;"
             f"font-weight:bold;font-size:1.05em;margin-bottom:12px'>"
-            f"AGENT HALTED: {_pos_halt_reason or 'No reason recorded'}</div>",
+            f"AGENT HALTED: {_pos_halt_reason_safe}</div>",
             unsafe_allow_html=True,
         )
 
@@ -2367,18 +2369,115 @@ with tab_replay:
             if _rpl_target_price:
                 _sd5.metric("Target", f"₹{_rpl_target_price:,.2f}")
 
-    # ── 6. SIMILAR TRADES ────────────────────────────────────────────────────
+    # ── 6. DECISION TRACE ────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("**Decision Trace** — signal → guardrail pipeline")
+
+    # Resolve the signal id that generated this trade
+    _dtrace_sig_id: int | None = None
+    try:
+        _dtrace_conn = sqlite3.connect(DB_PATH)
+        _dtrace_conn.row_factory = sqlite3.Row
+        _dtrace_sig_row = _dtrace_conn.execute(
+            "SELECT id FROM signals WHERE symbol=? AND ts <= ? AND accepted=1 "
+            "ORDER BY ts DESC LIMIT 1",
+            (_replay.symbol, _replay.entry_time),
+        ).fetchone()
+        _dtrace_conn.close()
+        if _dtrace_sig_row:
+            _dtrace_sig_id = int(_dtrace_sig_row["id"])
+    except Exception:
+        pass
+
+    _dtrace: dict = {}
+    if _dtrace_sig_id is not None:
+        try:
+            from core.analytics.decision_trace import trace_signal_decision as _trace_signal_decision
+            _dtrace = _trace_signal_decision(_dtrace_sig_id, SQLITE_DB_PATH)
+        except Exception:
+            _dtrace = {}
+
+    if _dtrace:
+        # Sizing block
+        _dtsz = _dtrace.get("sizing", {})
+        _dtrace_cols = st.columns(4)
+        _dtrace_cols[0].metric(
+            "Equity at Signal",
+            f"₹{_dtsz['equity_at_time']:,.0f}" if _dtsz.get("equity_at_time") else "N/A",
+        )
+        _dtrace_cols[1].metric("Risk per Share", f"₹{_dtsz.get('risk_per_share', 0):.2f}")
+        _dtrace_cols[2].metric("Qty (raw)", str(_dtsz.get("raw_qty", "N/A")))
+        _dtrace_cols[3].metric("Qty (final)", str(_dtsz.get("final_qty", "N/A")))
+
+        st.markdown("")
+
+        # Guardrail checklist
+        _dt_checks = _dtrace.get("guardrail_checks", [])
+        _RULE_LABELS = {
+            "global_halt":          "Global halt",
+            "qty_positive":         "Qty positive",
+            "stop_loss_required":   "Stop loss required",
+            "market_window":        "Market window",
+            "stale_data":           "Stale data",
+            "black_swan_nifty":     "Black swan (Nifty)",
+            "black_swan_vix":       "Black swan (VIX)",
+            "max_open_positions":   "Max open positions",
+            "per_trade_risk":       "Per-trade risk",
+            "max_position_size":    "Max position size",
+            "liquidity":            "Liquidity check",
+            "spread":               "Spread check",
+            "daily_loss_circuit":   "Daily loss circuit",
+            "drawdown_circuit":     "Drawdown circuit",
+            "signal_cooldown":      "Signal cooldown",
+            "duplicate_position":   "Duplicate position",
+        }
+        for _dtc in _dt_checks:
+            _dtc_rule   = _dtc.get("rule", "")
+            _dtc_passed = _dtc.get("passed")
+            _dtc_detail = _dtc.get("detail", "")
+            _dtc_label  = _RULE_LABELS.get(_dtc_rule, _dtc_rule.replace("_", " ").title())
+            if _dtc_passed is True:
+                _dtc_icon = "✅"
+            elif _dtc_passed is False:
+                _dtc_icon = "❌"
+            else:
+                _dtc_icon = "⬜"   # not reached / N/A
+            st.markdown(
+                f"{_dtc_icon} **{_dtc_label}:** {_dtc_detail}",
+                unsafe_allow_html=False,
+            )
+
+        # Final verdict
+        st.markdown("")
+        _dt_decision = _dtrace.get("final_decision", "UNKNOWN")
+        _dt_rej      = _dtrace.get("rejection_reason")
+        if _dt_decision == "ACCEPTED":
+            st.success(
+                f"→ ACCEPTED — {_dtsz.get('final_qty', '?')} shares @ market",
+                icon="✅",
+            )
+        else:
+            _dt_rej_text = f" — {_dt_rej}" if _dt_rej else ""
+            st.error(f"→ REJECTED{_dt_rej_text}", icon="❌")
+    else:
+        st.caption("Decision trace not available — signal record not found in DB.")
+
+    # ── 7. SIMILAR TRADES ────────────────────────────────────────────────────
     _similar = getattr(_replay, "rejection_checks", [])  # field name is different; use DB query
     try:
         _sim_conn = sqlite3.connect(DB_PATH)
         _sim_conn.row_factory = sqlite3.Row
         _sim_rows = _sim_conn.execute(
             """
-            SELECT id, symbol, pnl, COALESCE(charges,0) as charges,
-                   opened_at, exit_reason, COALESCE(strategy,'') as strategy
-            FROM trades
-            WHERE strategy = ? AND id != ?
-            ORDER BY closed_at DESC LIMIT 5
+            SELECT t.id, t.symbol, t.pnl, COALESCE(t.charges,0) as charges,
+                   t.opened_at, t.exit_reason, COALESCE(t.strategy,'') as strategy,
+                   s.accepted as sig_accepted, s.rejection_reason as sig_rejection_reason
+            FROM trades t
+            LEFT JOIN signals s ON (s.symbol = t.symbol AND s.accepted = 1
+                                    AND s.ts <= t.opened_at
+                                    AND s.ts >= datetime(t.opened_at, '-5 minutes'))
+            WHERE t.strategy = ? AND t.id != ?
+            ORDER BY t.closed_at DESC LIMIT 5
             """,
             (_rpl_strategy, _selected_trade_id),
         ).fetchall()
@@ -2395,6 +2494,7 @@ with tab_replay:
             _sim_charges = float(_sim.get("charges", 0))
             _sim_net = _sim_pnl - _sim_charges
             _sim_badge = "✅" if _sim_pnl > 0 else "❌"
+            _sim_rej = _sim.get("sig_rejection_reason")
             _sim_col1, _sim_col2, _sim_col3, _sim_col4 = st.columns([1, 2, 2, 2])
             _sim_col1.markdown(f"**{_sim_badge}**")
             _sim_col2.markdown(f"**#{_sim['id']}** {_sim.get('symbol', '')}")
@@ -2405,6 +2505,8 @@ with tab_replay:
                 label_visibility="collapsed",
             )
             _sim_col4.caption(str(_sim.get("opened_at", ""))[:10])
+            if _sim_rej:
+                st.caption(f"  ⚠ Rejection: {_sim_rej}")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -3693,7 +3795,7 @@ Respond in 3–5 sentences. Be direct and actionable. Do not disclaim about data
             "<div style='background:#1e2836;border:1px solid #3498db;border-radius:8px;"
             "padding:14px 18px;margin-top:8px'>"
             "<small style='color:#3498db;font-weight:600'>Claude says:</small><br>"
-            f"<span style='color:#e8e8e8;line-height:1.6'>{_mc_response}</span>"
+            f"<span style='color:#e8e8e8;line-height:1.6'>{_html.escape(str(_mc_response))}</span>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -3763,13 +3865,13 @@ Respond in 3–5 sentences. Be direct and actionable. Do not disclaim about data
 
                 if _se_rationale:
                     st.markdown(
-                        f"<span style='color:#aaa;font-size:0.85em'>Strategy rationale: {_se_rationale}</span>",
+                        f"<span style='color:#aaa;font-size:0.85em'>Strategy rationale: {_html.escape(str(_se_rationale))}</span>",
                         unsafe_allow_html=True,
                     )
 
                 if not _se_accepted and _se_reason:
                     st.markdown(
-                        f"<span style='color:#e74c3c;font-size:0.85em'>Rejected: {_se_reason}</span>",
+                        f"<span style='color:#e74c3c;font-size:0.85em'>Rejected: {_html.escape(str(_se_reason))}</span>",
                         unsafe_allow_html=True,
                     )
                     _se_explain_key = f"se_explain_{_se_sig_id}"
@@ -3796,7 +3898,7 @@ Respond in 3–5 sentences. Be direct and actionable. Do not disclaim about data
                             f"padding:8px 12px;margin-top:4px;border-radius:4px'>"
                             f"<small style='color:#3498db'>Claude:</small> "
                             f"<span style='color:#ddd;font-size:0.9em'>"
-                            f"{st.session_state[_se_result_key]}</span></div>",
+                            f"{_html.escape(str(st.session_state[_se_result_key]))}</span></div>",
                             unsafe_allow_html=True,
                         )
 
@@ -4217,10 +4319,11 @@ with tab_controls:
 
     # Agent halt/resume banner
     if _halted:
+        _halt_reason_safe = _html.escape(str(_halt_reason)) if _halt_reason else ""
         st.markdown(
             "<div style='background:#c0392b;padding:14px;border-radius:8px;margin-bottom:12px'>"
             "<b style='color:white;font-size:1.1em'>AGENT HALTED</b>"
-            + (f"<br><span style='color:#ffdddd'>{_halt_reason}</span>" if _halt_reason else "")
+            + (f"<br><span style='color:#ffdddd'>{_halt_reason_safe}</span>" if _halt_reason_safe else "")
             + "</div>",
             unsafe_allow_html=True,
         )
@@ -4681,8 +4784,14 @@ with tab_controls:
                 st.error("Telegram: bot token and chat ID are both required.")
             else:
                 try:
+                    import re as _re
                     import urllib.request as _urllib_req
                     import urllib.parse as _urllib_parse
+                    # Validate token to prevent URL path injection — Telegram bot tokens
+                    # are always of the form "<digits>:<alphanumeric+underscore>".
+                    if not _re.fullmatch(r"[0-9]+:[A-Za-z0-9_\-]+", tg_token):
+                        st.error("Telegram: invalid bot token format.")
+                        raise ValueError("invalid token format")
                     _tg_msg = "Test from NSE Agent dashboard"
                     _tg_url = (
                         f"https://api.telegram.org/bot{tg_token}/sendMessage?"
