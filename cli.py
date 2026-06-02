@@ -149,6 +149,74 @@ def cmd_check_config(args):
     print(f"  Anthropic API:      {'yes' if secrets.anthropic_api_key else 'no (EOD reviewer disabled)'}")
     print(f"  Telegram bot:       {'yes' if secrets.telegram_bot_token else 'no'}")
 
+    # --- Config validation warnings ---
+    warnings: list[str] = []
+
+    # Warn if Angel One API key looks like a placeholder
+    _placeholder_patterns = ("your_", "your_api_key_here", "<", "xxx", "test", "dummy",
+                              "placeholder", "changeme", "example", "sk-ant-...")
+    for field_name, value in [
+        ("ANGEL_ONE_API_KEY", secrets.angel_one_api_key),
+        ("ANGEL_ONE_API_SECRET", secrets.angel_one_api_secret),
+        ("ANGEL_ONE_CLIENT_CODE", secrets.angel_one_client_code),
+        ("ANGEL_ONE_PASSWORD", secrets.angel_one_password),
+        ("ANGEL_ONE_TOTP_SECRET", secrets.angel_one_totp_secret),
+    ]:
+        if value:
+            vl = value.lower()
+            if any(p in vl for p in _placeholder_patterns):
+                warnings.append(
+                    f"WARNING: {field_name} looks like a placeholder value "
+                    f"('{value[:20]}...') — copy .env.example to .env and fill in real credentials."
+                )
+
+    # Warn if ANTHROPIC_API_KEY is empty (EOD reviewer won't work)
+    if not secrets.anthropic_api_key:
+        warnings.append(
+            "WARNING: ANTHROPIC_API_KEY is not set — EOD reviewer will be disabled. "
+            "Set it in .env to enable daily trade analysis."
+        )
+
+    # Warn if mode=live but gate not passed
+    if settings.mode == "live":
+        from backtest.gate import is_live_allowed
+        allowed, reason = is_live_allowed()
+        if not allowed:
+            warnings.append(
+                f"WARNING: mode=live but backtest gate has not passed or is stale. "
+                f"Reason: {reason}. Run: python cli.py walk-forward --years 3"
+            )
+
+    # Warn if ANGEL_ONE_LIVE_* matches ANGEL_ONE_* (credential confusion)
+    live_fields = {
+        "ANGEL_ONE_LIVE_API_KEY": secrets.angel_one_live_api_key,
+        "ANGEL_ONE_LIVE_CLIENT_CODE": secrets.angel_one_live_client_code,
+        "ANGEL_ONE_LIVE_PASSWORD": secrets.angel_one_live_password,
+        "ANGEL_ONE_LIVE_TOTP_SECRET": secrets.angel_one_live_totp_secret,
+    }
+    data_fields = {
+        "ANGEL_ONE_API_KEY": secrets.angel_one_api_key,
+        "ANGEL_ONE_CLIENT_CODE": secrets.angel_one_client_code,
+        "ANGEL_ONE_PASSWORD": secrets.angel_one_password,
+        "ANGEL_ONE_TOTP_SECRET": secrets.angel_one_totp_secret,
+    }
+    confused: list[str] = []
+    for (lk, lv), (dk, dv) in zip(live_fields.items(), data_fields.items()):
+        if lv and dv and lv == dv:
+            confused.append(f"{lk} == {dk}")
+    if confused:
+        warnings.append(
+            "SECURITY WARNING: ANGEL_ONE_LIVE_* credentials match ANGEL_ONE_* data-feed credentials. "
+            "These MUST be separate Angel One API apps. "
+            f"Matching fields: {', '.join(confused)}. "
+            "Create a new Angel One app for live order execution."
+        )
+
+    if warnings:
+        print()
+        for w in warnings:
+            print(w)
+
 
 def cmd_mcp_server(args):
     import asyncio
