@@ -198,6 +198,81 @@ class TradingAgentTools:
         cmd = enqueue("update_risk_param", {"param": param, "value": value})
         return {"queued": True, "command_id": cmd.id, "param": param, "value": value}
 
+    # ---------- analytics tools ----------
+
+    def get_strategy_performance(self, days: int = 30) -> list[dict]:
+        """Per-strategy metrics over the last *days* calendar days: trades, win_rate,
+        profit_factor, net_pnl, sharpe.  Requires trades in the SQLite store."""
+        from core.analytics.metrics import strategy_performance
+        cutoff = self._days_cutoff(days)
+        with self._connect() as c:
+            cur = c.execute(
+                "SELECT t.*, s.regime FROM trades t "
+                "LEFT JOIN signals s ON s.symbol = t.symbol AND s.strategy = t.strategy "
+                "  AND s.accepted = 1 "
+                "  AND s.ts <= t.closed_at "
+                "WHERE t.closed_at >= ? "
+                "GROUP BY t.id "
+                "ORDER BY t.closed_at",
+                (cutoff,),
+            )
+            rows = self._rows(cur)
+        return strategy_performance(rows)
+
+    def get_regime_performance(self, days: int = 30) -> list[dict]:
+        """Per-regime metrics over the last *days* calendar days: regime, trades,
+        win_rate, avg_pnl.  Regime is taken from the matching accepted signal."""
+        from core.analytics.metrics import regime_performance
+        cutoff = self._days_cutoff(days)
+        with self._connect() as c:
+            cur = c.execute(
+                "SELECT t.*, s.regime FROM trades t "
+                "LEFT JOIN signals s ON s.symbol = t.symbol AND s.strategy = t.strategy "
+                "  AND s.accepted = 1 "
+                "  AND s.ts <= t.closed_at "
+                "WHERE t.closed_at >= ? "
+                "GROUP BY t.id "
+                "ORDER BY t.closed_at",
+                (cutoff,),
+            )
+            rows = self._rows(cur)
+        return regime_performance(rows)
+
+    def get_trade_analytics(self, days: int = 30) -> dict:
+        """Consolidated analytics: best/worst trade, current streak, avg holding time,
+        best/worst strategy and regime, total charges vs gross P&L."""
+        from core.analytics.metrics import trade_analytics
+        cutoff = self._days_cutoff(days)
+        with self._connect() as c:
+            cur = c.execute(
+                "SELECT t.*, s.regime FROM trades t "
+                "LEFT JOIN signals s ON s.symbol = t.symbol AND s.strategy = t.strategy "
+                "  AND s.accepted = 1 "
+                "  AND s.ts <= t.closed_at "
+                "WHERE t.closed_at >= ? "
+                "GROUP BY t.id "
+                "ORDER BY t.closed_at",
+                (cutoff,),
+            )
+            rows = self._rows(cur)
+        return trade_analytics(rows)
+
+    def get_monthly_summary(self) -> list[dict]:
+        """Monthly P&L table (all history): year, month, pnl, trades, win_rate."""
+        from core.analytics.metrics import monthly_summary
+        with self._connect() as c:
+            cur = c.execute("SELECT * FROM trades ORDER BY closed_at")
+            rows = self._rows(cur)
+        return monthly_summary(rows)
+
+    @staticmethod
+    def _days_cutoff(days: int) -> str:
+        from datetime import datetime, timedelta
+        cutoff = datetime.utcnow() - timedelta(days=int(days))
+        return cutoff.strftime("%Y-%m-%d")
+
+    # --- Mutating tools (via command queue) ---
+
     def place_paper_order(self, symbol: str, side: str, qty: int, strategy: str = "manual") -> dict:
         """Enqueue a manual paper order. Goes through all guardrails in the orchestrator."""
         if side not in ("BUY", "SELL"):

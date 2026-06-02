@@ -125,6 +125,55 @@ def _build_tool_schemas() -> list[Tool]:
             ),
             inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
         ),
+        # --- Analytics tools ---
+        Tool(
+            name="get_strategy_performance",
+            description=(
+                "Per-strategy metrics over the last N days: trades, win_rate, "
+                "profit_factor, net_pnl, sharpe."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "default": 30, "minimum": 1, "maximum": 3650}
+                },
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="get_regime_performance",
+            description=(
+                "Per-regime metrics over the last N days: regime, trades, win_rate, avg_pnl."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "default": 30, "minimum": 1, "maximum": 3650}
+                },
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="get_trade_analytics",
+            description=(
+                "Consolidated analytics: best/worst trade, current streak, avg holding time, "
+                "best/worst strategy and regime, total charges vs gross P&L."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "default": 30, "minimum": 1, "maximum": 3650}
+                },
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="get_monthly_summary",
+            description=(
+                "Monthly P&L table (all history): year, month, pnl, trades, win_rate."
+            ),
+            inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
+        ),
         # --- Mutating tools (via command queue) ---
         Tool(
             name="halt_agent",
@@ -207,6 +256,17 @@ def _build_dispatch(tools: TradingAgentTools):
         "get_regime_history": lambda a: tools.get_regime_history(limit=int(a.get("limit", 50))),
         "get_universe": lambda _: tools.get_universe(),
         "get_config_summary": lambda _: tools.get_config_summary(),
+        # analytics tools
+        "get_strategy_performance": lambda a: tools.get_strategy_performance(
+            days=int(a.get("days", 30))
+        ),
+        "get_regime_performance": lambda a: tools.get_regime_performance(
+            days=int(a.get("days", 30))
+        ),
+        "get_trade_analytics": lambda a: tools.get_trade_analytics(
+            days=int(a.get("days", 30))
+        ),
+        "get_monthly_summary": lambda _: tools.get_monthly_summary(),
         # mutating tools
         "halt_agent": lambda a: tools.halt_agent(reason=a.get("reason", "manual halt via MCP")),
         "resume_agent": lambda _: tools.resume_agent(),
