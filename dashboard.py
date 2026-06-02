@@ -191,6 +191,54 @@ def _query_df(conn, sql: str, params=()) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def _get_equity_snapshots(db_path: str) -> pd.DataFrame:
+    """Load equity snapshots from SQLite. Cached 30s; keyed by db_path."""
+    if not Path(db_path).exists():
+        return pd.DataFrame()
+    try:
+        c = sqlite3.connect(db_path)
+        c.row_factory = sqlite3.Row
+        df = pd.read_sql_query("SELECT ts, equity FROM equity_snapshots ORDER BY ts", c)
+        c.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _get_trades(db_path: str) -> pd.DataFrame:
+    """Load all closed trades from SQLite. Cached 30s; keyed by db_path."""
+    if not Path(db_path).exists():
+        return pd.DataFrame()
+    try:
+        c = sqlite3.connect(db_path)
+        c.row_factory = sqlite3.Row
+        df = pd.read_sql_query("SELECT * FROM trades ORDER BY closed_at DESC", c)
+        c.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _get_signals(db_path: str, accepted_only: bool = False, limit: int = 200) -> pd.DataFrame:
+    """Load recent signals from SQLite. Cached 30s; keyed by db_path/accepted_only/limit."""
+    if not Path(db_path).exists():
+        return pd.DataFrame()
+    try:
+        c = sqlite3.connect(db_path)
+        c.row_factory = sqlite3.Row
+        where = "WHERE accepted = 1" if accepted_only else ""
+        df = pd.read_sql_query(
+            f"SELECT * FROM signals {where} ORDER BY id DESC LIMIT {limit}", c
+        )
+        c.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 def _color_pnl(val):
     color = "green" if val > 0 else ("red" if val < 0 else "gray")
     return f"color: {color}; font-weight: bold"
@@ -1311,7 +1359,7 @@ with tab_pnl:
     st.divider()
 
     # ── Equity curve ─────────────────────────────────────────────────────────
-    eq_df = _query_df(conn, "SELECT ts, equity FROM equity_snapshots ORDER BY ts")
+    eq_df = _get_equity_snapshots(str(DB_PATH))
 
     # Query trades for entry/exit markers
     _trades_for_markers = _query_df(
@@ -1580,7 +1628,7 @@ with tab_pnl:
 
     # P&L breakdown by period
     st.subheader("P&L Breakdown")
-    trades_df = _query_df(conn, "SELECT * FROM trades ORDER BY closed_at DESC")
+    trades_df = _get_trades(str(DB_PATH))
     pnl_periods = _pnl_by_period(trades_df)
 
     if pnl_periods:
@@ -1884,8 +1932,7 @@ with tab_positions:
     with col_filter2:
         limit_signals = st.selectbox("Show last N signals", [50, 100, 200, 500], index=0)
 
-    where = "" if show_rejected else "WHERE accepted = 1"
-    sig_df = _query_df(conn, f"SELECT * FROM signals {where} ORDER BY id DESC LIMIT {limit_signals}")
+    sig_df = _get_signals(str(DB_PATH), accepted_only=not show_rejected, limit=int(limit_signals))
 
     if not sig_df.empty:
         sig_display = [c for c in
