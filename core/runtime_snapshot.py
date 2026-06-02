@@ -38,6 +38,8 @@ class RuntimeSnapshot:
     universe_size: int
     strategies_enabled: list[str]
     config_path: str
+    drawdown_warning: bool = False
+    daily_loss_warning: bool = False
     extras: dict[str, Any] = field(default_factory=dict)
 
 

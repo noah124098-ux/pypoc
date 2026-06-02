@@ -85,6 +85,8 @@ class Orchestrator:
         self.vix_change_pct_15m = 0.0
         self.halted = False
         self.halt_reason = ""
+        self.drawdown_warning = False
+        self.daily_loss_warning = False
         self._last_vix_fetch: float = 0.0
         self._last_config_reload: float = 0.0
         # Intraday regime tick distribution — reset at EOD
@@ -231,6 +233,8 @@ class Orchestrator:
             universe_size=len(self.symbols),
             strategies_enabled=[s.name for s in self.strategies],
             config_path="config/default.yaml",
+            drawdown_warning=self.drawdown_warning,
+            daily_loss_warning=self.daily_loss_warning,
         )
         try:
             write_snapshot(snap, "data/snapshot.json")
@@ -670,17 +674,57 @@ class Orchestrator:
         if self.halted:
             return
         equity = self.broker.equity()
+        circuit_pct = self.s.risk.drawdown_circuit_pct
+        daily_circuit_pct = self.s.risk.daily_loss_circuit_pct
         if self.starting_equity_today > 0:
             day_pnl_pct = (equity - self.starting_equity_today) / self.starting_equity_today * 100.0
-            if day_pnl_pct < -self.s.risk.daily_loss_circuit_pct:
+            # Early daily-loss warning at half the circuit threshold (default -1.5% when circuit is -3%).
+            daily_warn_pct = daily_circuit_pct / 2.0
+            if day_pnl_pct < -daily_warn_pct and not self.daily_loss_warning:
+                self.daily_loss_warning = True
+                log.warning(
+                    "Daily loss alert: %.1f%% of starting equity (circuit at -%.1f%%)",
+                    abs(day_pnl_pct), daily_circuit_pct,
+                )
+                if getattr(self, 'telegram', None) and self.s.notifications.telegram_enabled:
+                    try:
+                        self.telegram.send(
+                            f"⚠️ Daily Loss Warning: {abs(day_pnl_pct):.1f}%"
+                        )
+                    except Exception as _e:
+                        log.warning("Telegram daily loss warning failed: %s", _e)
+            elif day_pnl_pct >= -daily_warn_pct:
+                # Reset warning if loss recovers above threshold
+                self.daily_loss_warning = False
+            if day_pnl_pct < -daily_circuit_pct:
                 self.halted = True
                 self.halt_reason = f"daily loss circuit hit ({day_pnl_pct:.2f}%)"
+                self.daily_loss_warning = False
                 log_agent_halted(log, reason="daily_loss_circuit", pct=day_pnl_pct)
                 if getattr(self, 'telegram', None): self.telegram.send_halt_alert(self.halt_reason)
         if self.peak_equity > 0:
             dd_pct = (self.peak_equity - equity) / self.peak_equity * 100.0
-            if dd_pct > self.s.risk.drawdown_circuit_pct:
+            # Early drawdown warning at half the circuit threshold (default 5% when circuit is 10%).
+            dd_warn_pct = circuit_pct / 2.0
+            if dd_pct > dd_warn_pct and not self.drawdown_warning:
+                self.drawdown_warning = True
+                log.warning(
+                    "Drawdown alert: %.1f%% of peak (circuit at %.1f%%)",
+                    dd_pct, circuit_pct,
+                )
+                if getattr(self, 'telegram', None) and self.s.notifications.telegram_enabled:
+                    try:
+                        self.telegram.send(
+                            f"⚠️ Drawdown Warning: {dd_pct:.1f}%"
+                        )
+                    except Exception as _e:
+                        log.warning("Telegram drawdown warning failed: %s", _e)
+            elif dd_pct <= dd_warn_pct:
+                # Reset warning if drawdown recovers
+                self.drawdown_warning = False
+            if dd_pct > circuit_pct:
                 self.halted = True
                 self.halt_reason = f"drawdown circuit hit ({dd_pct:.2f}%)"
+                self.drawdown_warning = False
                 log_agent_halted(log, reason="drawdown_circuit", pct=-dd_pct)
                 if getattr(self, 'telegram', None): self.telegram.send_halt_alert(self.halt_reason)
