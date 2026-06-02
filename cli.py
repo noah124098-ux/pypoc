@@ -627,19 +627,322 @@ def cmd_benchmark_strategies(args):
 
 
 def cmd_check_gate(args):
-    from backtest.gate import is_live_allowed, read_gate_result
+    import json as _json
+
+    from backtest.gate import GATE_MAX_AGE_DAYS, is_live_allowed, read_gate_result
+    from datetime import datetime, timezone
 
     data = read_gate_result()
     allowed, reason = is_live_allowed()
     if data is None:
-        print("No gate file. Run `python cli.py walk-forward` first.")
+        if getattr(args, "json", False):
+            print(_json.dumps({"error": "no gate file"}, indent=2))
+        else:
+            print("No gate file. Run `python cli.py walk-forward` first.")
         raise SystemExit(2)
+
+    if getattr(args, "json", False):
+        print(_json.dumps(data, indent=2, default=str))
+        return
+
+    # Compute gate age in days
+    ts_str = data.get("timestamp", "")
+    gate_age_days: float | None = None
+    if ts_str:
+        try:
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            gate_age_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400
+        except ValueError:
+            pass
+
+    age_str = f"{gate_age_days:.0f} days old" if gate_age_days is not None else "unknown age"
+    passed = data.get("passed", False)
+    if passed and gate_age_days is not None and gate_age_days <= GATE_MAX_AGE_DAYS:
+        gate_label = f"PASSED ({age_str})"
+    elif passed:
+        gate_label = f"EXPIRED ({age_str})"
+    else:
+        gate_label = "FAILED"
+
     print(f"Gate file timestamp:  {data.get('timestamp')}")
     print(f"Period:               {data.get('period_start')}  ->  {data.get('period_end')}")
-    print(f"Passed:               {data.get('passed')}")
+    print(f"Passed:               {gate_label}")
     print(f"Live-mode allowed:    {allowed}  ({reason})")
     if data.get("failures"):
         print(f"Failures:             {data['failures']}")
+
+
+def cmd_status(args):
+    """Quick status check — reads snapshot.json and prints a compact live overview."""
+    import json as _json
+    import os
+    from datetime import datetime, timezone
+
+    from backtest.gate import GATE_MAX_AGE_DAYS, is_live_allowed, read_gate_result
+
+    settings = load_settings(args.config)
+    snapshot_path = getattr(settings, "snapshot_path", "data/snapshot.json")
+
+    # Read snapshot
+    from core.runtime_snapshot import read as read_snapshot
+    snap = read_snapshot(snapshot_path)
+
+    print("=== NSE Agent Status ===")
+
+    if snap is None:
+        print("Snapshot:     not found — agent may not be running")
+        print(f"              (expected at {snapshot_path})")
+    else:
+        mode = snap.get("mode", "paper")
+        pid = snap.get("pid")
+        halted = snap.get("halted", False)
+        halt_reason = snap.get("halt_reason", "")
+
+        # Uptime from snapshot timestamp
+        ts_str = snap.get("ts", "")
+        uptime_str = "?"
+        if ts_str:
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                age_s = (datetime.now(timezone.utc) - ts).total_seconds()
+                uptime_str = f"{age_s:.0f}s ago"
+            except ValueError:
+                pass
+
+        # PID uptime from OS if we have pid and agent.pid file
+        pid_file = "data/agent.pid"
+        running_str = "Unknown"
+        if pid:
+            try:
+                # Check if process is alive (works on Windows and Linux)
+                os.kill(pid, 0)
+                running_str = f"Yes (PID {pid})"
+            except (OSError, ProcessLookupError):
+                running_str = f"No (PID {pid} not running)"
+
+        equity = float(snap.get("equity") or 0.0)
+        starting_equity_today = float(snap.get("starting_equity_today") or equity)
+        day_pnl = equity - starting_equity_today
+        day_pnl_pct = (day_pnl / starting_equity_today * 100) if starting_equity_today else 0.0
+
+        regime = snap.get("current_regime", "UNKNOWN")
+        open_pos = snap.get("open_positions") or []
+        tick_age = snap.get("last_tick_age_seconds")
+        tick_str = f"{tick_age:.0f}s ago" if tick_age is not None else "?"
+
+        halt_suffix = f"  [HALTED: {halt_reason}]" if halted else ""
+
+        # Format equity in Indian notation
+        def _fmt_inr(v: float) -> str:
+            s = str(int(abs(v)))
+            if len(s) <= 3:
+                formatted = s
+            else:
+                last3 = s[-3:]
+                rest = s[:-3]
+                groups = []
+                while len(rest) > 2:
+                    groups.append(rest[-2:])
+                    rest = rest[:-2]
+                if rest:
+                    groups.append(rest)
+                groups.reverse()
+                formatted = ",".join(groups) + "," + last3
+            sign = "-" if v < 0 else ""
+            return f"{sign}₹{formatted}"
+
+        pnl_sign = "+" if day_pnl >= 0 else ""
+        print(f"Mode:         {mode}{halt_suffix}")
+        print(f"Running:      {running_str}")
+        print(f"Equity:       {_fmt_inr(equity)} ({pnl_sign}{_fmt_inr(day_pnl)} today, {pnl_sign}{day_pnl_pct:.2f}%)")
+        print(f"Regime:       {regime}")
+        print(f"Positions:    {len(open_pos)} open")
+        print(f"Last tick:    {tick_str}")
+        print(f"Snapshot at:  {uptime_str}")
+
+    # Gate status
+    gate_data = read_gate_result()
+    if gate_data is None:
+        gate_str = "NO FILE (run walk-forward)"
+    else:
+        from datetime import datetime, timezone
+        passed = gate_data.get("passed", False)
+        ts_str = gate_data.get("timestamp", "")
+        gate_age_days: float | None = None
+        if ts_str:
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                gate_age_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400
+            except ValueError:
+                pass
+        age_label = f"{gate_age_days:.0f} days old" if gate_age_days is not None else ""
+        if passed and gate_age_days is not None and gate_age_days <= GATE_MAX_AGE_DAYS:
+            gate_str = f"PASSED ({age_label})"
+        elif passed:
+            gate_str = f"EXPIRED ({age_label})"
+        else:
+            failures = gate_data.get("failures", [])
+            gate_str = f"FAILED: {', '.join(failures)}"
+    print(f"Gate:         {gate_str}")
+
+
+def cmd_performance(args):
+    """Print a formatted performance report using generate_eod_report()."""
+    from core.analytics.performance_report import generate_eod_report
+
+    settings = load_settings(args.config)
+    db_path = settings.persistence.sqlite_path
+    snapshot_path = getattr(settings, "snapshot_path", "data/snapshot.json")
+    days = args.days
+
+    # generate_eod_report uses last-30-days internally; we note the requested window
+    report = generate_eod_report(db_path, snapshot_path)
+
+    # Prepend a header if days != 30 (the default used internally)
+    if days != 30:
+        print(f"=== Performance Report (last {days} days — note: trade detail uses last 30 days from DB) ===")
+    else:
+        print(f"=== Performance Report (last {days} days) ===")
+    print(report)
+
+
+def cmd_strategy_report(args):
+    """Print per-strategy metrics from the SQLite trade history."""
+    from pathlib import Path
+
+    from core.analytics.metrics import compute_strategy_attribution, load_trades_from_db
+
+    settings = load_settings(args.config)
+    db_path = settings.persistence.sqlite_path
+    days = args.days
+
+    if not Path(db_path).exists():
+        print(f"No database found at {db_path}. Run the agent first to generate trades.")
+        raise SystemExit(2)
+
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    all_trades = load_trades_from_db(db_path)
+    trades = [t for t in all_trades if t.closed_at.replace(tzinfo=timezone.utc) >= cutoff
+              or t.closed_at >= cutoff.replace(tzinfo=None)]
+
+    if not trades:
+        print(f"No closed trades in the last {days} days.")
+        return
+
+    attribution = compute_strategy_attribution(trades)
+
+    print(f"=== Strategy Report (last {days} days — {len(trades)} trades) ===")
+    print()
+    header = f"{'Strategy':<24}  {'Trades':>6}  {'Win%':>5}  {'PF':>5}  {'Sharpe':>6}  {'Net P&L':>12}"
+    print(header)
+    print("-" * len(header))
+
+    def _fmt_pnl(v: float) -> str:
+        s = str(int(abs(v)))
+        if len(s) <= 3:
+            formatted = s
+        else:
+            last3 = s[-3:]
+            rest = s[:-3]
+            groups = []
+            while len(rest) > 2:
+                groups.append(rest[-2:])
+                rest = rest[:-2]
+            if rest:
+                groups.append(rest)
+            groups.reverse()
+            formatted = ",".join(groups) + "," + last3
+        sign = "+" if v >= 0 else "-"
+        return f"{sign}₹{formatted}"
+
+    for strategy, m in sorted(attribution.items()):
+        pf_str = f"{m.profit_factor:.2f}" if m.profit_factor != float("inf") else "  inf"
+        print(
+            f"{strategy:<24}  {m.n_trades:>6}  {m.win_rate_pct:>4.1f}%  "
+            f"{pf_str:>5}  {m.sharpe:>6.2f}  {_fmt_pnl(m.total_pnl):>12}"
+        )
+    print()
+
+    # Totals row
+    total_trades = sum(m.n_trades for m in attribution.values())
+    total_pnl = sum(m.total_pnl for m in attribution.values())
+    print(f"{'TOTAL':<24}  {total_trades:>6}  {'':>5}  {'':>5}  {'':>6}  {_fmt_pnl(total_pnl):>12}")
+
+
+def cmd_schedule_gate_refresh(args):
+    """Register a Windows Task Scheduler entry that runs refresh_gate.bat every Sunday at 06:00."""
+    import os
+    import subprocess
+    import sys
+
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    bat_path = os.path.join(repo_root, "scripts", "refresh_gate.bat")
+
+    if not os.path.isfile(bat_path):
+        print(f"ERROR: refresh_gate.bat not found at {bat_path}")
+        raise SystemExit(2)
+
+    task_name = "NSE-Gate-Refresh"
+    cmd = [
+        "schtasks", "/create",
+        "/tn", task_name,
+        "/tr", bat_path,
+        "/sc", "weekly",
+        "/d", "sun",
+        "/st", "06:00",
+        "/f",
+    ]
+
+    print(f"Registering Task Scheduler entry '{task_name}'...")
+    print(f"  Script: {bat_path}")
+    print(f"  Schedule: Every Sunday at 06:00")
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"SUCCESS: Task '{task_name}' created.")
+            if result.stdout.strip():
+                print(result.stdout.strip())
+        else:
+            print(f"ERROR: schtasks exited {result.returncode}")
+            if result.stderr.strip():
+                print(result.stderr.strip())
+            if result.stdout.strip():
+                print(result.stdout.strip())
+            raise SystemExit(result.returncode)
+    except FileNotFoundError:
+        print("ERROR: 'schtasks' not found. This command requires Windows.")
+        raise SystemExit(2)
+
+
+def cmd_send_command(args):
+    """Send a command to the running agent via the file-based command queue.
+
+    Supported command types:
+      reload-config               Trigger an immediate config reload (risk params only)
+      halt                        Halt the agent
+      resume                      Resume the agent
+    """
+    from core.command_queue import enqueue
+
+    cmd_type_map = {
+        "reload-config": "reload_config",
+        "halt": "halt_agent",
+        "resume": "resume_agent",
+    }
+
+    raw_type = args.command_type
+    cmd_type = cmd_type_map.get(raw_type, raw_type.replace("-", "_"))
+
+    params: dict = {}
+    if args.reason:
+        params["reason"] = args.reason
+
+    cmd = enqueue(cmd_type, params)
+    print(f"Command queued: type={cmd.type}  id={cmd.id}")
+    print(f"The running agent will process it within ~1 second.")
 
 
 def main():
@@ -661,7 +964,33 @@ def main():
     wf.add_argument("--end-date", default=None, help="Pin the walk-forward end date YYYY-MM-DD for reproducible results (default: latest available data)")
     wf.set_defaults(func=cmd_walk_forward)
 
-    sub.add_parser("check-gate").set_defaults(func=cmd_check_gate)
+    cg = sub.add_parser("check-gate", help="Check the walk-forward gate result")
+    cg.add_argument("--json", action="store_true", help="Output raw gate.json as formatted JSON")
+    cg.set_defaults(func=cmd_check_gate)
+
+    sub.add_parser(
+        "status",
+        help="Quick live status: equity, regime, positions, gate, last tick",
+    ).set_defaults(func=cmd_status)
+
+    perf = sub.add_parser(
+        "performance",
+        help="Print a formatted EOD performance report from the DB + snapshot",
+    )
+    perf.add_argument("--days", type=int, default=30, help="Look-back window in days (default 30)")
+    perf.set_defaults(func=cmd_performance)
+
+    sr = sub.add_parser(
+        "strategy-report",
+        help="Per-strategy metrics (trades, win%, profit factor, Sharpe, P&L)",
+    )
+    sr.add_argument("--days", type=int, default=90, help="Look-back window in days (default 90)")
+    sr.set_defaults(func=cmd_strategy_report)
+
+    sub.add_parser(
+        "schedule-gate-refresh",
+        help="Register a Windows Task Scheduler entry to run refresh_gate.bat every Sunday at 06:00",
+    ).set_defaults(func=cmd_schedule_gate_refresh)
 
     dr = sub.add_parser(
         "debug-rejections",
@@ -686,6 +1015,18 @@ def main():
         help="Run each enabled strategy on 1 year of RELIANCE data and report signals/sec + us/call",
     )
     bs.set_defaults(func=cmd_benchmark_strategies)
+
+    sc = sub.add_parser(
+        "send-command",
+        help="Send a command to the running agent via the file-based command queue",
+    )
+    sc.add_argument(
+        "command_type",
+        choices=["reload-config", "halt", "resume"],
+        help="Command to send: reload-config | halt | resume",
+    )
+    sc.add_argument("--reason", default="", help="Optional reason string (for halt/resume)")
+    sc.set_defaults(func=cmd_send_command)
 
     args = parser.parse_args()
     args.func(args)
