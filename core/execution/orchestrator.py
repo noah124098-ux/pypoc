@@ -294,10 +294,6 @@ class Orchestrator:
         if _fii_sentiment == "BEARISH":
             allow_trend = False  # institutions are net sellers — don't fight them
 
-        # Market breadth filter (backtest only): % of Nifty50 stocks above 50-DMA.
-        # In live mode this would require fetching daily OHLC for all 50 symbols each day —
-        # expensive and not worth the latency. The FII/DII gate above already proxies this.
-
         return bool(allow_trend), bool(allow_range), bool(allow_any)
 
     def _handle_signal(self, sig) -> None:

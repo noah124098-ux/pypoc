@@ -193,26 +193,6 @@ class BacktestEngine:
             nifty_allow_range = above_200 and rising_50   # RANGE longs need upward DMA slope
             nifty_allow_any   = above_200
 
-            # Market breadth filter: only enter TREND BUYs when majority of Nifty50 stocks
-            # are above their 50-DMA. In bull markets 70-80% qualify; in corrections 30-50%.
-            # Uses symbol_history already loaded — no extra data needed.
-            _b_above = _b_total = 0
-            for _sym, _df in symbol_history.items():
-                _hist = _df.loc[:yday]
-                if len(_hist) < 50:
-                    continue
-                _dma = _hist["close"].rolling(50).mean().iloc[-1]
-                if pd.isna(_dma):
-                    continue
-                _b_total += 1
-                if _hist["close"].iloc[-1] > _dma:
-                    _b_above += 1
-            breadth_pct = (_b_above / _b_total * 100.0) if _b_total > 0 else 50.0
-            _breadth_threshold = 40.0
-            _breadth_blocked = breadth_pct < _breadth_threshold
-            if _breadth_blocked:
-                nifty_allow_trend = False
-
             # PCR filter (live mode only).
             # In backtest we have no historical PCR feed so pcr=None (fail-open).
             # In live mode get_nifty_pcr() is called inside _nifty_market_filter().
