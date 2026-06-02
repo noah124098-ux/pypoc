@@ -82,20 +82,23 @@ def supertrend_bands(
             final_upper[i] = upper_band[i]
             final_lower[i] = lower_band[i]
             continue
+        # NaN-safe previous values: seed with current band on first valid ATR bar
+        prev_upper = final_upper[i - 1] if not np.isnan(final_upper[i - 1]) else upper_band[i]
+        prev_lower = final_lower[i - 1] if not np.isnan(final_lower[i - 1]) else lower_band[i]
         # Final upper: only tighten (lower), unless price broke above previous upper
-        if upper_band[i] < final_upper[i - 1] or close[i - 1] > final_upper[i - 1]:
+        if upper_band[i] < prev_upper or close[i - 1] > prev_upper:
             final_upper[i] = upper_band[i]
         else:
-            final_upper[i] = final_upper[i - 1]
+            final_upper[i] = prev_upper
         # Final lower: only tighten (higher), unless price broke below previous lower
-        if lower_band[i] > final_lower[i - 1] or close[i - 1] < final_lower[i - 1]:
+        if lower_band[i] > prev_lower or close[i - 1] < prev_lower:
             final_lower[i] = lower_band[i]
         else:
-            final_lower[i] = final_lower[i - 1]
+            final_lower[i] = prev_lower
         # Direction
-        if close[i] > final_upper[i - 1]:
+        if close[i] > prev_upper:
             direction[i] = 1
-        elif close[i] < final_lower[i - 1]:
+        elif close[i] < prev_lower:
             direction[i] = -1
         else:
             direction[i] = direction[i - 1]
