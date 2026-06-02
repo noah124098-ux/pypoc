@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+SCHEMA_VERSION = 3  # increment when schema changes
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,12 +75,48 @@ CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts);
 """
 
 
+def _get_schema_version(conn: sqlite3.Connection) -> int:
+    try:
+        row = conn.execute("SELECT version FROM _schema_version").fetchone()
+        return row[0] if row else 0
+    except sqlite3.OperationalError:
+        return 0
+
+
+def _set_schema_version(conn: sqlite3.Connection, version: int) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER)")
+    conn.execute("DELETE FROM _schema_version")
+    conn.execute("INSERT INTO _schema_version VALUES (?)", (version,))
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    current = _get_schema_version(conn)
+    if current < 1:
+        # v1: base schema (already exists if DB is fresh, migration is a no-op)
+        _set_schema_version(conn, 1)
+    if current < 2:
+        # v2: add strategy column to trades if missing
+        try:
+            conn.execute("ALTER TABLE trades ADD COLUMN strategy TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        _set_schema_version(conn, 2)
+    if current < 3:
+        # v3: add exit_reason column to trades if missing
+        try:
+            conn.execute("ALTER TABLE trades ADD COLUMN exit_reason TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        _set_schema_version(conn, 3)
+
+
 class Store:
     def __init__(self, db_path: str):
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as c:
             c.executescript(SCHEMA)
+            _run_migrations(c)
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
