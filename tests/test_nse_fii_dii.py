@@ -45,9 +45,11 @@ class TestNseFiiDiiImport:
 
 class TestGetFiiDiiFlows:
     def setup_method(self):
-        """Reset cache before each test."""
+        """Reset cache and rate-limiter state before each test."""
         import core.data.nse_fii_dii as m
+        import core.data.nse_rate_limiter as rl
         m.clear_cache()
+        rl.reset_for_testing()
 
     def test_returns_list_of_fiidii_flow_on_success(self):
         import core.data.nse_fii_dii as m
@@ -247,9 +249,11 @@ class TestGetFiiDiiFlows:
 
 class TestGetInstitutionalSentiment:
     def setup_method(self):
-        """Reset cache before each test."""
+        """Reset cache and rate-limiter state before each test."""
         import core.data.nse_fii_dii as m
+        import core.data.nse_rate_limiter as rl
         m.clear_cache()
+        rl.reset_for_testing()
 
     def test_returns_bullish_when_avg_fii_above_500cr(self):
         import core.data.nse_fii_dii as m

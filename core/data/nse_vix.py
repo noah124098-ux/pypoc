@@ -19,6 +19,8 @@ import logging
 import time
 from typing import Optional
 
+from core.data.nse_rate_limiter import circuit_breaker, nse_rate_limit, nse_retry
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -39,13 +41,22 @@ _HEADERS = {
 }
 
 
+@nse_retry(max_retries=3, base_delay=1.0)
+@nse_rate_limit
 def _fetch_vix() -> Optional[float]:
     """Fetch a fresh India VIX value from NSE. Returns None on any error."""
+    if circuit_breaker.is_open():
+        logger.warning("nse_vix: circuit breaker OPEN — skipping fetch, returning None")
+        return None
     try:
         import requests  # imported lazily so the module is importable without requests in CI
 
         resp = requests.get(_NSE_ALL_INDICES_URL, headers=_HEADERS, timeout=10)
+        if resp.status_code in (403, 429):
+            circuit_breaker.record_failure(resp.status_code)
+            resp.raise_for_status()
         resp.raise_for_status()
+        circuit_breaker.record_success()
 
         data = resp.json()
         indices = data.get("data", [])

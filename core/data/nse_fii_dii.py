@@ -30,6 +30,8 @@ import time
 from dataclasses import dataclass
 from typing import List, Optional
 
+from core.data.nse_rate_limiter import circuit_breaker, nse_rate_limit, nse_retry
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -64,13 +66,22 @@ class FIIDIIFlow:
     combined_net: float      # FII + DII combined net
 
 
+@nse_retry(max_retries=3, base_delay=1.0)
+@nse_rate_limit
 def _fetch_flows() -> list[FIIDIIFlow]:
     """Fetch fresh FII/DII flow data from NSE. Returns [] on any error."""
+    if circuit_breaker.is_open():
+        logger.warning("nse_fii_dii: circuit breaker OPEN — skipping fetch, returning []")
+        return []
     try:
         import requests  # imported lazily so the module is importable without requests in CI
 
         resp = requests.get(_NSE_FII_DII_URL, headers=_HEADERS, timeout=10)
+        if resp.status_code in (403, 429):
+            circuit_breaker.record_failure(resp.status_code)
+            resp.raise_for_status()
         resp.raise_for_status()
+        circuit_breaker.record_success()
 
         data = resp.json()
 

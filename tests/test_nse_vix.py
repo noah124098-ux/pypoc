@@ -45,9 +45,11 @@ class TestNseVixImport:
 
 class TestGetVix:
     def setup_method(self):
-        """Reset cache before each test."""
+        """Reset cache and rate-limiter state before each test."""
         import core.data.nse_vix as m
+        import core.data.nse_rate_limiter as rl
         m.clear_cache()
+        rl.reset_for_testing()
 
     def test_returns_float_on_success(self):
         import core.data.nse_vix as m

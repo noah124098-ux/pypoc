@@ -22,6 +22,8 @@ import logging
 import time
 from typing import Optional
 
+from core.data.nse_rate_limiter import circuit_breaker, nse_rate_limit, nse_retry
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -43,8 +45,13 @@ _HEADERS = {
 }
 
 
+@nse_retry(max_retries=3, base_delay=1.0)
+@nse_rate_limit
 def _fetch_pcr() -> Optional[float]:
     """Fetch a fresh PCR value from NSE. Returns None on any error."""
+    if circuit_breaker.is_open():
+        logger.warning("nse_pcr: circuit breaker OPEN — skipping fetch, returning None")
+        return None
     try:
         import requests  # imported lazily so the module is importable without requests in CI
 
@@ -53,11 +60,18 @@ def _fetch_pcr() -> Optional[float]:
 
         # Step 1: hit the home page to obtain session cookies that NSE requires
         home_resp = session.get(_NSE_HOME, timeout=10)
+        if home_resp.status_code in (403, 429):
+            circuit_breaker.record_failure(home_resp.status_code)
+            home_resp.raise_for_status()
         home_resp.raise_for_status()
 
         # Step 2: fetch the option-chain data
         oc_resp = session.get(_NSE_OC_URL, timeout=10)
+        if oc_resp.status_code in (403, 429):
+            circuit_breaker.record_failure(oc_resp.status_code)
+            oc_resp.raise_for_status()
         oc_resp.raise_for_status()
+        circuit_breaker.record_success()
 
         data = oc_resp.json()
         filtered = data.get("filtered", {})

@@ -43,9 +43,11 @@ class TestNsePcrImport:
 
 class TestGetNiftyPcr:
     def setup_method(self):
-        """Reset cache before each test."""
+        """Reset cache and rate-limiter state before each test."""
         import core.data.nse_pcr as m
+        import core.data.nse_rate_limiter as rl
         m.clear_cache()
+        rl.reset_for_testing()
 
     def _patch_session(self, home_resp: Any, oc_resp: Any):
         """Context manager that patches requests.Session used inside _fetch_pcr."""
