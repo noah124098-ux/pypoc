@@ -358,6 +358,10 @@ class BacktestEngine:
                         signal=sig,
                         max_position_pct=self.settings.risk.max_position_pct,
                     )
+                    # During Nifty correction (TREND blocked), boost RANGE strategy sizes
+                    # to compensate for the lack of TREND trades.
+                    if not nifty_allow_trend and sig.regime == Regime.RANGE:
+                        qty = int(qty * 1.5)
                     if qty == 0:
                         qty_zero_count += 1
                         rejected += 1
