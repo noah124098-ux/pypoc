@@ -295,6 +295,69 @@ def _save_last_review(report_dict: dict) -> None:
         logger_dash.warning("Could not save last review: %s", exc)
 
 
+def _time_ago(ts_str: str) -> str:
+    """Return a human-readable 'X ago' string from an ISO timestamp."""
+    if not ts_str:
+        return "unknown"
+    try:
+        opened = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00").replace("+00:00", ""))
+        delta = datetime.utcnow() - opened
+        total_secs = int(delta.total_seconds())
+        if total_secs < 60:
+            return f"{total_secs}s ago"
+        if total_secs < 3600:
+            return f"{total_secs // 60}m ago"
+        if total_secs < 86400:
+            return f"{total_secs // 3600}h {(total_secs % 3600) // 60}m ago"
+        return f"{total_secs // 86400}d ago"
+    except Exception:
+        return str(ts_str)[:16]
+
+
+def _fmt_inr(value: float) -> str:
+    """Format a number in Indian number system (lakhs/crores) with ₹ prefix.
+
+    Examples:  500000 → ₹5,00,000   1234567 → ₹12,34,567   999 → ₹999
+    """
+    try:
+        val = int(round(abs(value)))
+        s = str(val)
+        if len(s) <= 3:
+            formatted = s
+        elif len(s) <= 5:
+            formatted = s[:-3] + "," + s[-3:]
+        else:
+            # First group of 3 from right, then groups of 2
+            last3 = s[-3:]
+            rest = s[:-3]
+            groups = []
+            while len(rest) > 2:
+                groups.append(rest[-2:])
+                rest = rest[:-2]
+            groups.append(rest)
+            groups.reverse()
+            formatted = ",".join(groups) + "," + last3
+        sign = "-" if value < 0 else ""
+        return f"₹{sign}{formatted}"
+    except Exception:
+        return f"₹{value:,.0f}"
+
+
+def _is_market_hours() -> bool:
+    """Return True if current time (IST) is within NSE market hours (09:15–15:30 Mon–Fri)."""
+    try:
+        now_utc = datetime.utcnow()
+        # IST = UTC + 5:30
+        now_ist = now_utc + timedelta(hours=5, minutes=30)
+        if now_ist.weekday() >= 5:  # Saturday=5, Sunday=6
+            return False
+        market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+        market_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+        return market_open <= now_ist <= market_close
+    except Exception:
+        return False
+
+
 def _pnl_by_period(trades_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """Return dict of period -> grouped P&L DataFrames."""
     if trades_df.empty:
@@ -429,6 +492,193 @@ tab_live, tab_portfolio, tab_pnl, tab_positions, tab_regime, tab_backtest, tab_a
 
 with tab_live:
     st.header("Live Angel One Account")
+
+    # ── KPI rows ─────────────────────────────────────────────────────────────
+    # Gather data once for KPI display
+    _kpi_equity = float(snap.get("equity", capital or 0))
+    _kpi_start_today = float(snap.get("starting_equity_today", _kpi_equity) or _kpi_equity)
+    _kpi_peak = float(snap.get("peak_equity", _kpi_equity) or _kpi_equity)
+    _kpi_day_pnl = _kpi_equity - _kpi_start_today
+    _kpi_day_pnl_pct = (_kpi_day_pnl / _kpi_start_today * 100) if _kpi_start_today else 0.0
+    _kpi_dd_pct = ((_kpi_peak - _kpi_equity) / _kpi_peak * 100) if _kpi_peak else 0.0
+    _kpi_positions = snap.get("open_positions", [])
+    _kpi_n_open = len(_kpi_positions)
+    _kpi_max_pos = int(config.get("risk", {}).get("max_open_positions", 5))
+    _kpi_regime = snap.get("regime", "UNKNOWN")
+    _kpi_halted = snap.get("halted", False)
+    _kpi_running = _agent_is_running()
+
+    # Win rate: last 30 trades
+    _kpi_trades_df = _query_df(
+        conn,
+        "SELECT pnl FROM trades ORDER BY closed_at DESC LIMIT 30",
+    )
+    if not _kpi_trades_df.empty and "pnl" in _kpi_trades_df.columns:
+        _kpi_n_trades_30 = len(_kpi_trades_df)
+        _kpi_wins_30 = int((_kpi_trades_df["pnl"] > 0).sum())
+        _kpi_win_rate = _kpi_wins_30 / _kpi_n_trades_30 * 100 if _kpi_n_trades_30 else 0.0
+        # Trend arrow: compare win rate of last 10 vs trades 11–30
+        _kpi_win_recent = int((_kpi_trades_df.head(10)["pnl"] > 0).sum())
+        _kpi_win_older = int((_kpi_trades_df.tail(20)["pnl"] > 0).sum())
+        _kpi_win_trend = "↑" if (_kpi_win_recent / 10) > (_kpi_win_older / max(_kpi_n_trades_30 - 10, 1)) else "↓"
+    else:
+        _kpi_n_trades_30 = 0
+        _kpi_win_rate = 0.0
+        _kpi_win_trend = "—"
+
+    # Trades today count
+    _kpi_trades_today_df = _query_df(
+        conn,
+        "SELECT id FROM trades WHERE date(closed_at) = date('now')",
+    )
+    _kpi_trades_today = len(_kpi_trades_today_df)
+
+    # Last signal time
+    _kpi_last_sig_df = _query_df(conn, "SELECT ts FROM signals ORDER BY id DESC LIMIT 1")
+    if not _kpi_last_sig_df.empty and "ts" in _kpi_last_sig_df.columns:
+        _kpi_last_sig_str = str(_kpi_last_sig_df["ts"].iloc[0])
+        _kpi_last_sig_ago = _time_ago(_kpi_last_sig_str)
+    else:
+        _kpi_last_sig_ago = "No signals"
+
+    # Agent status label + emoji
+    if _kpi_halted:
+        _kpi_agent_status = "🔴 Halted"
+    elif _kpi_running:
+        _kpi_agent_status = "🟢 Running"
+    else:
+        _kpi_agent_status = "⚫ Offline"
+
+    # Regime color badge (markdown)
+    _kpi_regime_colors = {
+        "TREND": "#2ecc71", "RANGE": "#3498db",
+        "VOLATILE": "#e74c3c", "UNKNOWN": "#95a5a6",
+    }
+    _kpi_regime_bg = _kpi_regime_colors.get(_kpi_regime, "#95a5a6")
+
+    # ── Row 1: 6-column primary KPI row ──────────────────────────────────────
+    _kr1, _kr2, _kr3, _kr4, _kr5, _kr6 = st.columns(6)
+
+    # col1: Equity with delta vs yesterday start
+    _kpi_equity_delta = f"{_kpi_equity - float(capital or _kpi_equity):+,.0f} total" if capital else None
+    _kr1.metric(
+        "Equity",
+        _fmt_inr(_kpi_equity),
+        delta=_kpi_equity_delta,
+        help="Current paper-agent equity from snapshot.json",
+    )
+
+    # col2: Today P&L ₹ + %
+    _kr2.metric(
+        "Today P&L",
+        _fmt_inr(_kpi_day_pnl),
+        delta=f"{_kpi_day_pnl_pct:+.2f}%",
+        delta_color="normal" if _kpi_day_pnl >= 0 else "inverse",
+        help="Equity change since market open today",
+    )
+
+    # col3: Win Rate last 30 trades + trend arrow
+    _kr3.metric(
+        "Win Rate (30T)",
+        f"{_kpi_win_rate:.1f}% {_kpi_win_trend}",
+        help="Win rate over the last 30 closed trades. Arrow shows improvement/decline vs prior 20.",
+    )
+
+    # col4: Open Positions n/max
+    _kr4.metric(
+        "Open Positions",
+        f"{_kpi_n_open} / {_kpi_max_pos}",
+        help="Current open positions vs guardrail maximum",
+    )
+
+    # col5: Current Regime (color badge)
+    _kr5.markdown(
+        f"<div style='text-align:center'>"
+        f"<small style='color:#888;font-size:0.8em'>Current Regime</small><br>"
+        f"<span style='background:{_kpi_regime_bg};color:white;padding:5px 14px;"
+        f"border-radius:14px;font-weight:700;font-size:1.1em;display:inline-block;margin-top:4px'>"
+        f"{_kpi_regime}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # col6: Agent Status
+    _kr6.metric(
+        "Agent Status",
+        _kpi_agent_status,
+        help="🟢 Running = agent process alive, 🔴 Halted = halted by guardrail, ⚫ Offline = not running",
+    )
+
+    st.markdown("<hr style='margin:8px 0 4px 0;border-color:#333'>", unsafe_allow_html=True)
+
+    # ── Row 2: 4-column secondary KPI row ────────────────────────────────────
+    _ks1, _ks2, _ks3, _ks4 = st.columns(4)
+
+    # col1: Peak Equity
+    _ks1.metric(
+        "Peak Equity",
+        _fmt_inr(_kpi_peak),
+        help="All-time high equity recorded in snapshot",
+    )
+
+    # col2: Max Drawdown % from peak — red if >5%
+    _ks2.metric(
+        "Drawdown from Peak",
+        f"-{_kpi_dd_pct:.2f}%",
+        delta=f"peak {_fmt_inr(_kpi_peak)}",
+        delta_color="off",
+        help="Current drawdown from all-time peak equity. Red if >5%.",
+    )
+    if _kpi_dd_pct > 5.0:
+        _ks2.markdown(
+            f"<small style='color:#e74c3c;font-weight:600'>⚠ Drawdown >5%</small>",
+            unsafe_allow_html=True,
+        )
+
+    # col3: Total Trades Today
+    _ks3.metric(
+        "Trades Today",
+        f"{_kpi_trades_today}",
+        help="Number of trades closed today (UTC date)",
+    )
+
+    # col4: Last Signal time ago
+    _ks4.metric(
+        "Last Signal",
+        _kpi_last_sig_ago,
+        help="Time since the most recent signal was generated",
+    )
+
+    st.markdown("<hr style='margin:4px 0 12px 0;border-color:#333'>", unsafe_allow_html=True)
+
+    # ── Auto-refresh countdown during market hours ────────────────────────────
+    _in_market = _is_market_hours()
+    if _in_market:
+        # Use a session counter to implement countdown without blocking
+        _refresh_key = "live_tab_refresh_counter"
+        _count = st.session_state.get(_refresh_key, 30)
+        _countdown_placeholder = st.empty()
+        _countdown_placeholder.caption(f"Auto-refreshing in {_count}s (market hours active)")
+        if _count <= 1:
+            st.session_state[_refresh_key] = 30
+            import time as _time_mod
+            _time_mod.sleep(0.5)
+            st.rerun()
+        else:
+            st.session_state[_refresh_key] = _count - 1
+            import time as _time_mod
+            _time_mod.sleep(1)
+            st.rerun()
+    else:
+        _now_utc = datetime.utcnow()
+        _now_ist = _now_utc + timedelta(hours=5, minutes=30)
+        st.caption(
+            f"Market closed — auto-refresh paused. "
+            f"Current IST: {_now_ist.strftime('%H:%M:%S')} | "
+            f"Market hours: Mon–Fri 09:15–15:30 IST"
+        )
+
+    st.divider()
 
     # ── Agent start/stop controls ────────────────────────────────────────────
     agent_running = _agent_is_running()
@@ -1198,25 +1448,6 @@ with tab_pnl:
 # ────────────────────────────────────────────────────────────────────────────
 # TAB 3: POSITIONS & SIGNALS
 # ────────────────────────────────────────────────────────────────────────────
-
-def _time_ago(ts_str: str) -> str:
-    """Return a human-readable 'X ago' string from an ISO timestamp."""
-    if not ts_str:
-        return "unknown"
-    try:
-        opened = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00").replace("+00:00", ""))
-        delta = datetime.utcnow() - opened
-        total_secs = int(delta.total_seconds())
-        if total_secs < 60:
-            return f"{total_secs}s ago"
-        if total_secs < 3600:
-            return f"{total_secs // 60}m ago"
-        if total_secs < 86400:
-            return f"{total_secs // 3600}h {(total_secs % 3600) // 60}m ago"
-        return f"{total_secs // 86400}d ago"
-    except Exception:
-        return str(ts_str)[:16]
-
 
 with tab_positions:
     st.header("Open Positions & Recent Signals")
@@ -2068,65 +2299,255 @@ with tab_controls:
 
     st.divider()
 
-    # ── Risk limit controls ───────────────────────────────────────────────────
-    st.subheader("Risk Limits")
-    st.caption("Changes write to config/default.yaml. Restart the agent to apply them.")
+    # ── LIVE RISK PARAMETERS ──────────────────────────────────────────────────
+    st.subheader("Live Risk Parameters")
+    st.caption(
+        "Changes are queued via the command queue — the running agent applies them within 1 second. "
+        "Config file is also updated so restarts retain the new values."
+    )
 
     risk_cfg = config.get("risk", {})
-    with st.form("risk_limits_form"):
-        r1, r2 = st.columns(2)
-        new_per_trade = r1.number_input(
-            "Per-trade risk (%)", min_value=0.5, max_value=5.0, step=0.25,
-            value=float(risk_cfg.get("per_trade_risk_pct", 1.0)),
-            help="Maximum % of equity risked on a single trade (stop-loss distance × qty)",
+    _cur_per_trade = float(risk_cfg.get("per_trade_risk_pct", 1.0))
+    _cur_max_pos = int(risk_cfg.get("max_open_positions", 5))
+    _cur_daily = float(risk_cfg.get("daily_loss_circuit_pct", 3.0))
+    _cur_dd = float(risk_cfg.get("drawdown_circuit_pct", 10.0))
+    _cur_spread = float(risk_cfg.get("max_spread_pct", 0.3))
+
+    with st.form("risk_params"):
+        rp_col1, rp_col2 = st.columns(2)
+
+        new_per_trade = rp_col1.slider(
+            "Per-trade risk (%)",
+            min_value=0.25, max_value=2.0, step=0.25,
+            value=float(min(max(_cur_per_trade, 0.25), 2.0)),
+            help="Maximum % of equity risked on a single trade (stop-loss distance x qty)",
         )
-        new_max_pos = r2.number_input(
-            "Max open positions", min_value=1, max_value=20, step=1,
-            value=int(risk_cfg.get("max_open_positions", 5)),
+        new_max_pos = rp_col2.slider(
+            "Max open positions",
+            min_value=1, max_value=8, step=1,
+            value=int(min(max(_cur_max_pos, 1), 8)),
             help="Hard cap on concurrent open positions across all strategies",
         )
-        new_daily = r1.number_input(
-            "Daily loss circuit (%)", min_value=1.0, max_value=10.0, step=0.5,
-            value=float(risk_cfg.get("daily_loss_circuit_pct", 3.0)),
-            help="Halt new entries for the day when P&L falls below this % of start-of-day equity",
+        new_daily = rp_col1.slider(
+            "Daily loss circuit (%)",
+            min_value=1.0, max_value=5.0, step=0.5,
+            value=float(min(max(_cur_daily, 1.0), 5.0)),
+            help="Halt new entries for the day when day P&L falls below this % of start-of-day equity",
         )
-        new_dd = r2.number_input(
-            "Drawdown circuit (%)", min_value=5.0, max_value=30.0, step=1.0,
-            value=float(risk_cfg.get("drawdown_circuit_pct", 10.0)),
+        new_dd = rp_col2.slider(
+            "Drawdown circuit (%)",
+            min_value=5.0, max_value=20.0, step=1.0,
+            value=float(min(max(_cur_dd, 5.0), 20.0)),
             help="Halt agent and trigger EOD review when peak-to-trough drawdown exceeds this %",
         )
-        new_capital = r1.number_input(
-            "Initial capital (INR)", min_value=50000, max_value=10000000, step=50000,
-            value=int(config.get("capital", {}).get("initial_inr", 500000)),
-            help="Starting equity for the paper broker (takes effect on next agent restart)",
-        )
-        new_max_pos_pct = r2.number_input(
-            "Max position size (%)", min_value=5.0, max_value=50.0, step=5.0,
-            value=float(risk_cfg.get("max_position_pct", 20.0)),
-            help="Cap a single position at this % of total equity",
+        new_spread = rp_col1.number_input(
+            "Max spread (%)",
+            min_value=0.1, max_value=1.0, step=0.05,
+            value=float(min(max(_cur_spread, 0.1), 1.0)),
+            format="%.2f",
+            help="Reject orders if bid-ask spread exceeds this % of price",
         )
 
-        if st.form_submit_button("Save Risk Limits", type="primary", use_container_width=True):
-            msg = _write_config_risk({
+        # Current vs proposed side-by-side preview
+        with st.expander("Current vs Proposed values", expanded=False):
+            _preview_data = {
+                "Parameter": [
+                    "per_trade_risk_pct", "max_open_positions",
+                    "daily_loss_circuit_pct", "drawdown_circuit_pct", "max_spread_pct",
+                ],
+                "Current": [_cur_per_trade, _cur_max_pos, _cur_daily, _cur_dd, _cur_spread],
+                "Proposed": [new_per_trade, new_max_pos, new_daily, new_dd, new_spread],
+            }
+            _preview_df = pd.DataFrame(_preview_data)
+            _preview_df["Changed"] = _preview_df["Current"] != _preview_df["Proposed"]
+            st.dataframe(
+                _preview_df.style.applymap(
+                    lambda v: "color: #f39c12; font-weight: bold" if v else "",
+                    subset=["Changed"],
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        _rp_submitted = st.form_submit_button(
+            "Apply Risk Parameters", type="primary", use_container_width=True
+        )
+
+    # Concentration warning (outside form so it stays visible after submit)
+    _concentration = new_per_trade * new_max_pos
+    if _concentration > 10.0:
+        st.warning(
+            f"Concentration warning: per_trade_risk ({new_per_trade}%) x max_positions "
+            f"({new_max_pos}) = {_concentration:.1f}% — exceeds 10% concentrated risk threshold."
+        )
+
+    if _rp_submitted:
+        try:
+            from core.command_queue import enqueue as _enqueue_cmd
+            _risk_updates = {
                 "per_trade_risk_pct": new_per_trade,
                 "max_open_positions": int(new_max_pos),
                 "daily_loss_circuit_pct": new_daily,
                 "drawdown_circuit_pct": new_dd,
-                "max_position_pct": new_max_pos_pct,
-            })
-            # also patch capital
-            try:
-                import yaml
-                text = CONFIG_PATH.read_text(encoding="utf-8")
-                cfg_all = yaml.safe_load(text) or {}
-                cfg_all.setdefault("capital", {})["initial_inr"] = int(new_capital)
-                CONFIG_PATH.write_text(yaml.dump(cfg_all, default_flow_style=False, allow_unicode=True), encoding="utf-8")
-            except Exception:
-                pass
-            st.success(msg)
+                "max_spread_pct": new_spread,
+            }
+            for _param_key, _param_val in _risk_updates.items():
+                _enqueue_cmd("update_risk_param", {"param": _param_key, "value": _param_val})
+            # Also persist to config file so restarts retain the values
+            _write_config_risk(_risk_updates)
+            st.success("Changes queued — agent will apply within 1 second")
             st.cache_data.clear()
+        except Exception as _rp_exc:
+            st.error(f"Failed to queue risk parameter changes: {_rp_exc}")
 
     st.divider()
+
+    # ── CIRCUIT BREAKER STATUS ────────────────────────────────────────────────
+    st.subheader("Circuit Breaker Status")
+
+    _halted = snap.get("halted", False)
+    _halt_reason = snap.get("halt_reason", "")
+
+    # Agent halt/resume banner
+    if _halted:
+        st.markdown(
+            "<div style='background:#c0392b;padding:14px;border-radius:8px;margin-bottom:12px'>"
+            "<b style='color:white;font-size:1.1em'>AGENT HALTED</b>"
+            + (f"<br><span style='color:#ffdddd'>{_halt_reason}</span>" if _halt_reason else "")
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("Resume Agent", type="primary", key="ctrl_resume_agent"):
+            try:
+                from core.command_queue import enqueue as _enqueue_cmd
+                _enqueue_cmd("resume_agent", {"reason": "manual resume from dashboard"})
+                st.success("Resume command queued — agent will resume within 1 second.")
+                st.rerun()
+            except Exception as _resume_exc:
+                st.error(f"Failed to queue resume: {_resume_exc}")
+    else:
+        st.markdown(
+            "<div style='background:#1a7a4a;padding:14px;border-radius:8px;margin-bottom:12px'>"
+            "<b style='color:white;font-size:1.1em'>AGENT ACTIVE</b>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        _halt_reason_input = st.text_input(
+            "Halt reason (optional)",
+            value="",
+            key="ctrl_halt_reason_input",
+            placeholder="e.g. manual halt for risk review",
+        )
+        if st.button("Halt Agent", type="secondary", key="ctrl_halt_agent"):
+            try:
+                from core.command_queue import enqueue as _enqueue_cmd
+                _enqueue_cmd("halt_agent", {
+                    "reason": _halt_reason_input or "manual halt from dashboard"
+                })
+                st.warning("Halt command queued — agent will halt within 1 second.")
+                st.rerun()
+            except Exception as _halt_exc:
+                st.error(f"Failed to queue halt: {_halt_exc}")
+
+    st.markdown("**Daily Loss Circuit**")
+    _start_today_equity = float(snap.get("starting_equity_today", 0.0) or 0.0)
+    _current_equity_ctrl = float(snap.get("equity", 0.0) or 0.0)
+    _daily_circuit_pct = float(risk_cfg.get("daily_loss_circuit_pct", 3.0))
+    if _start_today_equity > 0:
+        _day_pnl_pct_ctrl = (_current_equity_ctrl - _start_today_equity) / _start_today_equity * 100
+        _daily_usage = abs(min(_day_pnl_pct_ctrl, 0.0)) / _daily_circuit_pct * 100
+        st.markdown(
+            f"Day P&L: **{_day_pnl_pct_ctrl:+.2f}%** / circuit at **-{_daily_circuit_pct:.1f}%** "
+            f"({_daily_usage:.0f}% of circuit consumed)",
+        )
+        st.progress(
+            min(_daily_usage / 100, 1.0),
+            text=f"Daily loss: {_daily_usage:.0f}% of -{_daily_circuit_pct:.1f}% circuit",
+        )
+        if _daily_usage >= 80:
+            st.warning("Daily loss circuit approaching trigger level.")
+    else:
+        st.caption("Daily P&L data unavailable (agent not running or snapshot empty).")
+
+    st.markdown("**Drawdown Circuit**")
+    _peak_equity_ctrl = float(snap.get("peak_equity", 0.0) or 0.0)
+    _dd_circuit_pct = float(risk_cfg.get("drawdown_circuit_pct", 10.0))
+    if _peak_equity_ctrl > 0 and _current_equity_ctrl > 0:
+        _current_dd_pct = max((_peak_equity_ctrl - _current_equity_ctrl) / _peak_equity_ctrl * 100, 0.0)
+        _dd_usage = _current_dd_pct / _dd_circuit_pct * 100
+        st.markdown(
+            f"Current drawdown: **{_current_dd_pct:.2f}%** / circuit at **{_dd_circuit_pct:.1f}%** "
+            f"({_dd_usage:.0f}% of circuit consumed)",
+        )
+        st.progress(
+            min(_dd_usage / 100, 1.0),
+            text=f"Drawdown: {_dd_usage:.0f}% of {_dd_circuit_pct:.1f}% circuit",
+        )
+        if _dd_usage >= 80:
+            st.warning("Drawdown circuit approaching trigger level.")
+    else:
+        st.caption("Drawdown data unavailable (agent not running or snapshot empty).")
+
+    st.divider()
+
+    # ── SIGNAL COOLDOWN ───────────────────────────────────────────────────────
+    st.subheader("Signal Cooldown")
+    _exec_cfg = config.get("execution", {})
+    _cooldown_minutes = int(_exec_cfg.get("signal_cooldown_minutes", 30))
+    st.caption(
+        f"Current cooldown setting: **{_cooldown_minutes} minutes** after exit, "
+        f"the same symbol cannot be re-entered."
+    )
+
+    _last_exit_by_symbol: dict = snap.get("last_exit_by_symbol", {})
+    if _last_exit_by_symbol:
+        _now_utc = datetime.utcnow()
+        _cooldown_rows = []
+        for _sym, _exit_ts_str in _last_exit_by_symbol.items():
+            try:
+                _exit_dt = datetime.fromisoformat(str(_exit_ts_str).rstrip("Z"))
+                _elapsed = (_now_utc - _exit_dt).total_seconds() / 60.0
+                _remaining = max(_cooldown_minutes - _elapsed, 0.0)
+                _expires_at = _exit_dt + timedelta(minutes=_cooldown_minutes)
+                _status = "Active" if _remaining > 0 else "Expired"
+                _cooldown_rows.append({
+                    "Symbol": _sym,
+                    "Last Exit": _exit_dt.strftime("%H:%M:%S"),
+                    "Cooldown Expires": _expires_at.strftime("%H:%M:%S"),
+                    "Remaining (min)": f"{_remaining:.1f}" if _remaining > 0 else "0",
+                    "Status": _status,
+                })
+            except Exception:
+                _cooldown_rows.append({
+                    "Symbol": _sym,
+                    "Last Exit": str(_exit_ts_str),
+                    "Cooldown Expires": "?",
+                    "Remaining (min)": "?",
+                    "Status": "Unknown",
+                })
+
+        def _cooldown_status_style(val: str) -> str:
+            if val == "Active":
+                return "color: #e74c3c; font-weight: bold"
+            if val == "Expired":
+                return "color: #2ecc71"
+            return ""
+
+        _cd_df = pd.DataFrame(_cooldown_rows)
+        st.dataframe(
+            _cd_df.style.applymap(_cooldown_status_style, subset=["Status"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info(
+            "No recent exits recorded in snapshot — cooldown tracking data will appear here "
+            "once the agent has closed positions."
+        )
+
+    st.divider()
+
+    # ── Multi-agent management UI     st.divider()
 
     # ── Multi-agent management UI ────────────────────────────────────────────
     st.subheader("Agent Instances")
