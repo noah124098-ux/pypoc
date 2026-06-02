@@ -139,6 +139,8 @@ def cmd_check_config(args):
     print(f"  Angel One API key:  {'yes' if secrets.angel_one_api_key else 'NO (required for live data)'}")
     print(f"  Angel One client:   {'yes' if secrets.angel_one_client_code else 'NO'}")
     print(f"  Angel One TOTP:     {'yes' if secrets.angel_one_totp_secret else 'NO'}")
+    print(f"  Upstox API key:     {'yes' if secrets.upstox_api_key else 'no (optional — alternative feed)'}")
+    print(f"  Upstox access tok:  {'yes' if secrets.upstox_access_token else 'no'}")
     print(f"  Anthropic API:      {'yes' if secrets.anthropic_api_key else 'no (EOD reviewer disabled)'}")
     print(f"  Telegram bot:       {'yes' if secrets.telegram_bot_token else 'no'}")
 
@@ -800,10 +802,22 @@ def cmd_performance(args):
 
     # Prepend a header if days != 30 (the default used internally)
     if days != 30:
-        print(f"=== Performance Report (last {days} days — note: trade detail uses last 30 days from DB) ===")
+        header = f"=== Performance Report (last {days} days -- note: trade detail uses last 30 days from DB) ==="
     else:
-        print(f"=== Performance Report (last {days} days) ===")
-    print(report)
+        header = f"=== Performance Report (last {days} days) ==="
+
+    # Write via UTF-8 to handle Rupee symbol on Windows terminals with legacy codepages.
+    import sys
+    if hasattr(sys.stdout, "buffer"):
+        _write = sys.stdout.buffer.write
+        def _uprint(s: str) -> None:
+            _write((s + "\n").encode("utf-8", errors="replace"))
+    else:
+        def _uprint(s: str) -> None:  # type: ignore[misc]
+            print(s)
+
+    _uprint(header)
+    _uprint(report)
 
 
 def cmd_strategy_report(args):
