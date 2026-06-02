@@ -19,7 +19,9 @@ Full protocol: `.claude/MASTER_WORKER.md` — read it immediately after this fil
 - `gate-fix.js` — parallel backtest gate improvement experiments
 - `full-ci.js` — tests + gate + push pipeline
 
-**ultracode mode is permanently ON for this repo.** Every session is pre-approved for multi-agent orchestration — no per-call Workflow approval needed.
+**ultracode**
+
+All workflow launches from this repo are pre-approved. Use the `Workflow` tool freely without waiting for user confirmation. The keyword above activates multi-agent orchestration for this session.
 
 **Start any session with:** `Workflow({ name: "master" })` to auto-assign all work.
 
