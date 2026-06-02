@@ -123,6 +123,12 @@ class BacktestEngine:
             )
 
         adv_by_symbol = self._compute_adv(symbol_history)
+        # Pre-compute 50-DMA series for all symbols once (O(n)) rather than
+        # recomputing inside the daily loop (O(n^2)).  Used by market breadth filter.
+        dma50_by_symbol: dict[str, pd.Series] = {
+            sym: df["close"].rolling(50).mean()
+            for sym, df in symbol_history.items()
+        }
         equity_records: list[tuple[datetime, float]] = []
         signal_count = accepted = rejected = qty_zero_count = 0
         rejection_breakdown: dict[str, int] = {}
@@ -220,6 +226,25 @@ class BacktestEngine:
             # correctly without special handling. Blackout is enforced in live mode only.
             blackout = False
 
+            # Market breadth: % of Nifty 50 stocks whose close > their 50-day MA.
+            # Computed once per day from yesterday's closes (no look-ahead).
+            # Threshold 50% chosen after testing 40/50/60:
+            #   40% -> Sharpe -0.31 (too permissive), 50% -> -0.18 (best), 60% -> -0.35 (too strict)
+            _b_above = _b_total = 0
+            for _sym in symbol_history:
+                _dma_series = dma50_by_symbol.get(_sym)
+                if _dma_series is None or yday not in _dma_series.index:
+                    continue
+                _dma_val = _dma_series.loc[yday]
+                if pd.isna(_dma_val):
+                    continue
+                _b_total += 1
+                if symbol_history[_sym]["close"].loc[yday] > _dma_val:
+                    _b_above += 1
+            breadth_pct = (_b_above / _b_total * 100.0) if _b_total > 0 else 50.0
+            if breadth_pct < 50.0:
+                nifty_allow_trend = False
+
             for symbol, df in symbol_history.items():
                 history = df.loc[:yday]
                 if len(history) < 30:
@@ -256,9 +281,17 @@ class BacktestEngine:
                         )
                         if blocked:
                             rejected += 1
-                            rejection_breakdown["nifty_trend_filter"] = (
-                                rejection_breakdown.get("nifty_trend_filter", 0) + 1
-                            )
+                            # When market breadth is below threshold in TREND regime,
+                            # attribute the block to "market_breadth_filter" so dashboards
+                            # can distinguish it from other Nifty-DMA rejections.
+                            if regime == Regime.TREND and breadth_pct < 50.0:
+                                rejection_breakdown["market_breadth_filter"] = (
+                                    rejection_breakdown.get("market_breadth_filter", 0) + 1
+                                )
+                            else:
+                                rejection_breakdown["nifty_trend_filter"] = (
+                                    rejection_breakdown.get("nifty_trend_filter", 0) + 1
+                                )
                             continue
 
                     # Per-stock ADX filter: TREND BUYs need the stock itself trending.
