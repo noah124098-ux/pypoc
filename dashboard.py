@@ -160,7 +160,9 @@ def _db_connect():
     return c
 
 
+@st.cache_data(ttl=5, show_spinner=False)
 def _read_snapshot() -> dict:
+    """Read snapshot.json once per render cycle. Cached 5s to avoid repeated disk reads."""
     if not SNAPSHOT_PATH.exists():
         return {}
     try:
@@ -169,7 +171,9 @@ def _read_snapshot() -> dict:
         return {}
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def _read_gate() -> dict:
+    """Read backtest_gate.json. Cached 30s — changes infrequently."""
     if not GATE_PATH.exists():
         return {}
     try:
@@ -178,7 +182,9 @@ def _read_gate() -> dict:
         return {}
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def _read_config() -> dict:
+    """Read config YAML. Cached 60s — changes only on manual edits."""
     if not CONFIG_PATH.exists():
         return {}
     try:
@@ -186,6 +192,39 @@ def _read_config() -> dict:
         return yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
     except Exception:
         return {}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _get_pcr_cached() -> float | None:
+    """Fetch Put-Call Ratio. Cached 5 min — NSE PCR updates slowly."""
+    try:
+        if _PCR_AVAILABLE and _get_nifty_pcr is not None:
+            return _get_nifty_pcr()
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _get_fii_sentiment_cached() -> str | None:
+    """Fetch FII institutional sentiment. Cached 5 min — FII data updates once daily."""
+    try:
+        if _FII_AVAILABLE:
+            return get_institutional_sentiment()
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _get_fii_flows_cached(days: int = 5):
+    """Fetch FII/DII flows. Cached 5 min."""
+    try:
+        if _FII_AVAILABLE:
+            return get_fii_dii_flows(days=days)
+    except Exception:
+        pass
+    return None
 
 
 def _query_df(conn, sql: str, params=()) -> pd.DataFrame:
@@ -572,27 +611,25 @@ with st.sidebar:
     except Exception:
         pass
 
-    # PCR
+    # PCR — cached 5 min, non-blocking
     try:
-        if _PCR_AVAILABLE and _get_nifty_pcr is not None:
-            pcr = _get_nifty_pcr()
-            if pcr:
-                pcr_color = "🟢" if pcr > 1.0 else ("🔴" if pcr < 0.7 else "🟡")
-                st.sidebar.metric(
-                    f"{pcr_color} PCR",
-                    f"{pcr:.2f}",
-                    help="Put-Call Ratio. >1.0 bullish, <0.7 bearish",
-                )
+        pcr = _get_pcr_cached()
+        if pcr:
+            pcr_color = "🟢" if pcr > 1.0 else ("🔴" if pcr < 0.7 else "🟡")
+            st.sidebar.metric(
+                f"{pcr_color} PCR",
+                f"{pcr:.2f}",
+                help="Put-Call Ratio. >1.0 bullish, <0.7 bearish",
+            )
     except Exception:
         pass
 
-    # FII sentiment
+    # FII sentiment — cached 5 min, non-blocking
     try:
-        if _FII_AVAILABLE:
-            sent = get_institutional_sentiment()
-            if sent:
-                sent_display = {"BULLISH": "🟢 FII Buy", "BEARISH": "🔴 FII Sell"}.get(sent, "⚪ Neutral")
-                st.sidebar.metric("FII Sentiment", sent_display)
+        sent = _get_fii_sentiment_cached()
+        if sent:
+            sent_display = {"BULLISH": "🟢 FII Buy", "BEARISH": "🔴 FII Sell"}.get(sent, "⚪ Neutral")
+            st.sidebar.metric("FII Sentiment", sent_display)
     except Exception:
         pass
 
@@ -1734,6 +1771,15 @@ with tab_pnl:
         s2.metric("Win Rate", f"{win_rate:.1f}%")
         s3.metric("Avg Win / Loss", f"₹{avg_win:.0f} / ₹{avg_loss:.0f}")
         s4.metric("Profit Factor", f"{pf:.2f}" if pf != float("inf") else "inf")
+
+        csv_data = trades_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="📥 Export trades to CSV",
+            data=csv_data,
+            file_name=f"pypoc_trades_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            key="export_trades_csv",
+        )
     else:
         st.info("No closed trades yet.")
 
@@ -2807,6 +2853,25 @@ with tab_regime:
     else:
         st.info("No regime history yet. Run the agent to populate.")
 
+    st.divider()
+
+    # ── Upcoming Blackout Events widget ──────────────────────────────────────
+    st.subheader("Upcoming Blackout Events")
+    try:
+        from core.data.economic_calendar import _ALL_EVENT_DATES, is_blackout_day
+        _ec_today = datetime.now().date()
+        _ec_upcoming = sorted([d for d in _ALL_EVENT_DATES if d >= _ec_today])[:3]
+        if _ec_upcoming:
+            st.caption("**Upcoming blackout events (no new entries ±1 day):**")
+            for _ec_ev in _ec_upcoming:
+                _ec_days_away = (_ec_ev - _ec_today).days
+                _ec_label = "🔴 TODAY" if _ec_days_away == 0 else f"in {_ec_days_away}d"
+                st.caption(f"  • {_ec_ev.strftime('%b %d %Y')} ({_ec_label})")
+        else:
+            st.caption("No upcoming blackout events in the calendar.")
+    except Exception as _ec_exc:
+        st.caption(f"Economic calendar unavailable: {_ec_exc}")
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # TAB 5: BACKTEST RESULTS
@@ -2814,6 +2879,268 @@ with tab_regime:
 
 with tab_backtest:
     st.header("Backtest & Walk-Forward Results")
+
+    # ── Backtest vs Live Equity Comparison ────────────────────────────────────
+    st.subheader("Backtest vs Live (Paper) Equity Comparison")
+
+    _bt_live_eq_df = _get_equity_snapshots(str(DB_PATH))
+    _bt_gate = gate  # already loaded at sidebar
+
+    # ── Build backtest trend line from gate JSON ──────────────────────────────
+    _bt_gate_start_eq: float = 0.0
+    _bt_gate_end_eq: float = 0.0
+    _bt_gate_start_dt = None
+    _bt_gate_end_dt = None
+    _bt_cagr: float = 0.0
+    _live_cagr: float = 0.0
+
+    if _bt_gate:
+        try:
+            _bt_metrics = _bt_gate.get("metrics", {})
+            _bt_gate_start_eq = float(_bt_metrics.get("starting_equity", 0) or 0)
+            _bt_gate_end_eq = float(_bt_metrics.get("ending_equity", 0) or 0)
+            _bt_gate_start_dt = datetime.fromisoformat(
+                str(_bt_gate.get("period_start", ""))[:19]
+            ) if _bt_gate.get("period_start") else None
+            _bt_gate_end_dt = datetime.fromisoformat(
+                str(_bt_gate.get("period_end", ""))[:19]
+            ) if _bt_gate.get("period_end") else None
+            if (
+                _bt_gate_start_dt and _bt_gate_end_dt
+                and _bt_gate_start_eq and _bt_gate_end_eq
+                and _bt_gate_start_eq > 0
+            ):
+                _bt_years = max(
+                    (_bt_gate_end_dt - _bt_gate_start_dt).total_seconds() / (365.25 * 86400),
+                    1 / 365.25,
+                )
+                _bt_cagr = (
+                    (_bt_gate_end_eq / _bt_gate_start_eq) ** (1.0 / _bt_years) - 1
+                ) * 100
+        except Exception:
+            pass
+
+    # ── Compute live CAGR from equity snapshots ───────────────────────────────
+    _live_start_eq: float = float(capital or 0)
+    _live_end_eq: float = 0.0
+    _live_max_dd: float = 0.0
+    _bt_live_eq_df_sorted = pd.DataFrame()
+
+    if not _bt_live_eq_df.empty:
+        try:
+            _bt_live_eq_df_sorted = _bt_live_eq_df.copy()
+            _bt_live_eq_df_sorted["ts"] = pd.to_datetime(_bt_live_eq_df_sorted["ts"])
+            _bt_live_eq_df_sorted = _bt_live_eq_df_sorted.sort_values("ts").reset_index(drop=True)
+            _live_ts_start = _bt_live_eq_df_sorted["ts"].iloc[0]
+            _live_ts_end = _bt_live_eq_df_sorted["ts"].iloc[-1]
+            _live_start_eq_snapshot = float(_bt_live_eq_df_sorted["equity"].iloc[0])
+            _live_end_eq = float(_bt_live_eq_df_sorted["equity"].iloc[-1])
+            _live_years = max(
+                (_live_ts_end - _live_ts_start).total_seconds() / (365.25 * 86400),
+                1 / 365.25,
+            )
+            _live_start_base = _live_start_eq if _live_start_eq > 0 else _live_start_eq_snapshot
+            if _live_start_base > 0 and _live_end_eq > 0:
+                _live_cagr = ((_live_end_eq / _live_start_base) ** (1.0 / _live_years) - 1) * 100
+            # Max drawdown from live equity curve
+            _peak_arr = _bt_live_eq_df_sorted["equity"].cummax()
+            _dd_arr = (_peak_arr - _bt_live_eq_df_sorted["equity"]) / _peak_arr * 100
+            _live_max_dd = float(_dd_arr.max()) if not _dd_arr.empty else 0.0
+        except Exception:
+            pass
+
+    # ── Compute live Sharpe from equity snapshots ─────────────────────────────
+    _live_sharpe: float = 0.0
+
+    if not _bt_live_eq_df_sorted.empty:
+        try:
+            _eq_for_sharpe = _bt_live_eq_df_sorted.set_index("ts")["equity"].resample("D").last().dropna()
+            _daily_ret = _eq_for_sharpe.pct_change().dropna()
+            if len(_daily_ret) >= 2 and _daily_ret.std() > 0:
+                _live_sharpe = float(_daily_ret.mean() / _daily_ret.std() * (252 ** 0.5))
+        except Exception:
+            pass
+
+    # ── Compute live win rate and profit factor from trades table ─────────────
+    _live_win_rate: float = 0.0
+    _live_pf: float = 0.0
+    _all_trades_for_cmp = _query_df(conn, "SELECT pnl, charges FROM trades")
+    if not _all_trades_for_cmp.empty and "pnl" in _all_trades_for_cmp.columns:
+        try:
+            _n_all = len(_all_trades_for_cmp)
+            _wins_all = int((_all_trades_for_cmp["pnl"] > 0).sum())
+            _live_win_rate = (_wins_all / _n_all * 100) if _n_all > 0 else 0.0
+            _gross_p = float(_all_trades_for_cmp.loc[_all_trades_for_cmp["pnl"] > 0, "pnl"].sum())
+            _gross_l = abs(float(_all_trades_for_cmp.loc[_all_trades_for_cmp["pnl"] < 0, "pnl"].sum()))
+            _live_pf = (_gross_p / _gross_l) if _gross_l > 0 else 0.0
+        except Exception:
+            pass
+
+    # ── Tracking annotation: YES/NO within 20% relative CAGR ─────────────────
+    _tracking_label = "N/A"
+    if _bt_cagr != 0.0 and _live_cagr != 0.0:
+        _cagr_diff_pct = abs(_live_cagr - _bt_cagr) / abs(_bt_cagr) * 100
+        _tracking_label = "YES" if _cagr_diff_pct <= 20.0 else "NO"
+
+    # ── Plot: both equity curves on same chart ────────────────────────────────
+    _fig_cmp = go.Figure()
+
+    # Starting equity reference line
+    _ref_eq = _bt_gate_start_eq or _live_start_eq or float(capital or 500000)
+    _ref_x_start = _bt_gate_start_dt
+    _ref_x_end = _bt_gate_end_dt
+    if not _bt_live_eq_df_sorted.empty:
+        if _ref_x_start is None:
+            _ref_x_start = _bt_live_eq_df_sorted["ts"].iloc[0]
+        if _ref_x_end is None:
+            _ref_x_end = _bt_live_eq_df_sorted["ts"].iloc[-1]
+
+    if _ref_x_start and _ref_x_end and _ref_eq:
+        _fig_cmp.add_trace(go.Scatter(
+            x=[_ref_x_start, _ref_x_end],
+            y=[_ref_eq, _ref_eq],
+            mode="lines",
+            name=f"Starting Equity (₹{_ref_eq:,.0f})",
+            line=dict(color="rgba(150,150,150,0.7)", width=1.5, dash="dot"),
+            hovertemplate="Starting equity: ₹%{y:,.0f}<extra></extra>",
+        ))
+
+    # Backtest trend line (straight line from start to end of backtest period)
+    if _bt_gate_start_dt and _bt_gate_end_dt and _bt_gate_start_eq and _bt_gate_end_eq:
+        _fig_cmp.add_trace(go.Scatter(
+            x=[_bt_gate_start_dt, _bt_gate_end_dt],
+            y=[_bt_gate_start_eq, _bt_gate_end_eq],
+            mode="lines",
+            name=f"Backtest trend (CAGR {_bt_cagr:+.1f}%)",
+            line=dict(color="#2ecc71", width=2.5, dash="dash"),
+            hovertemplate="Backtest trend: ₹%{y:,.0f}<extra></extra>",
+        ))
+
+    # Live equity curve
+    if not _bt_live_eq_df_sorted.empty:
+        _fig_cmp.add_trace(go.Scatter(
+            x=_bt_live_eq_df_sorted["ts"],
+            y=_bt_live_eq_df_sorted["equity"],
+            mode="lines",
+            name=f"Live paper equity (CAGR {_live_cagr:+.1f}%)",
+            line=dict(color="#3498db", width=2.5),
+            fill="tozeroy",
+            fillcolor="rgba(52,152,219,0.07)",
+            hovertemplate="<b>%{x|%Y-%m-%d %H:%M}</b><br>Live equity: ₹%{y:,.0f}<extra></extra>",
+        ))
+
+    # Tracking annotation in top-left of chart
+    _tracking_color = "#2ecc71" if _tracking_label == "YES" else (
+        "#e74c3c" if _tracking_label == "NO" else "#95a5a6"
+    )
+    _fig_cmp.add_annotation(
+        xref="paper", yref="paper",
+        x=0.01, y=0.97,
+        text=f"Paper agent tracks backtest: <b>{_tracking_label}</b>",
+        showarrow=False,
+        font=dict(size=13, color=_tracking_color),
+        bgcolor="rgba(0,0,0,0.4)" if st.session_state.get("dark_mode") else "rgba(255,255,255,0.8)",
+        bordercolor=_tracking_color,
+        borderwidth=1,
+        borderpad=6,
+        align="left",
+    )
+
+    _fig_cmp.update_layout(
+        height=420,
+        margin=dict(l=0, r=0, t=30, b=0),
+        xaxis_title="Date",
+        yaxis_title="Equity (₹)",
+        yaxis_tickprefix="₹",
+        yaxis_tickformat=",.0f",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        hovermode="x unified",
+    )
+
+    if _bt_gate_start_dt or not _bt_live_eq_df_sorted.empty:
+        st.plotly_chart(_fig_cmp, use_container_width=True)
+    else:
+        st.info(
+            "No equity data available yet. Run the paper agent to populate equity snapshots "
+            "and run `python cli.py walk-forward --years 3` to populate the backtest gate."
+        )
+
+    # ── Stats Comparison Table ────────────────────────────────────────────────
+    st.subheader("Backtest vs Live — Stats Comparison")
+
+    _bt_metrics_cmp = _bt_gate.get("metrics", {}) if _bt_gate else {}
+    _bt_sharpe_cmp = float(_bt_metrics_cmp.get("sharpe", 0) or 0)
+    _bt_win_rate_cmp = float(_bt_metrics_cmp.get("win_rate_pct", 0) or 0)
+    _bt_max_dd_cmp = float(_bt_metrics_cmp.get("max_drawdown_pct", 0) or 0)
+    _bt_pf_cmp = float(_bt_metrics_cmp.get("profit_factor", 0) or 0)
+
+    def _cmp_delta(live_val: float, bt_val: float) -> str:
+        """Return a delta string showing live vs backtest relative difference."""
+        if bt_val == 0:
+            return "N/A"
+        diff_pct = (live_val - bt_val) / abs(bt_val) * 100
+        sign = "+" if diff_pct >= 0 else ""
+        return f"{sign}{diff_pct:.1f}% vs backtest"
+
+    _has_live_eq = not _bt_live_eq_df_sorted.empty
+    _has_live_trades = not _all_trades_for_cmp.empty
+
+    _cmp_rows = [
+        {
+            "Metric": "Sharpe Ratio",
+            "Backtest": f"{_bt_sharpe_cmp:.2f}",
+            "Live (paper)": f"{_live_sharpe:.2f}" if _has_live_eq else "N/A",
+            "Delta": _cmp_delta(_live_sharpe, _bt_sharpe_cmp) if _has_live_eq else "N/A",
+        },
+        {
+            "Metric": "Win Rate",
+            "Backtest": f"{_bt_win_rate_cmp:.1f}%",
+            "Live (paper)": f"{_live_win_rate:.1f}%" if _has_live_trades else "N/A",
+            "Delta": _cmp_delta(_live_win_rate, _bt_win_rate_cmp) if _has_live_trades else "N/A",
+        },
+        {
+            "Metric": "Max Drawdown",
+            "Backtest": f"{_bt_max_dd_cmp:.2f}%",
+            "Live (paper)": f"{_live_max_dd:.2f}%" if _has_live_eq else "N/A",
+            "Delta": _cmp_delta(-_live_max_dd, -_bt_max_dd_cmp) if _has_live_eq else "N/A",
+        },
+        {
+            "Metric": "Profit Factor",
+            "Backtest": f"{_bt_pf_cmp:.2f}",
+            "Live (paper)": f"{_live_pf:.2f}" if _has_live_trades else "N/A",
+            "Delta": _cmp_delta(_live_pf, _bt_pf_cmp) if _has_live_trades else "N/A",
+        },
+    ]
+
+    _cmp_df = pd.DataFrame(_cmp_rows)
+
+    def _delta_cell_style(val: str) -> str:
+        """Green for positive deltas, red for negative."""
+        try:
+            numeric_part = str(val).split("%")[0].replace("+", "").strip()
+            v = float(numeric_part)
+            if v > 0:
+                return "color: #2ecc71; font-weight: bold"
+            if v < 0:
+                return "color: #e74c3c; font-weight: bold"
+        except Exception:
+            pass
+        return "color: #888888"
+
+    st.dataframe(
+        _cmp_df.style.applymap(_delta_cell_style, subset=["Delta"]),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        "Delta = (Live − Backtest) / |Backtest| as %. "
+        "Max Drawdown delta: positive = live drawdown is smaller (better). "
+        "Tracking badge uses CAGR within 20% tolerance (N/A if live has no equity history)."
+    )
+
+    st.divider()
 
     # ── Gate file expiry indicator ────────────────────────────────────────────
     if gate and gate.get("timestamp"):
@@ -4112,6 +4439,35 @@ Respond in 3–5 sentences. Be direct and actionable. Do not disclaim about data
                 st.warning(_flag)
     else:
         st.info("No review has been run yet. Click 'Run EOD Review Now' above.")
+
+    st.divider()
+
+    # ── Manual Email Report ───────────────────────────────────────────────────
+    st.subheader("📧 Send Performance Report")
+    if st.button("Send EOD Report Now", key="send_email_report"):
+        try:
+            from core.analytics.performance_report import generate_html_report
+            from core.notifications.email_notifier import EmailNotifier
+            from core.config import Secrets
+            _sec = Secrets.from_env()
+            _notifier = EmailNotifier(
+                _sec.smtp_host, _sec.smtp_port, _sec.smtp_user,
+                _sec.smtp_password, _sec.email_from, _sec.email_to,
+            )
+            _html_report = generate_html_report("data/agent.db", "data/snapshot.json")
+            _snap_for_email = _read_snapshot() or {}
+            ok = _notifier.send_eod_report(
+                equity=float(_snap_for_email.get("equity", 0)),
+                pnl=float(_snap_for_email.get("realized_pnl", 0)),
+                trades=len(_snap_for_email.get("open_positions", [])),
+                review_summary=_html_report,
+            )
+            if ok:
+                st.success("Email sent!")
+            else:
+                st.warning("Email failed — check SMTP credentials in Controls tab")
+        except Exception as _email_exc:
+            st.warning(f"Email not configured: {_email_exc}")
 
     st.divider()
 
