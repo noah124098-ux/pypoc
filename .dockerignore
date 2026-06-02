@@ -1,0 +1,37 @@
+# Version control
+.git
+.gitignore
+
+# Python runtime artifacts
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Sensitive data and runtime state
+.env
+.env.*
+!.env.example
+
+# Large / transient data files
+data/agent.db
+data/ticks
+data/bhavcopy_cache
+
+# Log files
+logs/
+*.log
+
+# OS / editor artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# CI / dev tooling
+.github
+.claude

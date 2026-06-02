@@ -1256,6 +1256,37 @@ def cmd_preflight(args):
     raise SystemExit(0 if n_fail == 0 else 1)
 
 
+def cmd_health_check(args):
+    """Lightweight health check for Docker HEALTHCHECK and monitoring.
+
+    Validates that core modules import cleanly and config loads without errors.
+    Exits 0 on success, 1 on any failure. Produces minimal stdout output.
+    """
+    import sys
+
+    checks_failed: list[str] = []
+
+    # 1. Config loads
+    try:
+        load_settings(args.config)
+    except Exception as exc:
+        checks_failed.append(f"config: {exc}")
+
+    # 2. Core module imports (sanity check that the install is intact)
+    for mod in ["core.regime.classifier", "core.risk.guardrails", "core.strategies.trend_breakout"]:
+        try:
+            __import__(mod)
+        except Exception as exc:
+            checks_failed.append(f"import {mod}: {exc}")
+
+    if checks_failed:
+        for msg in checks_failed:
+            print(f"FAIL: {msg}", file=sys.stderr)
+        raise SystemExit(1)
+
+    print("OK")
+
+
 def cmd_send_command(args):
     """Send a command to the running agent via the file-based command queue.
 
@@ -1359,6 +1390,11 @@ def main():
         "preflight",
         help="Run all 10 pre-flight checks before starting live paper trading",
     ).set_defaults(func=cmd_preflight)
+
+    sub.add_parser(
+        "health-check",
+        help="Lightweight health check (used by Docker HEALTHCHECK): exits 0 if healthy",
+    ).set_defaults(func=cmd_health_check)
 
     sc = sub.add_parser(
         "send-command",
