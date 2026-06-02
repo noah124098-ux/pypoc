@@ -42,6 +42,7 @@ from core.risk.sizing import position_size
 from core.strategies.base import IStrategy
 from core.strategies.mean_reversion import MeanReversion
 from core.strategies.supertrend_short import SupertrendShort
+from core.strategies.simple_trend_short import SimpleTrendShort
 from core.strategies.trend_breakout import TrendBreakout
 from core.strategies.volatility_compression import VolatilityCompression
 from core.types import Candle, OrderType, Regime, Side, Tick
@@ -94,6 +95,25 @@ class Orchestrator:
             self.telegram = TelegramNotifier(_sec.telegram_bot_token, _sec.telegram_chat_id) if self.s.notifications.telegram_enabled else None
         except Exception:
             self.telegram = None
+
+        try:
+            from core.config import Secrets
+            from core.notifications.email_notifier import EmailNotifier
+            _sec2 = Secrets.from_env()
+            self.email_notifier: Optional[EmailNotifier] = (
+                EmailNotifier(
+                    _sec2.smtp_host,
+                    _sec2.smtp_port,
+                    _sec2.smtp_user,
+                    _sec2.smtp_password,
+                    _sec2.email_from,
+                    _sec2.email_to,
+                )
+                if self.s.notifications.email_enabled
+                else None
+            )
+        except Exception:
+            self.email_notifier = None
 
     # ---------- public API ----------
 
@@ -462,6 +482,14 @@ class Orchestrator:
                 target_r_multiple=cfg.get("target_r_multiple", 2.0),
                 stock_dma_period=cfg.get("stock_dma_period", 50),
             ))
+        if scfg.get("simple_trend_short", {}).get("enabled", False):
+            cfg = scfg["simple_trend_short"]
+            out.append(SimpleTrendShort(
+                atr_period=cfg.get("atr_period", 10),
+                multiplier=cfg.get("multiplier", 3.0),
+                target_r_multiple=cfg.get("target_r_multiple", 2.0),
+                stock_dma_period=cfg.get("stock_dma_period", 50),
+            ))
         return out
 
     def _maybe_squareoff_eod(self) -> None:
@@ -481,6 +509,19 @@ class Orchestrator:
         if getattr(self, 'telegram', None) and self.s.notifications.telegram_enabled:
             pnl = getattr(self.broker, 'realized_pnl', 0.0)
             self.telegram.send_daily_summary(self.broker.equity(), pnl, len(self.broker.trade_log), self.current_regime.regime.value)
+
+        if self.s.notifications.email_enabled and getattr(self, 'email_notifier', None):
+            try:
+                from core.analytics.performance_report import generate_html_report
+                html = generate_html_report("data/agent.db", "data/snapshot.json")
+                self.email_notifier.send_eod_report(
+                    equity=self.broker.equity(),
+                    pnl=getattr(self.broker, "realized_pnl", 0.0),
+                    trades=len(self.broker.trade_log),
+                    review_summary=html,
+                )
+            except Exception as e:
+                log.warning("EOD email failed: %s", e)
 
     def _check_global_halts(self) -> None:
         if self.halted:
