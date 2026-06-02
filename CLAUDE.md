@@ -176,6 +176,31 @@ User decided to **not** use VS Code Remote-SSH — work happens directly on the 
 | fd6476c | feat(dashboard): FII/DII institutional flows panel in Live tab |
 | 3104b56 | feat(orchestrator): FII/DII institutional sentiment gate for TREND BUYs |
 
+## Maintenance
+
+Scripts in `scripts/` for routine EC2 upkeep:
+
+| Script | What it does | How to run |
+| --- | --- | --- |
+| `backup_data.bat` | Copies `agent.db`, `backtest_gate.json`, and `config/default.yaml` to `C:\Users\Administrator\pypoc_backups\YYYY-MM-DD\` | Run daily via Task Scheduler |
+| `rotate_logs.bat` | Deletes `logs/*.log` and `logs/*.jsonl` files older than 7 days | Run daily via Task Scheduler |
+| `health_check.ps1` | Emits structured JSON covering snapshot freshness, disk space (warn < 1 GB), memory (warn > 80 %), and agent.log size (warn > 100 MB); exits 0 = healthy, 1 = degraded | Called by monitoring tools or Task Scheduler |
+
+**Setting up Task Scheduler tasks (run as Administrator):**
+
+```powershell
+# Daily backup at 06:00 IST
+schtasks /create /tn "pypoc_backup" /tr "C:\Users\Administrator\pypoc\scripts\backup_data.bat" /sc daily /st 06:00 /ru SYSTEM /f
+
+# Daily log rotation at 06:05 IST
+schtasks /create /tn "pypoc_rotate_logs" /tr "C:\Users\Administrator\pypoc\scripts\rotate_logs.bat" /sc daily /st 06:05 /ru SYSTEM /f
+
+# Health check every 5 minutes (output captured by your monitoring agent)
+schtasks /create /tn "pypoc_health" /tr "powershell -NonInteractive -File C:\Users\Administrator\pypoc\scripts\health_check.ps1" /sc minute /mo 5 /ru SYSTEM /f
+```
+
+**Backup retention:** Backups accumulate under `C:\Users\Administrator\pypoc_backups\`. Manually prune or extend `backup_data.bat` to call `forfiles` there if disk is constrained.
+
 ## User preferences (collaboration style)
 
 - Likes brainstorming via short Q&A before implementation. Use `AskUserQuestion` for genuine forks.
