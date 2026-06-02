@@ -1261,14 +1261,22 @@ def cmd_health_check(args):
 
     Validates that core modules import cleanly and config loads without errors.
     Exits 0 on success, 1 on any failure. Produces minimal stdout output.
-    """
-    import sys
 
+    With --json: outputs a machine-readable JSON object to stdout.
+    Without --json: outputs human-readable text (default).
+    """
+    import json as _json
+    import os
+    import sys
+    from datetime import datetime, timezone
+
+    use_json = getattr(args, "json", False)
     checks_failed: list[str] = []
 
     # 1. Config loads
+    settings = None
     try:
-        load_settings(args.config)
+        settings = load_settings(args.config)
     except Exception as exc:
         checks_failed.append(f"config: {exc}")
 
@@ -1279,12 +1287,95 @@ def cmd_health_check(args):
         except Exception as exc:
             checks_failed.append(f"import {mod}: {exc}")
 
-    if checks_failed:
-        for msg in checks_failed:
-            print(f"FAIL: {msg}", file=sys.stderr)
-        raise SystemExit(1)
+    healthy = len(checks_failed) == 0
 
-    print("OK")
+    if not use_json:
+        # --- Human-readable output (existing behaviour) ---
+        if checks_failed:
+            for msg in checks_failed:
+                print(f"FAIL: {msg}", file=sys.stderr)
+            raise SystemExit(1)
+        print("OK")
+        return
+
+    # --- Machine-readable JSON output ---
+    snapshot_age_seconds: float | None = None
+    agent_running: bool = False
+    halted: bool = False
+    equity: float | None = None
+    open_positions: int = 0
+
+    snapshot_path = "data/snapshot.json"
+    if settings is not None:
+        snapshot_path = getattr(settings, "snapshot_path", snapshot_path)
+
+    try:
+        from core.runtime_snapshot import read as read_snapshot
+        snap = read_snapshot(snapshot_path)
+        if snap is not None:
+            ts_str = snap.get("ts", "")
+            if ts_str:
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    snapshot_age_seconds = round(
+                        (datetime.now(timezone.utc) - ts).total_seconds(), 1
+                    )
+                except ValueError:
+                    pass
+            halted = bool(snap.get("halted", False))
+            equity_raw = snap.get("equity")
+            if equity_raw is not None:
+                equity = float(equity_raw)
+            open_pos = snap.get("open_positions") or []
+            open_positions = len(open_pos)
+
+            pid = snap.get("pid")
+            if pid:
+                try:
+                    os.kill(pid, 0)
+                    agent_running = True
+                except (OSError, ProcessLookupError):
+                    agent_running = False
+    except Exception:
+        pass
+
+    # Gate status
+    gate_passed: bool = False
+    gate_age_days: int | None = None
+    try:
+        from backtest.gate import GATE_MAX_AGE_DAYS, read_gate_result
+        gate_data = read_gate_result()
+        if gate_data is not None:
+            gate_passed = bool(gate_data.get("passed", False))
+            ts_str = gate_data.get("timestamp", "")
+            if ts_str:
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    age_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400
+                    gate_age_days = int(age_days)
+                    # Treat as not-passed if expired
+                    if age_days > GATE_MAX_AGE_DAYS:
+                        gate_passed = False
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+
+    payload: dict = {
+        "status": "healthy" if healthy else "unhealthy",
+        "snapshot_age_seconds": snapshot_age_seconds,
+        "agent_running": agent_running,
+        "halted": halted,
+        "gate_passed": gate_passed,
+        "gate_age_days": gate_age_days,
+        "equity": equity,
+        "open_positions": open_positions,
+    }
+    if not healthy:
+        payload["errors"] = checks_failed
+
+    print(_json.dumps(payload, indent=2))
+    raise SystemExit(0 if healthy else 1)
 
 
 def cmd_send_command(args):
@@ -1391,10 +1482,16 @@ def main():
         help="Run all 10 pre-flight checks before starting live paper trading",
     ).set_defaults(func=cmd_preflight)
 
-    sub.add_parser(
+    hc = sub.add_parser(
         "health-check",
         help="Lightweight health check (used by Docker HEALTHCHECK): exits 0 if healthy",
-    ).set_defaults(func=cmd_health_check)
+    )
+    hc.add_argument(
+        "--json",
+        action="store_true",
+        help="Output machine-readable JSON instead of plain text (for Docker / monitoring)",
+    )
+    hc.set_defaults(func=cmd_health_check)
 
     sc = sub.add_parser(
         "send-command",
