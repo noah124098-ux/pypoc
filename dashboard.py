@@ -2184,41 +2184,100 @@ with tab_backtest:
 
         st.divider()
 
-        # ── 2. Monthly P&L Heatmap ────────────────────────────────────────────
+        # ── 2. Monthly P&L Heatmap (enhanced via core.analytics.metrics) ────────
         st.subheader("Monthly P&L Heatmap")
+
+        # Try to load TradeRecord objects for the rich analytics API
+        _analytics_trades: list = []
+        try:
+            from core.analytics.metrics import (
+                compute_monthly_pnl as _compute_monthly_pnl,
+                compute_strategy_attribution as _compute_strategy_attribution,
+                compute_regime_attribution as _compute_regime_attribution,
+                compute_extended_metrics as _compute_extended_metrics,
+                load_trades_from_db as _load_trades_from_db,
+            )
+            if DB_PATH.exists():
+                _analytics_trades = _load_trades_from_db(DB_PATH)
+        except Exception:
+            _analytics_trades = []
 
         _hm_df = _bt_trades.dropna(subset=["closed_at"]).copy()
         _hm_df["year"] = _hm_df["closed_at"].dt.year
         _hm_df["month"] = _hm_df["closed_at"].dt.month
-        _monthly_pnl = (
+        _monthly_pnl_raw = (
             _hm_df.groupby(["year", "month"])["pnl_net"]
             .sum()
             .reset_index()
         )
+        _monthly_count = (
+            _hm_df.groupby(["year", "month"])["pnl_net"]
+            .count()
+            .reset_index()
+            .rename(columns={"pnl_net": "n_trades"})
+        )
 
-        if not _monthly_pnl.empty:
-            _years_sorted = sorted(_monthly_pnl["year"].unique())
+        # Prefer compute_monthly_pnl if we have TradeRecord objects; fall back to raw SQL agg
+        _use_rich_hm = bool(_analytics_trades)
+        if _use_rich_hm:
+            try:
+                _rich_monthly = _compute_monthly_pnl(_analytics_trades)  # indexed by YYYY-MM
+            except Exception:
+                _use_rich_hm = False
+
+        if not _monthly_pnl_raw.empty:
+            _years_sorted = sorted(_monthly_pnl_raw["year"].unique())
             _month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-            # Build z matrix: rows=years, cols=months 1-12
-            _hm_matrix = []
-            _hm_text = []
+            # Build z / text / hover matrices: rows = years, cols = months 1–12
+            _hm_matrix: list = []
+            _hm_text: list = []          # primary cell label: ₹ P&L
+            _hm_hover: list = []         # full tooltip: P&L + trades + win%
             for _yr in _years_sorted:
-                _row_vals = []
-                _row_text = []
+                _row_vals: list = []
+                _row_text: list = []
+                _row_hover: list = []
                 for _mo in range(1, 13):
-                    _match = _monthly_pnl[
-                        (_monthly_pnl["year"] == _yr) & (_monthly_pnl["month"] == _mo)
+                    _match = _monthly_pnl_raw[
+                        (_monthly_pnl_raw["year"] == _yr) & (_monthly_pnl_raw["month"] == _mo)
+                    ]
+                    _cnt_match = _monthly_count[
+                        (_monthly_count["year"] == _yr) & (_monthly_count["month"] == _mo)
                     ]
                     if not _match.empty:
                         _v = float(_match["pnl_net"].iloc[0])
+                        _cnt = int(_cnt_match["n_trades"].iloc[0]) if not _cnt_match.empty else 0
                         _row_vals.append(_v)
-                        _row_text.append(f"₹{_v:,.0f}")
+                        _sign = "+" if _v >= 0 else ""
+                        _pnl_str = f"₹{_sign}{_v:,.0f}"
+                        # Determine win_rate from rich API if available
+                        _ym_key = f"{_yr}-{_mo:02d}"
+                        if _use_rich_hm and _ym_key in _rich_monthly.index:
+                            _wr = float(_rich_monthly.loc[_ym_key, "win_rate"])
+                            _cnt_r = int(_rich_monthly.loc[_ym_key, "n_trades"])
+                            _cell_label = f"{_pnl_str}\n{_cnt_r}T"
+                            _hover_str = (
+                                f"{_yr} {_month_labels[_mo-1]}<br>"
+                                f"P&L: {_pnl_str}<br>"
+                                f"Trades: {_cnt_r}<br>"
+                                f"Win rate: {_wr:.0f}%"
+                            )
+                        else:
+                            _cell_label = f"{_pnl_str}\n{_cnt}T"
+                            _hover_str = (
+                                f"{_yr} {_month_labels[_mo-1]}<br>"
+                                f"P&L: {_pnl_str}<br>"
+                                f"Trades: {_cnt}"
+                            )
+                        _row_text.append(_cell_label)
+                        _row_hover.append(_hover_str)
                     else:
                         _row_vals.append(None)
                         _row_text.append("")
+                        _row_hover.append(f"{_yr} {_month_labels[_mo-1]}<br>No trades")
                 _hm_matrix.append(_row_vals)
                 _hm_text.append(_row_text)
+                _hm_hover.append(_row_hover)
 
             _fig_hm = go.Figure(go.Heatmap(
                 z=_hm_matrix,
@@ -2226,30 +2285,279 @@ with tab_backtest:
                 y=[str(y) for y in _years_sorted],
                 text=_hm_text,
                 texttemplate="%{text}",
+                customdata=_hm_hover,
                 colorscale=[
                     [0.0, "#c0392b"],
-                    [0.5, "#ffffff"],
-                    [1.0, "#27ae60"],
+                    [0.45, "#e8a09a"],
+                    [0.5, "#f5f5f5"],
+                    [0.55, "#8fd4a7"],
+                    [1.0, "#1a7a4a"],
                 ],
                 zmid=0,
-                colorbar=dict(title="P&L (₹)", tickprefix="₹"),
-                hovertemplate="<b>%{y} %{x}</b><br>P&L: %{text}<extra></extra>",
+                colorbar=dict(title="P&L (₹)", tickprefix="₹", len=0.8),
+                hovertemplate="%{customdata}<extra></extra>",
             ))
             _fig_hm.update_layout(
-                height=max(200, len(_years_sorted) * 50 + 100),
-                margin=dict(l=60, r=60, t=20, b=40),
+                height=max(220, len(_years_sorted) * 60 + 120),
+                margin=dict(l=60, r=80, t=20, b=40),
                 xaxis_title="Month",
                 yaxis_title="Year",
+                font=dict(size=11),
                 plot_bgcolor="rgba(0,0,0,0)",
                 paper_bgcolor="rgba(0,0,0,0)",
             )
             st.plotly_chart(_fig_hm, use_container_width=True)
             st.caption(
-                "Green = profit, red = loss, white/blank = no trades. "
-                "Reveals seasonal patterns and difficult market periods."
+                "Green = profit, red = loss, grey = no trades. "
+                "Cell text shows P&L and trade count. Hover for win rate."
             )
         else:
             st.info("Not enough trade data to build the monthly heatmap.")
+
+        st.divider()
+
+        # ── 2b. Strategy Attribution Chart (compute_strategy_attribution) ────────
+        st.subheader("Strategy Attribution")
+
+        if _analytics_trades:
+            try:
+                _strat_attr = _compute_strategy_attribution(_analytics_trades)
+                if _strat_attr:
+                    _sa_rows = []
+                    for _sname, _sm in _strat_attr.items():
+                        _sa_rows.append({
+                            "Strategy": _sname,
+                            "Net P&L (₹)": round(_sm.total_pnl, 0),
+                            "Win %": round(_sm.win_rate_pct, 1),
+                            "Profit Factor": round(min(_sm.profit_factor, 99.0), 2),
+                            "Trades": _sm.n_trades,
+                        })
+                    _sa_df = pd.DataFrame(_sa_rows).sort_values("Net P&L (₹)", ascending=True)
+
+                    _sa_colors = [
+                        "#2ecc71" if v >= 0 else "#e74c3c"
+                        for v in _sa_df["Net P&L (₹)"]
+                    ]
+                    _fig_sa = go.Figure(go.Bar(
+                        x=_sa_df["Net P&L (₹)"],
+                        y=_sa_df["Strategy"],
+                        orientation="h",
+                        marker_color=_sa_colors,
+                        text=_sa_df.apply(
+                            lambda r: (
+                                f"₹{r['Net P&L (₹)']:+,.0f} | "
+                                f"Win {r['Win %']:.0f}% | "
+                                f"PF {r['Profit Factor']:.2f} | "
+                                f"{r['Trades']}T"
+                            ),
+                            axis=1,
+                        ),
+                        textposition="outside",
+                        hovertemplate=(
+                            "<b>%{y}</b><br>"
+                            "Net P&L: ₹%{x:,.0f}<extra></extra>"
+                        ),
+                    ))
+                    _fig_sa.update_layout(
+                        height=max(200, len(_sa_rows) * 55 + 80),
+                        margin=dict(l=0, r=160, t=20, b=0),
+                        xaxis_title="Net P&L (₹)",
+                        xaxis_tickprefix="₹",
+                        xaxis_tickformat=",.0f",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                    )
+                    st.plotly_chart(_fig_sa, use_container_width=True)
+                    st.caption(
+                        "Horizontal bar length = net P&L. "
+                        "Labels show win rate, profit factor, and trade count."
+                    )
+                else:
+                    st.info("No strategy attribution data available.")
+            except Exception as _sa_exc:
+                st.caption(f"Strategy attribution unavailable: {_sa_exc}")
+        else:
+            st.caption("Load trade records from the database to enable strategy attribution.")
+
+        st.divider()
+
+        # ── 2c. Regime Performance Radar + Trade Count Bar ───────────────────────
+        st.subheader("Regime Performance")
+
+        if _analytics_trades:
+            try:
+                _reg_attr = _compute_regime_attribution(_analytics_trades)
+                if _reg_attr:
+                    _radar_col, _bar_col = st.columns(2)
+
+                    with _radar_col:
+                        st.markdown("**Win Rate by Regime (Radar)**")
+                        _regime_order = ["TREND", "RANGE", "VOLATILE", "UNKNOWN"]
+                        _radar_labels = [r for r in _regime_order if r in _reg_attr]
+                        _radar_values = [
+                            round(_reg_attr[r].win_rate_pct, 1) for r in _radar_labels
+                        ]
+                        if len(_radar_labels) >= 2:
+                            # Close the radar polygon
+                            _radar_labels_closed = _radar_labels + [_radar_labels[0]]
+                            _radar_values_closed = _radar_values + [_radar_values[0]]
+                            _fig_radar = go.Figure(go.Scatterpolar(
+                                r=_radar_values_closed,
+                                theta=_radar_labels_closed,
+                                fill="toself",
+                                fillcolor="rgba(52,152,219,0.25)",
+                                line=dict(color="#3498db", width=2),
+                                hovertemplate="<b>%{theta}</b><br>Win rate: %{r:.1f}%<extra></extra>",
+                            ))
+                            _fig_radar.update_layout(
+                                polar=dict(
+                                    radialaxis=dict(
+                                        range=[0, 100],
+                                        ticksuffix="%",
+                                        gridcolor="rgba(200,200,200,0.3)",
+                                        linecolor="rgba(200,200,200,0.3)",
+                                    ),
+                                    angularaxis=dict(
+                                        gridcolor="rgba(200,200,200,0.3)",
+                                        linecolor="rgba(200,200,200,0.3)",
+                                    ),
+                                    bgcolor="rgba(0,0,0,0)",
+                                ),
+                                height=300,
+                                margin=dict(l=30, r=30, t=30, b=30),
+                                paper_bgcolor="rgba(0,0,0,0)",
+                            )
+                            st.plotly_chart(_fig_radar, use_container_width=True)
+                        else:
+                            st.info("Need trades in at least 2 regimes for the radar chart.")
+
+                    with _bar_col:
+                        st.markdown("**Trade Count per Regime**")
+                        _reg_bar_labels = [r for r in _regime_order if r in _reg_attr]
+                        _reg_bar_counts = [_reg_attr[r].n_trades for r in _reg_bar_labels]
+                        _reg_bar_colors_map = {
+                            "TREND": "#2ecc71",
+                            "RANGE": "#3498db",
+                            "VOLATILE": "#e74c3c",
+                            "UNKNOWN": "#95a5a6",
+                        }
+                        _reg_bar_colors = [_reg_bar_colors_map.get(r, "#95a5a6") for r in _reg_bar_labels]
+                        _fig_reg_bar = go.Figure(go.Bar(
+                            x=_reg_bar_labels,
+                            y=_reg_bar_counts,
+                            marker_color=_reg_bar_colors,
+                            text=_reg_bar_counts,
+                            textposition="outside",
+                            hovertemplate=(
+                                "<b>%{x}</b><br>Trades: %{y}<extra></extra>"
+                            ),
+                        ))
+                        _fig_reg_bar.update_layout(
+                            height=300,
+                            margin=dict(l=0, r=0, t=20, b=0),
+                            yaxis_title="Trade Count",
+                            xaxis_title="Regime",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            paper_bgcolor="rgba(0,0,0,0)",
+                        )
+                        st.plotly_chart(_fig_reg_bar, use_container_width=True)
+
+                    # Summary metrics row
+                    _reg_metric_cols = st.columns(len(_radar_labels))
+                    for _rmc, _rn in zip(_reg_metric_cols, _radar_labels):
+                        _rm = _reg_attr[_rn]
+                        _rmc.metric(
+                            _rn,
+                            f"Win {_rm.win_rate_pct:.0f}%",
+                            delta=f"₹{_rm.total_pnl:+,.0f} | PF {min(_rm.profit_factor, 99.0):.2f}",
+                            delta_color="normal" if _rm.total_pnl >= 0 else "inverse",
+                        )
+                else:
+                    st.info("No regime attribution data available.")
+            except Exception as _reg_exc:
+                st.caption(f"Regime radar unavailable: {_reg_exc}")
+        else:
+            st.caption("Load trade records from the database to enable regime performance.")
+
+        st.divider()
+
+        # ── 2d. Extended Metrics Table (compute_extended_metrics) ────────────────
+        st.subheader("Extended Performance Metrics")
+
+        if _analytics_trades:
+            try:
+                _ext = _compute_extended_metrics(_analytics_trades)
+
+                def _fmt_ratio(v: float, precision: int = 2) -> str:
+                    if v == float("inf"):
+                        return "∞"
+                    if v != v:  # NaN
+                        return "N/A"
+                    return f"{v:.{precision}f}"
+
+                _em_left = {
+                    "Sharpe Ratio": _fmt_ratio(_ext.sharpe),
+                    "Sortino Ratio": _fmt_ratio(_ext.sortino),
+                    "Calmar Ratio": _fmt_ratio(_ext.calmar_ratio),
+                    "Omega Ratio": _fmt_ratio(_ext.omega_ratio),
+                    "Recovery Factor": _fmt_ratio(_ext.recovery_factor),
+                    "Payoff Ratio": _fmt_ratio(_ext.payoff_ratio),
+                }
+                _em_right = {
+                    "Max Consecutive Wins": str(_ext.consecutive_wins_max),
+                    "Max Consecutive Losses": str(_ext.consecutive_losses_max),
+                    "Avg Win R": _fmt_ratio(_ext.avg_win_r),
+                    "Avg Loss R": _fmt_ratio(_ext.avg_loss_r),
+                    "Trade Frequency / Day": _fmt_ratio(_ext.trade_frequency_per_day, 3),
+                    "Expectancy (₹/trade)": f"₹{_ext.expectancy:+,.0f}",
+                }
+
+                _em_col1, _em_col2 = st.columns(2)
+                with _em_col1:
+                    st.markdown("**Risk-Adjusted Returns**")
+                    for _k, _val in _em_left.items():
+                        _is_good = None
+                        if _k == "Sharpe Ratio":
+                            try:
+                                _is_good = float(_val) >= 1.2
+                            except Exception:
+                                pass
+                        elif _k == "Sortino Ratio":
+                            try:
+                                _is_good = float(_val) >= 1.5
+                            except Exception:
+                                pass
+                        _color = (
+                            "#2ecc71" if _is_good is True
+                            else ("#e74c3c" if _is_good is False else "#f0f0f0")
+                        )
+                        st.markdown(
+                            f"<div style='display:flex;justify-content:space-between;"
+                            f"padding:4px 0;border-bottom:1px solid #2a2a2a'>"
+                            f"<span style='color:#aaa'>{_k}</span>"
+                            f"<span style='font-weight:bold;color:{_color}'>{_val}</span>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+                with _em_col2:
+                    st.markdown("**Trade Statistics**")
+                    for _k, _val in _em_right.items():
+                        st.markdown(
+                            f"<div style='display:flex;justify-content:space-between;"
+                            f"padding:4px 0;border-bottom:1px solid #2a2a2a'>"
+                            f"<span style='color:#aaa'>{_k}</span>"
+                            f"<span style='font-weight:bold;color:#f0f0f0'>{_val}</span>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+                st.caption(
+                    f"Based on {_ext.n_trades} closed trades. "
+                    f"Sharpe gate threshold: 1.2 | Sortino benchmark: 1.5"
+                )
+            except Exception as _em_exc:
+                st.caption(f"Extended metrics unavailable: {_em_exc}")
+        else:
+            st.caption("No trade records available for extended metrics.")
 
         st.divider()
 
@@ -2416,6 +2724,22 @@ with tab_backtest:
 # TAB 6: AI REVIEW
 # ────────────────────────────────────────────────────────────────────────────
 
+
+def _call_claude_haiku(prompt: str, api_key: str, system: str = "") -> str:
+    """Call claude-haiku-4-5 and return the text response. Returns error string on failure."""
+    try:
+        import anthropic as _ant
+        client = _ant.Anthropic(api_key=api_key)
+        msgs = [{"role": "user", "content": prompt}]
+        kwargs: dict = {"model": "claude-haiku-4-5", "max_tokens": 1024, "messages": msgs}
+        if system:
+            kwargs["system"] = system
+        resp = client.messages.create(**kwargs)
+        return resp.content[0].text if resp.content else "(empty response)"
+    except Exception as _ce:
+        return f"Claude call failed: {_ce}"
+
+
 with tab_ai_review:
     st.header("AI End-of-Day Review")
     st.caption(
@@ -2446,9 +2770,396 @@ with tab_ai_review:
     )
     st.session_state["auto_eod_review"] = auto_eod
 
+    # ── Auto-review countdown to next 15:35 IST ───────────────────────────────
+    if auto_eod and _api_key_ok:
+        _now_utc_ar = datetime.utcnow()
+        _now_ist_ar = _now_utc_ar + timedelta(hours=5, minutes=30)
+        _eod_review_time = _now_ist_ar.replace(hour=15, minute=35, second=0, microsecond=0)
+        if _now_ist_ar >= _eod_review_time:
+            # After 15:35 — next review is tomorrow
+            _next_eod = _eod_review_time + timedelta(days=1)
+        else:
+            _next_eod = _eod_review_time
+        _secs_to_eod = int((_next_eod - _now_ist_ar).total_seconds())
+        _h_to_eod, _rem = divmod(_secs_to_eod, 3600)
+        _m_to_eod, _s_to_eod = divmod(_rem, 60)
+        # Trigger auto-review if within 60s of 15:35 on a weekday
+        _is_weekday_ar = _now_ist_ar.weekday() < 5
+        _near_eod = abs((_now_ist_ar - _eod_review_time).total_seconds()) < 60
+        if _is_weekday_ar and _near_eod and _api_key_ok:
+            st.info("Auto-EOD review triggering now (15:35 IST)...")
+            with st.spinner("Running auto EOD review..."):
+                try:
+                    _auto_report = _run_eod_review(
+                        db_path=str(DB_PATH),
+                        snapshot_path=str(SNAPSHOT_PATH),
+                        api_key=_anthropic_api_key,
+                    )
+                    if _auto_report:
+                        _auto_dict = {
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "summary": _auto_report.summary,
+                            "suggestions": [
+                                {
+                                    "strategy": s.strategy,
+                                    "parameter": s.parameter,
+                                    "current_value": s.current_value,
+                                    "suggested_value": s.suggested_value,
+                                    "rationale": s.rationale,
+                                }
+                                for s in _auto_report.suggestions
+                            ],
+                            "flags": _auto_report.flags,
+                        }
+                        _save_last_review(_auto_dict)
+                        st.success("Auto-review complete.")
+                except Exception as _auto_exc:
+                    st.warning(f"Auto-review failed: {_auto_exc}")
+        else:
+            _next_label = "today" if _now_ist_ar < _eod_review_time else "tomorrow"
+            st.info(
+                f"Auto-review enabled. Next review: {_next_label} at 15:35 IST "
+                f"(in {_h_to_eod}h {_m_to_eod}m {_s_to_eod}s)"
+            )
+
     st.divider()
 
-    # ── Run review button ─────────────────────────────────────────────────────
+    # ════════════════════════════════════════════════════════════════════════════
+    # SECTION 1: MARKET COMMENTARY WIDGET
+    # ════════════════════════════════════════════════════════════════════════════
+    st.subheader("Market Commentary")
+    st.caption(
+        "Ask Claude about a specific stock or your overall portfolio. "
+        "Uses the current regime, recent trades, and open positions as context."
+    )
+
+    _mc_nifty50_syms = [
+        "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "HINDUNILVR", "ITC",
+        "KOTAKBANK", "LT", "SBIN", "AXISBANK", "BAJFINANCE", "BHARTIARTL", "ASIANPAINT",
+        "MARUTI", "HCLTECH", "WIPRO", "ULTRACEMCO", "NESTLEIND", "POWERGRID",
+        "TITAN", "TECHM", "NTPC", "JSWSTEEL", "SUNPHARMA", "TATASTEEL", "TATAMOTORS",
+        "ADANIENT", "ADANIPORTS", "BAJAJFINSV", "BPCL", "BRITANNIA", "CIPLA",
+        "COALINDIA", "DIVISLAB", "DRREDDY", "EICHERMOT", "GRASIM", "HEROMOTOCO",
+        "HINDALCO", "INDUSINDBK", "M&M", "ONGC", "SBILIFE", "TATACONSUM",
+        "BAJAJ-AUTO", "HDFCLIFE", "SHRIRAMFIN", "BEL", "TRENT",
+    ]
+    _mc_open_syms = [
+        p.get("symbol", "") for p in snap.get("open_positions", []) if p.get("symbol")
+    ]
+    _mc_sym_options = sorted(set(_mc_open_syms + _mc_nifty50_syms))
+
+    _mc_preset_col, _mc_sym_col = st.columns([2, 2])
+    _mc_preset = _mc_preset_col.selectbox(
+        "Preset question",
+        options=[
+            "Custom question...",
+            "Ask about portfolio",
+            "What is your view on {stock} given today's regime?",
+            "Should I hold or exit {stock} given current conditions?",
+            "What risks does {stock} face in this regime?",
+        ],
+        key="mc_preset_sel",
+    )
+    _mc_selected_sym = _mc_sym_col.selectbox(
+        "Stock (for stock questions)",
+        options=_mc_sym_options,
+        index=0,
+        key="mc_sym_sel",
+    )
+
+    # Build default question from preset
+    if _mc_preset == "Ask about portfolio":
+        _mc_default_q = "Analyse my overall portfolio health: positions, regime alignment, and risk exposure."
+    elif "{stock}" in _mc_preset:
+        _mc_default_q = _mc_preset.replace("{stock}", _mc_selected_sym)
+    else:
+        _mc_default_q = ""
+
+    _mc_question = st.text_area(
+        "Your question to Claude:",
+        value=_mc_default_q,
+        height=80,
+        key="mc_question_input",
+        placeholder="e.g. What is your view on RELIANCE given today's TREND regime?",
+    )
+
+    _mc_submit = st.button(
+        "Ask Claude",
+        type="primary",
+        disabled=not (_api_key_ok and _ANTHROPIC_INSTALLED),
+        key="mc_ask_btn",
+    )
+
+    if _mc_submit and _mc_question.strip():
+        # Build rich context
+        _mc_regime = snap.get("regime", "UNKNOWN")
+        _mc_vix = snap.get("vix", "n/a")
+        _mc_adx = snap.get("adx", "n/a")
+        _mc_equity = snap.get("equity", 0)
+        _mc_halted = snap.get("halted", False)
+
+        # Open positions summary
+        _mc_pos_lines = []
+        for _mcp in snap.get("open_positions", []):
+            _mcp_sym = _mcp.get("symbol", "?")
+            _mcp_side = _mcp.get("side", "?")
+            _mcp_qty = _mcp.get("qty", 0)
+            _mcp_unr = _mcp.get("unrealized_pnl", 0)
+            _mc_pos_lines.append(
+                f"  - {_mcp_sym} {_mcp_side} qty={_mcp_qty} unrealized_pnl=₹{_mcp_unr:.0f}"
+            )
+
+        # Recent trades for the selected stock (or all if portfolio question)
+        if _mc_preset == "Ask about portfolio":
+            _mc_trades_q = _query_df(
+                conn,
+                "SELECT symbol, side, pnl, strategy, closed_at FROM trades ORDER BY closed_at DESC LIMIT 20",
+            )
+        else:
+            _mc_trades_q = _query_df(
+                conn,
+                "SELECT symbol, side, pnl, strategy, closed_at FROM trades "
+                "WHERE symbol = ? ORDER BY closed_at DESC LIMIT 10",
+                params=(_mc_selected_sym,),
+            )
+
+        _mc_trades_lines = []
+        if not _mc_trades_q.empty:
+            for _, _mtr in _mc_trades_q.iterrows():
+                _mc_trades_lines.append(
+                    f"  - {_mtr.get('closed_at', '')[:10]} {_mtr.get('symbol', '')} "
+                    f"{_mtr.get('side', '')} pnl=₹{float(_mtr.get('pnl', 0)):.0f} "
+                    f"via {_mtr.get('strategy', '')}"
+                )
+
+        _mc_context = f"""You are a concise, expert NSE trading analyst.
+
+Current market context:
+- Regime: {_mc_regime}
+- India VIX: {_mc_vix}
+- ADX: {_mc_adx}
+- Agent equity: ₹{_mc_equity:,.0f}
+- Agent halted: {_mc_halted}
+
+Open positions ({len(_mc_pos_lines)} total):
+{chr(10).join(_mc_pos_lines) if _mc_pos_lines else "  None"}
+
+Recent trades:
+{chr(10).join(_mc_trades_lines) if _mc_trades_lines else "  No recent trades"}
+
+Respond in 3–5 sentences. Be direct and actionable. Do not disclaim about data availability.
+"""
+
+        with st.spinner("Asking Claude..."):
+            _mc_response = _call_claude_haiku(
+                prompt=_mc_question.strip(),
+                api_key=_anthropic_api_key,
+                system=_mc_context,
+            )
+
+        st.markdown(
+            "<div style='background:#1e2836;border:1px solid #3498db;border-radius:8px;"
+            "padding:14px 18px;margin-top:8px'>"
+            "<small style='color:#3498db;font-weight:600'>Claude says:</small><br>"
+            f"<span style='color:#e8e8e8;line-height:1.6'>{_mc_response}</span>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    elif _mc_submit and not _mc_question.strip():
+        st.warning("Please enter a question before submitting.")
+
+    if not (_api_key_ok and _ANTHROPIC_INSTALLED):
+        st.caption("Market commentary requires ANTHROPIC_API_KEY and the `anthropic` package.")
+
+    st.divider()
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # SECTION 2: STRATEGY SIGNALS EXPLAINER (last 10 signals with rejection detail)
+    # ════════════════════════════════════════════════════════════════════════════
+    st.subheader("Strategy Signals Explainer")
+    st.caption("Last 10 signals with rationale. For rejected signals, see the guardrail rule and get a plain-English explanation.")
+
+    _se_sig_df = _query_df(
+        conn,
+        "SELECT id, ts, symbol, side, strategy, regime, entry_price, accepted, rejection_reason, rationale "
+        "FROM signals ORDER BY id DESC LIMIT 10",
+    )
+
+    if not _se_sig_df.empty:
+        for _, _se_row in _se_sig_df.iterrows():
+            _se_accepted = bool(_se_row.get("accepted", 1))
+            _se_sym = str(_se_row.get("symbol", "?"))
+            _se_side = str(_se_row.get("side", "?"))
+            _se_strat = str(_se_row.get("strategy", "?"))
+            _se_regime = str(_se_row.get("regime", "?"))
+            _se_ts = str(_se_row.get("ts", ""))[:16]
+            _se_price = _se_row.get("entry_price", 0)
+            _se_reason = str(_se_row.get("rejection_reason", "") or "")
+            _se_rationale = str(_se_row.get("rationale", "") or "")
+            _se_sig_id = int(_se_row.get("id", 0))
+
+            _se_border = "#2ecc71" if _se_accepted else "#e74c3c"
+            _se_status_label = "ACCEPTED" if _se_accepted else "REJECTED"
+            _se_status_color = "#2ecc71" if _se_accepted else "#e74c3c"
+
+            with st.container():
+                st.markdown(
+                    f"<div style='border:1px solid {_se_border};border-radius:8px;"
+                    f"padding:10px 14px;margin-bottom:8px;background:#1a1a1a'>",
+                    unsafe_allow_html=True,
+                )
+                _se_c1, _se_c2, _se_c3, _se_c4 = st.columns([2, 2, 2, 1])
+                _se_c1.markdown(
+                    f"<b style='color:#f0f0f0'>{_se_sym}</b> "
+                    f"<span style='color:#aaa;font-size:0.85em'>{_se_side} · {_se_strat}</span>",
+                    unsafe_allow_html=True,
+                )
+                _se_c2.markdown(
+                    f"<span style='color:#aaa;font-size:0.85em'>Regime: {_se_regime} · "
+                    f"₹{float(_se_price or 0):,.0f}</span>",
+                    unsafe_allow_html=True,
+                )
+                _se_c3.markdown(
+                    f"<span style='color:#888;font-size:0.8em'>{_se_ts}</span>",
+                    unsafe_allow_html=True,
+                )
+                _se_c4.markdown(
+                    f"<span style='color:{_se_status_color};font-weight:700;font-size:0.9em'>"
+                    f"{_se_status_label}</span>",
+                    unsafe_allow_html=True,
+                )
+
+                if _se_rationale:
+                    st.markdown(
+                        f"<span style='color:#aaa;font-size:0.85em'>Strategy rationale: {_se_rationale}</span>",
+                        unsafe_allow_html=True,
+                    )
+
+                if not _se_accepted and _se_reason:
+                    st.markdown(
+                        f"<span style='color:#e74c3c;font-size:0.85em'>Rejected: {_se_reason}</span>",
+                        unsafe_allow_html=True,
+                    )
+                    _se_explain_key = f"se_explain_{_se_sig_id}"
+                    _se_result_key = f"se_explain_result_{_se_sig_id}"
+                    if st.button(
+                        "Explain this rejection",
+                        key=_se_explain_key,
+                        disabled=not (_api_key_ok and _ANTHROPIC_INSTALLED),
+                    ):
+                        with st.spinner("Claude explaining..."):
+                            _se_prompt = (
+                                f"A trading signal was rejected by a guardrail. "
+                                f"Explain in plain English (2-3 sentences) why this is a sensible protection:\n\n"
+                                f"Symbol: {_se_sym}, Side: {_se_side}, Strategy: {_se_strat}, "
+                                f"Regime: {_se_regime}\nRejection rule: {_se_reason}"
+                            )
+                            _se_explanation = _call_claude_haiku(
+                                prompt=_se_prompt, api_key=_anthropic_api_key
+                            )
+                            st.session_state[_se_result_key] = _se_explanation
+                    if st.session_state.get(_se_result_key):
+                        st.markdown(
+                            f"<div style='background:#1e2836;border-left:3px solid #3498db;"
+                            f"padding:8px 12px;margin-top:4px;border-radius:4px'>"
+                            f"<small style='color:#3498db'>Claude:</small> "
+                            f"<span style='color:#ddd;font-size:0.9em'>"
+                            f"{st.session_state[_se_result_key]}</span></div>",
+                            unsafe_allow_html=True,
+                        )
+
+                st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        st.info("No signals recorded yet. Run the agent to generate signals.")
+
+    st.divider()
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # SECTION 3: PARAMETER SUGGESTIONS (from last_review.json) with Apply buttons
+    # ════════════════════════════════════════════════════════════════════════════
+    _ps_last = _read_last_review()
+    _ps_suggs = _ps_last.get("suggestions", []) if _ps_last else []
+
+    if _ps_suggs:
+        _ps_ts = _ps_last.get("timestamp", "")
+        try:
+            _ps_ts_fmt = datetime.fromisoformat(_ps_ts).strftime("%Y-%m-%d %H:%M UTC")
+        except Exception:
+            _ps_ts_fmt = _ps_ts
+
+        st.subheader(f"Parameter Suggestions from Last Review ({_ps_ts_fmt})")
+        st.caption(
+            "Each suggestion was generated by Claude's EOD review. "
+            "Click 'Apply This Change' to queue it via the command queue — "
+            "the running agent applies it within 1 second."
+        )
+
+        for _ps_idx, _ps_s in enumerate(_ps_suggs):
+            _ps_strat = str(_ps_s.get("strategy", "?"))
+            _ps_param = str(_ps_s.get("parameter", "?"))
+            _ps_cur = _ps_s.get("current_value", "?")
+            _ps_sug = _ps_s.get("suggested_value", "?")
+            _ps_rat = str(_ps_s.get("rationale", ""))
+
+            _ps_card_bg = "#1e2836"
+            st.markdown(
+                f"<div style='background:{_ps_card_bg};border:1px solid #f39c12;"
+                f"border-radius:8px;padding:12px 16px;margin-bottom:10px'>",
+                unsafe_allow_html=True,
+            )
+            _ps_col1, _ps_col2, _ps_col3 = st.columns([2, 2, 2])
+            _ps_col1.markdown(
+                f"<b style='color:#f0f0f0'>{_ps_strat}</b><br>"
+                f"<span style='color:#aaa;font-size:0.85em'>{_ps_param}</span>",
+                unsafe_allow_html=True,
+            )
+            _ps_col2.markdown(
+                f"<span style='color:#e74c3c;font-weight:600'>{_ps_cur}</span>"
+                f"<span style='color:#aaa'> → </span>"
+                f"<span style='color:#2ecc71;font-weight:600'>{_ps_sug}</span>",
+                unsafe_allow_html=True,
+            )
+            _ps_col3.markdown(
+                f"<span style='color:#aaa;font-size:0.85em'>{_ps_rat}</span>",
+                unsafe_allow_html=True,
+            )
+
+            _ps_apply_key = f"ps_apply_{_ps_idx}_{_ps_param}"
+            _ps_applied_key = f"ps_applied_{_ps_idx}_{_ps_param}"
+            if not st.session_state.get(_ps_applied_key):
+                if st.button(
+                    f"Apply This Change  ({_ps_cur} → {_ps_sug})",
+                    key=_ps_apply_key,
+                    type="primary",
+                ):
+                    try:
+                        from core.command_queue import enqueue as _ps_enqueue
+                        _ps_enqueue("update_risk_param", {"param": _ps_param, "value": _ps_sug})
+                        st.session_state[_ps_applied_key] = True
+                        st.success(
+                            f"Queued: {_ps_param} = {_ps_sug} "
+                            f"(was {_ps_cur}). Agent will apply within 1 second."
+                        )
+                        st.rerun()
+                    except Exception as _ps_exc:
+                        st.error(f"Failed to queue change: {_ps_exc}")
+            else:
+                st.markdown(
+                    f"<span style='color:#2ecc71;font-size:0.85em'>Applied: {_ps_param} set to {_ps_sug}</span>",
+                    unsafe_allow_html=True,
+                )
+            st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        st.subheader("Parameter Suggestions")
+        st.info(
+            "No parameter suggestions available. Run an EOD review below to generate suggestions."
+        )
+
+    st.divider()
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # SECTION 4: EOD REVIEW (run + last review display)
+    # ════════════════════════════════════════════════════════════════════════════
     st.subheader("Run EOD Review Now")
     if st.button(
         "Run EOD Review Now",
