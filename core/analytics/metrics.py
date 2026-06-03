@@ -579,6 +579,141 @@ def compute_monthly_pnl(trades: list) -> pd.DataFrame:
     return agg.sort_index()
 
 
+# ---------------------------------------------------------------------------
+# Sector rotation analysis
+# ---------------------------------------------------------------------------
+
+NIFTY50_SECTORS: dict[str, str] = {
+    # IT
+    "TCS": "IT",
+    "INFY": "IT",
+    "WIPRO": "IT",
+    "HCLTECH": "IT",
+    "TECHM": "IT",
+    "LTIM": "IT",
+    # Banking / Financial Services
+    "HDFCBANK": "Banking",
+    "ICICIBANK": "Banking",
+    "KOTAKBANK": "Banking",
+    "AXISBANK": "Banking",
+    "SBIN": "Banking",
+    "INDUSINDBK": "Banking",
+    "BAJFINANCE": "Banking",
+    "BAJAJFINSV": "Banking",
+    "HDFCLIFE": "Banking",
+    "SBILIFE": "Banking",
+    "SHRIRAMFIN": "Banking",
+    # Energy / Oil & Gas
+    "RELIANCE": "Energy",
+    "ONGC": "Energy",
+    "BPCL": "Energy",
+    "COALINDIA": "Energy",
+    "NTPC": "Energy",
+    "POWERGRID": "Energy",
+    # FMCG
+    "HINDUNILVR": "FMCG",
+    "NESTLEIND": "FMCG",
+    "BRITANNIA": "FMCG",
+    "ITC": "FMCG",
+    "TATACONSUM": "FMCG",
+    # Auto
+    "MARUTI": "Auto",
+    "BAJAJ-AUTO": "Auto",
+    "HEROMOTOCO": "Auto",
+    "EICHERMOT": "Auto",
+    "TATAMOTORS": "Auto",
+    "M&M": "Auto",
+    # Metals / Materials
+    "TATASTEEL": "Metals",
+    "JSWSTEEL": "Metals",
+    "HINDALCO": "Metals",
+    # Pharma
+    "SUNPHARMA": "Pharma",
+    "CIPLA": "Pharma",
+    "DRREDDY": "Pharma",
+    # Infrastructure / Conglomerate
+    "LT": "Infra",
+    "ADANIENT": "Infra",
+    "ADANIPORTS": "Infra",
+    "GRASIM": "Infra",
+    "ULTRACEMCO": "Infra",
+    # Consumer Discretionary
+    "TITAN": "Consumer",
+    "TRENT": "Consumer",
+    "ASIANPAINT": "Consumer",
+    # Telecom
+    "BHARTIARTL": "Telecom",
+    # Healthcare
+    "APOLLOHOSP": "Healthcare",
+    # Diversified (BEL is Defence/Electronics)
+    "BEL": "Defence",
+}
+
+
+def compute_sector_performance(
+    trades: list[dict],
+    symbol_to_sector: dict[str, str] | None = None,
+) -> dict[str, dict]:
+    """Group trades by NSE sector and compute per-sector metrics.
+
+    Parameters
+    ----------
+    trades:
+        List of trade dicts, each having at minimum ``symbol`` and ``pnl`` keys.
+        The dict format matches what ``mcp_server/tools.py`` returns (same as the
+        legacy helpers above).
+    symbol_to_sector:
+        Mapping from symbol to sector label.  Defaults to ``NIFTY50_SECTORS``.
+        Symbols not present in the mapping are grouped under ``"Other"``.
+
+    Returns
+    -------
+    dict keyed by sector name, each value being::
+
+        {
+            "n_trades":      int,
+            "win_rate":      float,   # 0-100
+            "pnl":           float,
+            "best_symbol":   str | None,
+            "worst_symbol":  str | None,
+        }
+    """
+    if symbol_to_sector is None:
+        symbol_to_sector = NIFTY50_SECTORS
+
+    # Group trades by sector
+    by_sector: dict[str, list[dict]] = defaultdict(list)
+    for t in trades:
+        symbol = t.get("symbol") or ""
+        sector = symbol_to_sector.get(symbol, "Other")
+        by_sector[sector].append(t)
+
+    result: dict[str, dict] = {}
+    for sector, ts in sorted(by_sector.items()):
+        pnls = [float(t["pnl"]) for t in ts]
+        wins = [p for p in pnls if p > 0]
+        win_rate = round(_safe_div(len(wins), len(ts)) * 100, 2)
+        total_pnl = round(sum(pnls), 2)
+
+        # Per-symbol P&L to find best / worst contributors
+        sym_pnl: dict[str, float] = defaultdict(float)
+        for t in ts:
+            sym_pnl[t.get("symbol") or ""] += float(t["pnl"])
+
+        best_symbol: str | None = max(sym_pnl, key=sym_pnl.__getitem__) if sym_pnl else None
+        worst_symbol: str | None = min(sym_pnl, key=sym_pnl.__getitem__) if sym_pnl else None
+
+        result[sector] = {
+            "n_trades": len(ts),
+            "win_rate": win_rate,
+            "pnl": total_pnl,
+            "best_symbol": best_symbol,
+            "worst_symbol": worst_symbol,
+        }
+
+    return result
+
+
 def load_trades_from_db(db_path: Union[str, Path]) -> list:
     """Load all trades from a Store SQLite database and return list[TradeRecord].
 

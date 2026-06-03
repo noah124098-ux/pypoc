@@ -331,6 +331,37 @@ def get_extended_metrics(days: int = 365, _: str = Depends(verify)):
         return {"error": str(exc)}
 
 
+@app.get("/api/analytics/sector-performance")
+def get_sector_performance(days: int = 365, _: str = Depends(verify)):
+    """Per-sector trade performance breakdown for Nifty 50 symbols.
+
+    Groups all closed trades in the given window by NSE sector and returns
+    for each sector: n_trades, win_rate (%), pnl, best_symbol, worst_symbol.
+    """
+    try:
+        from core.analytics.metrics import compute_sector_performance, NIFTY50_SECTORS
+        db_path = Path("data/agent.db")
+        if not db_path.exists():
+            return {}
+        import sqlite3 as _sqlite3
+        from datetime import timedelta
+        conn = _sqlite3.connect(str(db_path))
+        conn.row_factory = _sqlite3.Row
+        cutoff = (
+            (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+            if days and days > 0 else "1970-01-01T00:00:00"
+        )
+        rows = conn.execute(
+            "SELECT symbol, pnl FROM trades WHERE closed_at >= ? ORDER BY closed_at",
+            (cutoff,),
+        ).fetchall()
+        conn.close()
+        trades = [{"symbol": r["symbol"], "pnl": float(r["pnl"])} for r in rows]
+        return compute_sector_performance(trades, symbol_to_sector=NIFTY50_SECTORS)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 # ---------------------------------------------------------------------------
 # Costs endpoint
 # ---------------------------------------------------------------------------
