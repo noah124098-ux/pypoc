@@ -3,13 +3,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.exceptions import RequestValidationError
 import asyncio
 import json
 import sqlite3
 import logging
 import secrets
 import os
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
@@ -20,6 +22,8 @@ from core.runtime_snapshot import read as read_snapshot
 from mcp_server.tools import TradingAgentTools
 
 logger = logging.getLogger(__name__)
+
+API_VERSION = "2.0"
 
 security = HTTPBasic()
 
@@ -77,6 +81,39 @@ app = FastAPI(title="pypoc Trading API", version="2.0", docs_url="/api/docs", re
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+# ---------------------------------------------------------------------------
+# Global exception handlers
+# ---------------------------------------------------------------------------
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(req: Request, exc: RequestValidationError):
+    return JSONResponse(
+        {"error": str(exc), "type": "RequestValidationError", "detail": exc.errors()},
+        status_code=422,
+    )
+
+
+@app.exception_handler(Exception)
+async def global_handler(req: Request, exc: Exception):
+    logger.exception("Unhandled exception on %s %s", req.method, req.url.path)
+    return JSONResponse(
+        {"error": str(exc), "type": type(exc).__name__},
+        status_code=500,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Request logging middleware
+# ---------------------------------------------------------------------------
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    logger.debug("%s %s %.0fms", request.method, request.url.path, (time.time() - start) * 1000)
+    return response
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -114,6 +151,65 @@ def get_gate(_: str = Depends(verify)):
     if gate_path.exists():
         return json.loads(gate_path.read_text())
     return {"passed": False, "error": "no gate file"}
+
+
+@app.get("/api/status")
+def get_status():
+    """Comprehensive system status — no auth required, safe for health monitors."""
+    now = datetime.now(timezone.utc)
+
+    # Read snapshot
+    snap = read_snapshot("data/snapshot.json") or {}
+    agent_running = bool(snap.get("running", False))
+    agent_halted = bool(snap.get("halted", False))
+    equity = snap.get("equity")
+    regime = snap.get("current_regime")
+
+    # Read gate file
+    gate_path = Path("data/backtest_gate.json")
+    gate_passed = False
+    gate_age_days: float | None = None
+    if gate_path.exists():
+        try:
+            gate_data = json.loads(gate_path.read_text())
+            gate_passed = bool(gate_data.get("passed", False))
+            ts_str = gate_data.get("timestamp")
+            if ts_str:
+                ts = datetime.fromisoformat(ts_str)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                gate_age_days = round((now - ts).total_seconds() / 86400, 1)
+        except Exception:
+            pass
+
+    # Detect running services via process names
+    def _procs_matching(keywords: list[str]) -> bool:
+        try:
+            for proc in psutil.process_iter(["cmdline"]):
+                cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+                if all(k in cmdline for k in keywords):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    services = {
+        "agent": _procs_matching(["cli.py", "run"]),
+        "dashboard": _procs_matching(["streamlit"]) or _procs_matching(["uvicorn"]),
+        "mcp": _procs_matching(["cli.py", "mcp-server"]),
+    }
+
+    return {
+        "api_version": API_VERSION,
+        "agent_running": agent_running,
+        "agent_halted": agent_halted,
+        "equity": equity,
+        "regime": regime,
+        "gate_passed": gate_passed,
+        "gate_age_days": gate_age_days,
+        "services": services,
+        "timestamp": now.isoformat(),
+    }
 
 
 @app.get("/api/regime")
