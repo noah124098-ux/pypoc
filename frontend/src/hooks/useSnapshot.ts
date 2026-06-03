@@ -2,9 +2,15 @@ import { useState, useEffect, useRef } from 'react'
 
 // Same-origin when served by FastAPI, or explicit dev URL
 const API = window.location.port === '8502' ? '' : 'http://localhost:8502'
-const WS_URL = window.location.port === '8502'
+
+// Dashboard password — must match DASHBOARD_PASSWORD env var (default: pypoc2024)
+const DASH_PASS = (window as any).__DASH_PASS__ ?? 'pypoc2024'
+
+const WS_URL = (window.location.port === '8502'
   ? `ws://${window.location.host}/ws/live`
-  : 'ws://localhost:8502/ws/live'
+  : 'ws://localhost:8502/ws/live') + `?token=${encodeURIComponent(DASH_PASS)}`
+
+const BASIC_AUTH = 'Basic ' + btoa(`admin:${DASH_PASS}`)
 
 export function useSnapshot() {
   const [snap, setSnap] = useState<any>(null)
@@ -28,7 +34,12 @@ export function useSnapshot() {
 }
 
 export async function apiGet(path: string) {
-  const r = await fetch(API + path, { headers: { 'Accept': 'application/json' } })
+  const r = await fetch(API + path, {
+    headers: {
+      'Accept': 'application/json',
+      'Authorization': BASIC_AUTH,
+    },
+  })
   if (!r.ok) throw new Error(r.statusText)
   return r.json()
 }

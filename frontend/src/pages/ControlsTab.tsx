@@ -3,6 +3,7 @@ import { useApi } from '../hooks/useSnapshot'
 
 export function ControlsTab({ snap }: { snap: any }) {
   const { data: config } = useApi<any>('/api/config', 300000)
+  const { data: sys } = useApi<any>('/api/system', 15000)
   const [msg, setMsg] = useState('')
 
   const equity = snap?.equity ?? 0
@@ -121,6 +122,72 @@ export function ControlsTab({ snap }: { snap: any }) {
           </div>
         </section>
       )}
+
+      <section className="section">
+        <h2>System Resources</h2>
+        {!sys ? (
+          <p className="small" style={{ color: 'var(--text2)' }}>Loading system metrics...</p>
+        ) : (
+          <>
+            {sys.disk_free_gb < 0.5 && (
+              <div className="status-banner red" style={{ marginBottom: 12 }}>
+                Disk critically low: {sys.disk_free_gb} GB free — free space immediately
+              </div>
+            )}
+            {sys.memory_pct > 85 && (
+              <div className="status-banner" style={{ marginBottom: 12, background: 'rgba(237,137,54,.15)', border: '1px solid #ed8935', color: '#ed8935' }}>
+                Memory usage high: {sys.memory_pct}% — consider restarting background processes
+              </div>
+            )}
+
+            <div className="circuit-row">
+              <div className="circuit-item">
+                <div className="circuit-label">
+                  CPU: {sys.cpu_pct}%
+                </div>
+                <div className="progress-bar">
+                  <div
+                    className={`progress-fill ${sys.cpu_pct > 80 ? 'red' : sys.cpu_pct > 50 ? 'orange' : 'green'}`}
+                    style={{ width: `${Math.min(100, sys.cpu_pct)}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="circuit-item">
+                <div className="circuit-label">
+                  Memory: {sys.memory_pct}% ({sys.memory_used_gb} / {sys.memory_total_gb} GB)
+                </div>
+                <div className="progress-bar">
+                  <div
+                    className={`progress-fill ${sys.memory_pct > 85 ? 'red' : sys.memory_pct > 70 ? 'orange' : 'green'}`}
+                    style={{ width: `${Math.min(100, sys.memory_pct)}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="circuit-item">
+                <div className="circuit-label">
+                  Disk: {sys.disk_pct}% used ({sys.disk_free_gb} GB free)
+                </div>
+                <div className="progress-bar">
+                  <div
+                    className={`progress-fill ${sys.disk_free_gb < 0.5 ? 'red' : sys.disk_pct > 85 ? 'orange' : 'green'}`}
+                    style={{ width: `${Math.min(100, sys.disk_pct)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <table className="trade-table" style={{ marginTop: 12 }}>
+              <tbody>
+                <tr><td>Uptime</td><td><strong>{sys.uptime_hours}h</strong></td></tr>
+                <tr><td>Python processes</td><td><strong>{sys.python_processes}</strong></td></tr>
+              </tbody>
+            </table>
+            <p className="small" style={{ marginTop: 8 }}>Refreshes every 15 seconds</p>
+          </>
+        )}
+      </section>
     </div>
   )
 }
