@@ -105,11 +105,12 @@ function CopyApiButton() {
   )
 }
 
-function TopBar({ snap, connected, darkMode, onToggleDark }: {
+function TopBar({ snap, connected, darkMode, onToggleDark, onHamburger }: {
   snap: any
   connected: boolean
   darkMode: boolean
   onToggleDark: () => void
+  onHamburger: () => void
 }) {
   const navigate = useNavigate()
   const equity = snap?.equity ?? 500000
@@ -122,6 +123,9 @@ function TopBar({ snap, connected, darkMode, onToggleDark }: {
 
   return (
     <div className="top-bar">
+      <button className="hamburger-btn" onClick={onHamburger} aria-label="Toggle navigation">
+        &#9776;
+      </button>
       <span className="top-bar-logo">pypoc</span>
       <span className={`top-bar-status ${connected ? 'live' : 'offline'}`}>
         {connected ? '●LIVE' : '○OFFLINE'}
@@ -166,7 +170,7 @@ function TopBar({ snap, connected, darkMode, onToggleDark }: {
   )
 }
 
-function Sidebar({ snap, connected }: { snap: any, connected: boolean }) {
+function Sidebar({ snap, connected, onClose }: { snap: any, connected: boolean, onClose?: () => void }) {
   const equity = snap?.equity ?? 0
   const dayPnl = equity - (snap?.starting_equity_today ?? equity)
   const regime = snap?.current_regime ?? '—'
@@ -226,7 +230,12 @@ function Sidebar({ snap, connected }: { snap: any, connected: boolean }) {
 
       <nav>
         {NAV.map(n => (
-          <NavLink key={n.path} to={`/${n.path}`} className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
+          <NavLink
+            key={n.path}
+            to={`/${n.path}`}
+            className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}
+            onClick={onClose}
+          >
             {n.label}
           </NavLink>
         ))}
@@ -252,6 +261,10 @@ function Sidebar({ snap, connected }: { snap: any, connected: boolean }) {
 function Layout({ darkMode, onToggleDark }: { darkMode: boolean; onToggleDark: () => void }) {
   const { snap, connected } = useSnapshot()
   const navigate = useNavigate()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  const closeSidebar = useCallback(() => setSidebarOpen(false), [])
+  const toggleSidebar = useCallback(() => setSidebarOpen(prev => !prev), [])
 
   // Global keyboard shortcuts (skip when focus is in an input element)
   useEffect(() => {
@@ -279,10 +292,12 @@ function Layout({ darkMode, onToggleDark }: { darkMode: boolean; onToggleDark: (
 
   return (
     <div className="app-wrapper">
-      <TopBar snap={snap} connected={connected} darkMode={darkMode} onToggleDark={onToggleDark} />
-      <div className="app">
-        <Sidebar snap={snap} connected={connected} />
-        <main className="main-content">
+      <TopBar snap={snap} connected={connected} darkMode={darkMode} onToggleDark={onToggleDark} onHamburger={toggleSidebar} />
+      <div className={`app${sidebarOpen ? ' sidebar-visible' : ''}`}>
+        {/* Backdrop: clicking it closes the sidebar on mobile */}
+        <div className="sidebar-backdrop" onClick={closeSidebar} />
+        <Sidebar snap={snap} connected={connected} onClose={closeSidebar} />
+        <main className="main-content" onClick={sidebarOpen ? closeSidebar : undefined}>
           <Routes>
             <Route index element={<Navigate to="/live" replace />} />
             <Route path="live" element={<LiveTab snap={snap} connected={connected} />} />

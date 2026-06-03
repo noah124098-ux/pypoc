@@ -189,6 +189,26 @@ function LegendItem({ color, shape, label }: { color: string; shape: 'line' | 't
 // ──────────────────────────────────────────────────────────────────────────────
 // Component
 // ──────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────────
+// CSV export helper
+// ──────────────────────────────────────────────────────────────────────────────
+function buildCsvUrl(trades: Trade[]): string {
+  const headers = ['id', 'symbol', 'side', 'entry_time', 'exit_time', 'pnl', 'charges']
+  const rows = trades.map(t => [
+    t.id ?? '',
+    t.symbol ?? '',
+    t.side ?? '',
+    t.entry_time ?? t.entry_ts ?? '',
+    t.exit_time ?? t.exit_ts ?? '',
+    t.pnl ?? 0,
+    t.charges ?? 0,
+  ])
+  const csv = [headers, ...rows]
+    .map(row => row.map(cell => JSON.stringify(String(cell))).join(','))
+    .join('\n')
+  return 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv)
+}
+
 export function PnlTab() {
   const { data: equity, loading: equityLoading } = useApi<EquityPoint[]>('/api/equity?limit=500', 30000)
   const { data: trades, loading: tradesLoading } = useApi<Trade[]>('/api/trades?limit=200', 60000)
@@ -204,6 +224,9 @@ export function PnlTab() {
   const losses = allTrades.filter(t => (t.pnl ?? 0) <= 0)
   const avgLoss = losses.length ? losses.reduce((s, t) => s + (t.pnl ?? 0), 0) / losses.length : 0
   const pf = avgLoss ? Math.abs(avgWin / avgLoss).toFixed(2) : '—'
+
+  // ── CSV export URL ────────────────────────────────────────────────────────
+  const csvUrl = useMemo(() => buildCsvUrl(allTrades), [allTrades])
 
   // ── Derived chart data ────────────────────────────────────────────────────
   const { chartData, startEquity, entryMarkers, exitMarkers } = useMemo(() => {
@@ -468,6 +491,38 @@ export function PnlTab() {
             </div>
           </div>
         )}
+      </section>
+
+      {/* ── Download section ── */}
+      <section className="section">
+        <h2>Download</h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <a
+            href={csvUrl}
+            download="trades.csv"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              background: 'rgba(66,153,225,.15)',
+              color: 'var(--blue)',
+              border: '1px solid rgba(66,153,225,.3)',
+              borderRadius: 6,
+              padding: '8px 16px',
+              fontSize: 13,
+              textDecoration: 'none',
+              cursor: allTrades.length === 0 ? 'not-allowed' : 'pointer',
+              opacity: allTrades.length === 0 ? 0.5 : 1,
+              pointerEvents: allTrades.length === 0 ? 'none' : 'auto',
+            }}
+            aria-disabled={allTrades.length === 0}
+          >
+            &#x1F4E5; Export CSV
+          </a>
+          <span style={{ fontSize: 12, color: 'var(--text2)' }}>
+            {allTrades.length} trade{allTrades.length !== 1 ? 's' : ''}
+          </span>
+        </div>
       </section>
     </div>
   )

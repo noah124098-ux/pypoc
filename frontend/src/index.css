@@ -165,32 +165,133 @@ body.light-mode {
   --text2: #718096;
 }
 
+/* ── Hamburger button (hidden on desktop) ── */
+.hamburger-btn {
+  display: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* ── Sidebar overlay backdrop (mobile only) ── */
+.sidebar-backdrop {
+  display: none;
+}
+
+/* ── Chart containers maintain aspect ratio with minimum height ── */
+.chart-section .recharts-responsive-container,
+.chart-section > div > .recharts-responsive-container {
+  min-height: 200px;
+}
+
+/* ── Trade table wrapper for horizontal scroll ── */
+.trade-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.trade-table-wrap .trade-table {
+  min-width: 500px;
+}
+
+/* ── Position cards always stack vertically ── */
+.position-card { display: flex; flex-direction: column; }
+.pos-row { flex-wrap: wrap; }
+
 /* ── Mobile / tablet responsive layout (max-width: 768px) ── */
 @media (max-width: 768px) {
-  .app { flex-direction: column; }
-  .sidebar { width: 100%; min-width: unset; height: auto; flex-direction: row; padding: 8px 12px; overflow-x: auto; }
-  .equity-box { display: none; }
-  .regime-chip { display: none; }
-  nav { flex-direction: row; gap: 4px; }
-  .nav-link { padding: 6px 10px; font-size: 12px; white-space: nowrap; }
-  .sidebar-footer { display: none; }
+  /* Show hamburger button */
+  .hamburger-btn { display: flex; align-items: center; justify-content: center; }
+
+  /* Top-bar: wrap onto two lines if needed, keep logo + hamburger always visible */
+  .top-bar {
+    padding: 0 10px;
+    gap: 6px;
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 44px;
+    overflow: visible;
+  }
+  .top-bar-logo { font-size: 13px; }
+  .top-bar-item { font-size: 12px; white-space: nowrap; }
+  .top-bar-regime { display: none; }
+  .top-bar-market { font-size: 11px; }
+
+  /* Sidebar: hidden by default on mobile; shown when .app has .sidebar-visible */
+  .app { flex-direction: column; position: relative; }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 240px;
+    z-index: 200;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    flex-direction: column;
+    padding: 16px 12px;
+    overflow-y: auto;
+  }
+
+  /* Backdrop shown when sidebar is open */
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 199;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+
+  .app.sidebar-visible .sidebar {
+    transform: translateX(0);
+  }
+
+  .app.sidebar-visible .sidebar-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Show equity-box and regime chip in expanded sidebar */
+  .equity-box { display: block; }
+  .regime-chip { display: block; }
+  nav { flex-direction: column; gap: 2px; }
+  .nav-link { padding: 8px 12px; font-size: 13px; white-space: normal; }
+  .sidebar-footer { display: flex; }
+
   .main-content { padding: 0; }
   .tab-content { padding: 12px; }
   .kpi-row { grid-template-columns: repeat(2, 1fr); }
 
-  /* Top-bar collapses: keep logo + status visible, hide lower-priority items */
-  .top-bar { padding: 0 10px; gap: 8px; flex-wrap: nowrap; overflow-x: auto; }
-  .top-bar-logo { font-size: 13px; }
-  .top-bar-item { font-size: 12px; white-space: nowrap; }
-  .top-bar-regime { display: none; }
+  /* Position cards stack vertically (already column direction above) */
+  .pos-row { flex-direction: column; gap: 4px; }
+
+  /* Trade table scrolls horizontally on small screens */
+  .trade-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .trade-table-wrap .trade-table { min-width: 500px; }
+  /* Legacy: bare trade-table inside tab still scrolls */
+  .tab-content > .trade-table,
+  .section > .trade-table {
+    display: block; overflow-x: auto; white-space: nowrap;
+  }
 
   /* Replay two-column layout stacks vertically */
   .replay-layout { grid-template-columns: 1fr; }
   .replay-list { max-height: 240px; }
 
-  /* Trade table scrolls horizontally on small screens */
-  .trade-table { display: block; overflow-x: auto; white-space: nowrap; }
-
   /* Link grid becomes single column */
   .link-grid { grid-template-columns: 1fr; }
+
+  /* Charts maintain aspect ratio with min-height */
+  .chart-section { overflow: hidden; }
+  .chart-section .recharts-responsive-container {
+    min-height: 200px !important;
+  }
 }

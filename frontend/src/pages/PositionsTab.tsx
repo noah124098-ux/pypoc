@@ -50,32 +50,34 @@ export function PositionsTab({ snap }: { snap: any }) {
         {signalsLoading && (!signals || signals.length === 0) ? (
           <div className="empty-state">Loading signals…</div>
         ) : (signals ?? []).length > 0 ? (
-          <table className="trade-table">
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Strategy</th>
-                <th>Side</th>
-                <th>Status</th>
-                <th>Reason</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(signals ?? []).map((s: any, i: number) => (
-                <tr key={i} className={s.accepted ? 'win' : 'loss'}>
-                  <td>{s.symbol}</td>
-                  <td>{s.strategy}</td>
-                  <td>{s.side}</td>
-                  <td>
-                    <span className={s.accepted ? 'badge green' : 'badge red'}>
-                      {s.accepted ? 'Accepted' : 'Rejected'}
-                    </span>
-                  </td>
-                  <td className="small">{s.rejection_reason ?? '—'}</td>
+          <div className="trade-table-wrap">
+            <table className="trade-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Strategy</th>
+                  <th>Side</th>
+                  <th>Status</th>
+                  <th>Reason</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {(signals ?? []).map((s: any, i: number) => (
+                  <tr key={i} className={s.accepted ? 'win' : 'loss'}>
+                    <td>{s.symbol}</td>
+                    <td>{s.strategy}</td>
+                    <td>{s.side}</td>
+                    <td>
+                      <span className={s.accepted ? 'badge green' : 'badge red'}>
+                        {s.accepted ? 'Accepted' : 'Rejected'}
+                      </span>
+                    </td>
+                    <td className="small">{s.rejection_reason ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : bothEmpty ? (
           <div className="empty-state combined">
             <p>
