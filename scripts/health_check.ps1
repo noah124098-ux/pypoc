@@ -200,13 +200,49 @@ if (Test-Path $gatePath) {
     $result.warnings += "gate file missing"
 }
 
+# ── 9. Backup freshness (most recent backup dir < 25 hours old) ──────────────
+$backupRoot = Join-Path $RepoRoot "backups"
+if (Test-Path $backupRoot) {
+    try {
+        $latestBackup = Get-ChildItem -Path $backupRoot -Directory |
+                        Sort-Object LastWriteTime -Descending |
+                        Select-Object -First 1
+        if ($latestBackup) {
+            $backupAgeHours = [math]::Round(((Get-Date) - $latestBackup.LastWriteTime).TotalHours, 1)
+            $backupFresh    = $backupAgeHours -lt 25
+            $result.checks.backup_freshness = [ordered]@{
+                ok         = $backupFresh
+                age_hours  = $backupAgeHours
+                latest_dir = $latestBackup.Name
+                message    = if ($backupFresh) { "Latest backup '$($latestBackup.Name)' is ${backupAgeHours}h old" } else { "Latest backup '$($latestBackup.Name)' is ${backupAgeHours}h old (>25h — backup may have missed)" }
+            }
+            if (-not $backupFresh) {
+                $result.healthy = $false
+                $result.warnings += "Backup stale: ${backupAgeHours}h (latest: $($latestBackup.Name))"
+            }
+        } else {
+            $result.checks.backup_freshness = [ordered]@{ ok = $false; message = "Backup directory exists but is empty — no backups found" }
+            $result.healthy = $false
+            $result.warnings += "No backup directories found under backups\"
+        }
+    } catch {
+        $result.checks.backup_freshness = [ordered]@{ ok = $false; message = "Error scanning backup directory: $_" }
+        $result.warnings += "backup scan error"
+    }
+} else {
+    $result.checks.backup_freshness = [ordered]@{ ok = $false; message = "Backup root '$backupRoot' not found — backup_data.bat has not run yet" }
+    $result.healthy = $false
+    $result.warnings += "Backup root missing: $backupRoot"
+}
+
 # ── Summarised service map (for quick top-level access) ──────────────────────
 $result["services"] = [ordered]@{
     dashboard = $result.checks.service_dashboard.ok
     mcp       = $result.checks.service_mcp.ok
 }
-$result["snapshot_age"] = if ($result.checks.snapshot.age_sec) { $result.checks.snapshot.age_sec } else { $null }
-$result["gate_valid"]   = $gateValid
+$result["snapshot_age"]  = if ($result.checks.snapshot.age_sec) { $result.checks.snapshot.age_sec } else { $null }
+$result["gate_valid"]    = $gateValid
+$result["backup_fresh"]  = if ($result.checks.backup_freshness) { $result.checks.backup_freshness.ok } else { $false }
 
 # ── Output ───────────────────────────────────────────────────────────────────
 $json = $result | ConvertTo-Json -Depth 5
