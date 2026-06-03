@@ -77,7 +77,8 @@ core/
   notifications/ Telegram notifier, email notifier (EOD HTML reports + halt alerts)
   config.py      Pydantic settings loaded from YAML + .env, hot-reload for risk params
 mcp_server/      MCP server (read-only) — 10 tools for inspecting the live agent
-dashboard.py     Streamlit dashboard — equity curve, regime timeline, live signals, dark mode
+frontend/        React dashboard (primary) — all 10 tabs, served at :8503 via FastAPI at :8502
+dashboard.py     Streamlit dashboard — DECOMMISSIONED (service disabled; code kept for reference)
 tests/           624 passing tests
 config/          Default YAML
 cli.py           Entry points: run | warmup | check-config | mcp-server | backtest |
@@ -173,6 +174,7 @@ Fix the Supertrend NaN bug as a prerequisite — both strategies must generate t
 | 3 | Live NSE data feeds (VIX, PCR), economic calendar blackouts, EOD Claude reviewer | **DONE** |
 | 4 | EOD reviewer (Claude Opus 4.7) producing parameter-adjustment proposals | **DONE** |
 | 5 | Streamlit dashboard + Telegram alerts + email EOD report + dark mode | **DONE** |
+| 5b | React dashboard (10 tabs) — full parity with Streamlit; Streamlit decommissioned | **DONE** |
 | 6b | MCP mutating tools via file-based command-queue (halt_agent, place_paper_order) | **DONE** |
 | 7 | AngelOneLiveBroker + Upstox V3 feed + hot-reload risk params + SQLite migrations | **DONE** |
 | 8 | Live deployment with small capital, after backtest gate + paper proof | not started |

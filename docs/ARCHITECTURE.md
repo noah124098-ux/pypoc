@@ -63,7 +63,8 @@ Defined in `.claude/MASTER_WORKER.md`. Key rules:
 | `backtest/gate.py` | Gate checker — enforces pass/fail thresholds |
 | `mcp_server/server.py` | MCP server process (read-only + mutating tools via command queue) |
 | `mcp_server/tools.py` | 10 MCP tool implementations |
-| `dashboard.py` | Streamlit dashboard — equity curve, regime timeline, positions, controls |
+| `frontend/` | React dashboard (primary) — 10 tabs served at :8503, backed by FastAPI at :8502 |
+| `dashboard.py` | Streamlit dashboard — DECOMMISSIONED (service disabled; code kept for reference) |
 | `cli.py` | Entry points: `run`, `backtest`, `walk-forward`, `check-gate`, `mcp-server` |
 
 ## Data Flow
@@ -90,7 +91,7 @@ Angel One WebSocket
         |
         +-----------> MCP Server (read-only) --> Claude Desktop / external tools
         |
-        +-----------> Streamlit Dashboard
+        +-----------> React Dashboard (:8503) via FastAPI (:8502)
         |
         +-----------> EOD Claude Reviewer --> Telegram / Email
 ```
