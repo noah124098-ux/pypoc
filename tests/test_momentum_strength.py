@@ -188,3 +188,33 @@ def test_momentum_strength_none_when_price_below_dma():
     strategy = MomentumStrength()
     sig = strategy.evaluate("TEST", df, Regime.TREND)
     assert sig is None, "Should not fire when price is below 50-DMA"
+
+
+def test_momentum_strength_none_when_price_below_20dma():
+    """Price below 20-DMA (short-term correction) should not trigger.
+
+    W3-protection filter: even if the 50-DMA is rising and RSI is in the
+    momentum zone, a stock in a short-term correction (price < 20-DMA) must
+    be blocked to avoid chasing deteriorating momentum.
+    """
+    # Build 130-bar uptrend, then add 25 sharp declining bars so price dips
+    # below the 20-DMA while the 50-DMA is still rising.
+    n = 155
+    close = np.empty(n, dtype=float)
+    for i in range(130):
+        close[i] = 1000.0 + i * 1.0   # 1000 → 1129 — strong uptrend builds 20/50 DMAs
+    for i in range(25):
+        close[130 + i] = close[129 + i] - 2.5   # sharp decline: price falls below 20-DMA
+
+    high = close + 2.0
+    low = close - 2.0
+    open_ = np.r_[close[0], close[:-1]]
+    volume = np.full(n, 2_000_000.0)
+    idx = pd.bdate_range("2023-01-02", periods=n)
+    df = pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close, "volume": volume},
+        index=idx,
+    )
+    strategy = MomentumStrength(short_dma_period=20)
+    sig = strategy.evaluate("TEST", df, Regime.TREND)
+    assert sig is None, "Should not fire when price is below 20-DMA (short-term correction)"

@@ -96,8 +96,21 @@ strategies:
     target_r_multiple: 2.0
     stock_dma_period: 50             # Block entries if stock 50-DMA falling >1% in 5 days
 
+  momentum_strength:
+    enabled: false   # disabled: 20-DMA filter insufficient for W3 protection — degrades Sharpe to 0.00, pf 1.23
+    regimes: [TREND]
+    rsi_period: 20
+    rsi_momentum_low: 55.0
+    rsi_momentum_high: 70.0
+    dma_period: 50
+    short_dma_period: 20
+    atr_period: 14
+    atr_stop_multiplier: 1.5
+    target_r_multiple: 2.5
+    volume_confirm_ratio: 1.2
+
   rsi_bounce:
-    enabled: false   # disabled: no gate improvement (Sharpe unchanged at 0.32)
+    enabled: false   # disabled: no gate improvement (Sharpe unchanged at 0.32 with 50-DMA too)
     regimes: [RANGE, VOLATILE]
     rsi_period: 14
     rsi_oversold_threshold: 30
@@ -123,7 +136,7 @@ strategies:
     target_r_multiple: 2.5
 
   vix_spike_bounce:
-    enabled: true
+    enabled: false   # disabled: RSI=30 filter too strict, 0 trades in W3; RSI=35 also 0 trades — no gate improvement
     regimes: [VOLATILE]
     rsi_period: 14
     rsi_oversold_threshold: 35.0

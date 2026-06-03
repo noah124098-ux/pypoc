@@ -31,6 +31,7 @@ class MomentumStrength(IStrategy):
         rsi_momentum_low: float = 55.0,
         rsi_momentum_high: float = 70.0,
         dma_period: int = 50,
+        short_dma_period: int = 20,
         atr_period: int = 14,
         atr_stop_multiplier: float = 1.5,
         target_r_multiple: float = 2.5,
@@ -40,6 +41,7 @@ class MomentumStrength(IStrategy):
         self.rsi_momentum_low = rsi_momentum_low
         self.rsi_momentum_high = rsi_momentum_high
         self.dma_period = dma_period
+        self.short_dma_period = short_dma_period
         self.atr_period = atr_period
         self.atr_stop_multiplier = atr_stop_multiplier
         self.target_r_multiple = target_r_multiple
@@ -49,7 +51,7 @@ class MomentumStrength(IStrategy):
         if not self.supports(regime):
             return None
 
-        min_bars = max(self.rsi_period, self.dma_period, self.atr_period) + 5
+        min_bars = max(self.rsi_period, self.dma_period, self.short_dma_period, self.atr_period) + 5
         if len(candles) < min_bars:
             return None
 
@@ -69,6 +71,16 @@ class MomentumStrength(IStrategy):
             return None
         if dma.iloc[-1] <= dma.iloc[-6]:
             return None  # 50-DMA flat or falling — trend lacks momentum
+
+        # 20-DMA filter: price must be above its own 20-DMA (short-term trend confirmation).
+        # W3-protection: blocks entries during short-term corrections even when
+        # the longer-term 50-DMA is still rising.
+        short_dma = close.rolling(self.short_dma_period).mean()
+        latest_short_dma = short_dma.iloc[-1]
+        if pd.isna(latest_short_dma):
+            return None
+        if latest_close <= latest_short_dma:
+            return None  # price below 20-DMA — in short-term correction
 
         # RSI must be in the momentum zone [55, 70]
         rsi_series = rsi(candles, self.rsi_period)
@@ -105,7 +117,8 @@ class MomentumStrength(IStrategy):
             rationale=(
                 f"Momentum zone: RSI{self.rsi_period} {latest_rsi:.1f} in "
                 f"[{self.rsi_momentum_low},{self.rsi_momentum_high}], "
-                f"price {latest_close:.2f} above rising DMA{self.dma_period} {latest_dma:.2f}, "
+                f"price {latest_close:.2f} above rising DMA{self.dma_period} {latest_dma:.2f} "
+                f"and DMA{self.short_dma_period} {latest_short_dma:.2f}, "
                 f"vol ratio {vr:.2f}x"
             ),
             ts=datetime.utcnow(),

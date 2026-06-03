@@ -540,6 +540,7 @@ class BacktestEngine:
                 rsi_momentum_low=cfg.get("rsi_momentum_low", 55.0),
                 rsi_momentum_high=cfg.get("rsi_momentum_high", 70.0),
                 dma_period=cfg.get("dma_period", 50),
+                short_dma_period=cfg.get("short_dma_period", 20),
                 atr_period=cfg.get("atr_period", 14),
                 atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
                 target_r_multiple=cfg.get("target_r_multiple", 2.5),
