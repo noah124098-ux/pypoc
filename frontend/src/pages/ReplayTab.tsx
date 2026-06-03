@@ -2,11 +2,12 @@ import { useState } from "react"
 import { useApi } from "../hooks/useSnapshot"
 
 export function ReplayTab() {
-  const { data: trades } = useApi("/api/trades/list?limit=50", 60000)
+  const { data: tradesRaw } = useApi("/api/trades/list?limit=50", 60000)
   const [selectedId, setSelectedId] = useState<number | null>(null)
-  const { data: tradeDetail } = useApi(selectedId ? "/api/trade/" + selectedId : "", 0)
+  const { data: tradeDetailRaw } = useApi(selectedId ? "/api/trade/" + selectedId : "", 0)
+  const tradeDetail = tradeDetailRaw as any
 
-  const tradeList = trades ?? []
+  const tradeList: any[] = (tradesRaw as any) ?? []
 
   return (
     <div className="tab-content">

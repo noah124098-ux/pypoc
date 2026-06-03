@@ -97,7 +97,7 @@ strategies:
     stock_dma_period: 50             # Block entries if stock 50-DMA falling >1% in 5 days
 
   supertrend:
-    enabled: true
+    enabled: false
     regimes: [TREND, VOLATILE]
     atr_period: 10
     multiplier: 3.0
@@ -112,7 +112,7 @@ strategies:
     target_r_multiple: 2.5
 
   supertrend_short:
-    enabled: true
+    enabled: false
     regimes: [VOLATILE, TREND]
     atr_period: 10
     multiplier: 3.0

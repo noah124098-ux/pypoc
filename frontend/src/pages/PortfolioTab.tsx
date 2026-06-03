@@ -4,9 +4,11 @@ export function PortfolioTab() {
   const { data: portfolio } = useApi("/api/portfolio/angel-one", 60000)
   const { data: snapshot } = useApi("/api/snapshot", 5000)
 
-  const connected = portfolio?.connected ?? false
-  const paperEquity = snapshot?.equity ?? 0
-  const liveEquity = portfolio?.net_value ?? 0
+  const p = portfolio as any
+  const s = snapshot as any
+  const connected = p?.connected ?? false
+  const paperEquity = s?.equity ?? 0
+  const liveEquity = p?.net_value ?? 0
   const diff = liveEquity - paperEquity
 
   return (
@@ -35,15 +37,15 @@ export function PortfolioTab() {
 
           <section className="section">
             <h2>Live Positions</h2>
-            {portfolio?.positions?.length > 0 ? (
+            {p?.positions?.length > 0 ? (
               <table className="trade-table">
                 <thead><tr><th>Symbol</th><th>Qty</th><th>Avg Price</th><th>LTP</th><th>P&L</th></tr></thead>
-                <tbody>{portfolio.positions.map((p: any, i: number) => (
-                  <tr key={i} className={p.pnl >= 0 ? "win" : "loss"}>
-                    <td>{p.symbol}</td><td>{p.qty}</td>
-                    <td>₹{(p.avg_price ?? 0).toFixed(2)}</td>
-                    <td>₹{(p.ltp ?? 0).toFixed(2)}</td>
-                    <td className={p.pnl >= 0 ? "green" : "red"}>₹{(p.pnl ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+                <tbody>{p.positions.map((pos: any, i: number) => (
+                  <tr key={i} className={pos.pnl >= 0 ? "win" : "loss"}>
+                    <td>{pos.symbol}</td><td>{pos.qty}</td>
+                    <td>₹{(pos.avg_price ?? 0).toFixed(2)}</td>
+                    <td>₹{(pos.ltp ?? 0).toFixed(2)}</td>
+                    <td className={pos.pnl >= 0 ? "green" : "red"}>₹{(pos.pnl ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
                   </tr>
                 ))}</tbody>
               </table>
