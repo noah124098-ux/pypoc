@@ -12,6 +12,7 @@ import { AiReviewTab } from './pages/AiReviewTab'
 import { CostsTab } from './pages/CostsTab'
 import { PortfolioTab } from './pages/PortfolioTab'
 import { AngelOneTab } from './pages/AngelOneTab'
+import { AnalyticsTab } from './pages/AnalyticsTab'
 import { useSnapshot, useApi } from './hooks/useSnapshot'
 
 const NAV = [
@@ -26,6 +27,7 @@ const NAV = [
   { path: 'costs', label: '💰 Costs' },
   { path: 'portfolio', label: '🏦 Portfolio' },
   { path: 'angel-one', label: '🔌 Angel One' },
+  { path: 'analytics', label: '📈 Analytics' },
 ]
 
 /** Returns IST (UTC+5:30) hours, minutes, and day-of-week */
@@ -311,6 +313,7 @@ function Layout({ darkMode, onToggleDark }: { darkMode: boolean; onToggleDark: (
             <Route path="costs" element={<CostsTab />} />
             <Route path="portfolio" element={<PortfolioTab />} />
             <Route path="angel-one" element={<AngelOneTab />} />
+            <Route path="analytics" element={<AnalyticsTab />} />
           </Routes>
         </main>
       </div>
