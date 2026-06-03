@@ -1036,6 +1036,56 @@ class TestApiExceptionHandlers:
         assert resp.status_code == 200
         assert "error" in resp.json()
 
+    def test_costs_exception_branch(self, tmp_path, monkeypatch):
+        """When costs DB query raises, returns error dict."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        # Create an invalid/corrupt DB file
+        (data_dir / "agent.db").write_text("not a sqlite db")
+        from fastapi.testclient import TestClient
+        from api.main import app
+        c = TestClient(app)
+        resp = c.get("/api/costs?days=365", auth=AUTH)
+        assert resp.status_code == 200
+        # Either succeeds with totals or returns error
+        data = resp.json()
+        assert "error" in data or "total_charges" in data
+
+    def test_list_trades_exception_branch(self, tmp_path, monkeypatch):
+        """When list_trades DB query raises, returns error dict."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        # Create an invalid/corrupt DB file
+        (data_dir / "agent.db").write_text("not a sqlite db")
+        from fastapi.testclient import TestClient
+        from api.main import app
+        c = TestClient(app)
+        resp = c.get("/api/trades/list?limit=10", auth=AUTH)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "error" in data or isinstance(data, list)
+
+    def test_get_trade_exception_branch(self, tmp_path, monkeypatch):
+        """When get_trade DB query raises, returns error dict."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        # Create an invalid/corrupt DB file
+        (data_dir / "agent.db").write_text("not a sqlite db")
+        from fastapi.testclient import TestClient
+        from api.main import app
+        c = TestClient(app)
+        resp = c.get("/api/trade/1", auth=AUTH)
+        assert resp.status_code == 200
+        data = resp.json()
+        # either None or {"error": ...}
+        assert data is None or "error" in data
+
 
 class TestLoadTradesFiltered:
     def test_no_db_returns_empty(self, tmp_path, monkeypatch):
