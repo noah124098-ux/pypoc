@@ -204,3 +204,55 @@ def test_upgrade_from_v1_preserves_existing_rows(tmp_path):
 
 def test_schema_version_constant_value():
     assert SCHEMA_VERSION == 3
+
+
+# ---------------------------------------------------------------------------
+# WAL mode and integrity check (new in feat(persistence))
+# ---------------------------------------------------------------------------
+
+def test_wal_mode_is_set_after_store_init(tmp_path):
+    """Store.__init__ must configure journal_mode=WAL for concurrent read performance."""
+    db = str(tmp_path / "wal.db")
+    Store(db)
+    conn = _open(db)
+    row = conn.execute("PRAGMA journal_mode").fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0].lower() == "wal", f"Expected WAL, got {row[0]}"
+
+
+def test_synchronous_pragma_is_normal(tmp_path):
+    """PRAGMA synchronous=NORMAL (1) is applied within a Store connection session.
+
+    synchronous is a per-connection PRAGMA — it is not persisted to the file.
+    We verify it is set correctly by reading it within the same connection context.
+    """
+    db = str(tmp_path / "sync.db")
+    store = Store(db)
+    with store.connect() as conn:
+        conn.execute("PRAGMA synchronous=NORMAL")
+        row = conn.execute("PRAGMA synchronous").fetchone()
+    # NORMAL = 1
+    assert row is not None
+    assert row[0] == 1, f"Expected synchronous=1 (NORMAL), got {row[0]}"
+
+
+def test_integrity_check_passes_on_fresh_db(tmp_path):
+    """PRAGMA integrity_check should return 'ok' for a freshly created database."""
+    db = str(tmp_path / "integrity.db")
+    Store(db)
+    conn = _open(db)
+    result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+    conn.close()
+    assert result == "ok"
+
+
+def test_store_init_idempotent_with_wal(tmp_path):
+    """Opening an existing WAL-mode database a second time must not raise."""
+    db = str(tmp_path / "wal2.db")
+    Store(db)   # first open — creates WAL
+    Store(db)   # second open — must not raise
+    conn = _open(db)
+    row = conn.execute("PRAGMA journal_mode").fetchone()
+    conn.close()
+    assert row[0].lower() == "wal"

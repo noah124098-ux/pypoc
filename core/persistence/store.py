@@ -4,11 +4,14 @@ Schema is intentionally simple (one row per event). Used by dashboard and EOD re
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, Optional
+
+log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 3  # increment when schema changes
 
@@ -115,8 +118,19 @@ class Store:
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as c:
+            # Performance PRAGMAs — set before schema creation so WAL applies from the start.
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA synchronous=NORMAL")
+            c.execute("PRAGMA cache_size=-64000")   # 64 MB cache
             c.executescript(SCHEMA)
             _run_migrations(c)
+            # Integrity check — warn if the database is corrupt (never raises).
+            try:
+                result = c.execute("PRAGMA integrity_check").fetchone()[0]
+                if result != "ok":
+                    log.warning("Database integrity check: %s", result)
+            except Exception:
+                pass
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

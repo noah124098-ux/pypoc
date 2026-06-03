@@ -42,6 +42,8 @@ from core.strategies.base import IStrategy
 from core.strategies.bb_squeeze import BbSqueeze
 from core.strategies.ema_crossover import EmaCrossover
 from core.strategies.mean_reversion import MeanReversion
+from core.strategies.momentum_strength import MomentumStrength
+from core.strategies.nr_pattern import NRPatternBreakout
 from core.strategies.obv_trend import ObvTrend
 from core.strategies.rsi_momentum import RsiMomentum
 from core.strategies.supertrend import Supertrend
@@ -515,6 +517,26 @@ class BacktestEngine:
                 multiplier=cfg.get("multiplier", 3.0),
                 target_r_multiple=cfg.get("target_r_multiple", 2.0),
                 stock_dma_period=cfg.get("stock_dma_period", 50),
+            ))
+        if scfg.get("momentum_strength", {}).get("enabled", False):
+            cfg = scfg["momentum_strength"]
+            out.append(MomentumStrength(
+                rsi_period=cfg.get("rsi_period", 20),
+                rsi_momentum_low=cfg.get("rsi_momentum_low", 55.0),
+                rsi_momentum_high=cfg.get("rsi_momentum_high", 70.0),
+                dma_period=cfg.get("dma_period", 50),
+                atr_period=cfg.get("atr_period", 14),
+                atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
+                target_r_multiple=cfg.get("target_r_multiple", 2.5),
+                volume_confirm_ratio=cfg.get("volume_confirm_ratio", 1.2),
+            ))
+        if scfg.get("nr_pattern", {}).get("enabled", False):
+            cfg = scfg["nr_pattern"]
+            out.append(NRPatternBreakout(
+                nr_lookback=cfg.get("nr_lookback", 7),
+                bullish_close_pct=cfg.get("bullish_close_pct", 0.30),
+                atr_period=cfg.get("atr_period", 14),
+                target_r_multiple=cfg.get("target_r_multiple", 2.0),
             ))
         return out
 

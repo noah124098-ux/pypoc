@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import signal
 import time
 
 from core.broker.paper import PaperBroker
@@ -71,6 +72,19 @@ def cmd_run(args):
         )
 
     store = Store(settings.persistence.sqlite_path)
+
+    # --- Graceful shutdown: SIGINT / SIGTERM both halt the orchestrator cleanly ---
+    orch: "Orchestrator | None" = None  # forward-declared; set after construction below
+
+    def _shutdown_handler(sig: int, frame: object) -> None:
+        log.info("Shutdown signal received (%s)", signal.Signals(sig).name)
+        if orch is not None:
+            orch.halted = True
+            orch.halt_reason = f"shutdown signal {signal.Signals(sig).name}"
+
+    signal.signal(signal.SIGINT, _shutdown_handler)
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+
     if settings.mode == "live":
         try:
             from core.broker.angelone_live import AngelOneLiveBroker
@@ -95,11 +109,13 @@ def cmd_run(args):
 
     log.info("Entering main tick lifecycle loop. Ctrl-C to stop.")
     try:
-        while True:
+        while not orch.halted:
             orch.tick_lifecycle()
             time.sleep(1)
+        log.info("Orchestrator halted (%s). Disconnecting feed.", orch.halt_reason)
     except KeyboardInterrupt:
         log.info("Shutting down ...")
+    finally:
         feed.disconnect()
 
 
@@ -1413,7 +1429,7 @@ def main():
         "--env",
         default=None,
         choices=["dev", "staging", "prod"],
-        help="Environment config overlay (default: APP_ENV env var, or 'dev' if unset)",
+        help="Environment config overlay (default: APP_ENV env var; if unset, base config only — no overlay)",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("run").set_defaults(func=cmd_run)
