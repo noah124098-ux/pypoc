@@ -14,6 +14,7 @@ interface Suggestion {
 }
 
 interface EodReview {
+  available?: boolean
   timestamp?: string
   summary?: string
   suggestions?: Suggestion[]
@@ -140,6 +141,9 @@ export function AiReviewTab() {
     )
   }
 
+  // review is unavailable when API returns {available: false} or null/network error
+  const reviewUnavailable = !review || review.available === false
+
   const suggestions = review?.suggestions ?? []
   const nextReview = nextEodReviewLabel()
 
@@ -155,15 +159,37 @@ export function AiReviewTab() {
       <section className="section">
         <h2>Last EOD Review</h2>
 
-        {loading && <div className="empty-state">Loading last review...</div>}
-
-        {!loading && !review && (
+        {loading && (
           <div className="empty-state">
-            No EOD review found. Run the agent near market close (15:35 IST) or trigger manually.
+            <div className="spinner" style={{ margin: "0 auto 12px" }} />
+            Loading last review…
           </div>
         )}
 
-        {!loading && review && (
+        {!loading && reviewUnavailable && (
+          <div
+            className="info-card"
+            style={{
+              maxWidth: 540,
+              padding: "20px 24px",
+              borderLeft: "4px solid var(--blue)",
+            }}
+          >
+            <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 10 }}>
+              No EOD review available yet
+            </div>
+            <p style={{ color: "var(--text2)", marginBottom: 10, lineHeight: 1.6 }}>
+              EOD review runs automatically at <strong>15:35 IST</strong> after each trading day.
+              Requires <code style={{ background: "var(--bg3)", padding: "1px 5px", borderRadius: 4, fontSize: 12 }}>ANTHROPIC_API_KEY</code> in
+              {" "}<code style={{ background: "var(--bg3)", padding: "1px 5px", borderRadius: 4, fontSize: 12 }}>.env</code> to generate insights.
+            </p>
+            <p style={{ color: "var(--text2)", marginBottom: 0, fontSize: 13 }}>
+              First review will appear after the paper agent's first trading session.
+            </p>
+          </div>
+        )}
+
+        {!loading && !reviewUnavailable && review && (
           <>
             {review.timestamp && (
               <div className="small" style={{ marginBottom: 8, color: 'var(--text2)' }}>

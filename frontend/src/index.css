@@ -83,6 +83,8 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .info-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
 .info-box code { display: block; background: var(--bg3); padding: 8px 12px; border-radius: 6px; font-size: 12px; margin-bottom: 8px; }
 .info-box p { color: var(--text2); font-size: 12px; }
+.info-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.info-card p { margin: 0 0 8px; font-size: 13px; line-height: 1.6; }
 .control-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .status-pill { padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; }
 .status-pill.green { background: rgba(72,187,120,.15); color: var(--green); }
