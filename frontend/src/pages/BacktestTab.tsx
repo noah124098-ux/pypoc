@@ -78,11 +78,11 @@ export function BacktestTab() {
             <section className="section">
               <h2>Detailed Metrics</h2>
               <div className="kpi-row">
-                {metrics.win_rate != null && (
+                {metrics.win_rate_pct != null && (
                   <div className="kpi-card">
                     <div className="kpi-label">Win Rate</div>
-                    <div className={`kpi-value ${metrics.win_rate >= 45 ? 'green' : 'red'}`}>
-                      {metrics.win_rate.toFixed(1)}%
+                    <div className={`kpi-value ${metrics.win_rate_pct >= 45 ? 'green' : 'red'}`}>
+                      {metrics.win_rate_pct.toFixed(1)}%
                     </div>
                     <div className="kpi-sub">threshold ≥ 45%</div>
                   </div>
@@ -119,11 +119,11 @@ export function BacktestTab() {
                     </div>
                   </div>
                 )}
-                {metrics.max_dd_pct != null && (
+                {metrics.max_drawdown_pct != null && (
                   <div className="kpi-card">
                     <div className="kpi-label">Max Drawdown</div>
-                    <div className={`kpi-value ${metrics.max_dd_pct <= 15 ? 'green' : 'red'}`}>
-                      {metrics.max_dd_pct.toFixed(1)}%
+                    <div className={`kpi-value ${metrics.max_drawdown_pct <= 15 ? 'green' : 'red'}`}>
+                      {metrics.max_drawdown_pct.toFixed(1)}%
                     </div>
                     <div className="kpi-sub">threshold ≤ 15%</div>
                   </div>

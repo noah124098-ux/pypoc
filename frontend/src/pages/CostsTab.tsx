@@ -3,17 +3,14 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 
 export function CostsTab() {
   const { data: costs, loading } = useApi("/api/costs?days=365", 60000)
-  const rows: any[] = Array.isArray((costs as any)?.by_strategy)
-    ? (costs as any).by_strategy
-    : Array.isArray(costs)
-      ? (costs as any[])
-      : []
-
+  const costsData = costs as any
+  const rows: any[] = costsData?.by_strategy ?? (Array.isArray(costs) ? costs : [])
   const isEmpty = !loading && rows.length === 0
 
-  const totalCharges = rows.reduce((s: number, r: any) => s + (r.total ?? 0), 0)
-  const totalPnl = rows.reduce((s: number, r: any) => s + (r.gross_pnl ?? 0), 0)
-  const netPnl = totalPnl - totalCharges
+  // Use API-precomputed totals if available, fall back to row aggregation
+  const totalCharges = costsData?.total_charges ?? rows.reduce((s: number, r: any) => s + (r.total_charges ?? r.total ?? 0), 0)
+  const totalPnl = costsData?.gross_pnl ?? rows.reduce((s: number, r: any) => s + (r.gross_pnl ?? 0), 0)
+  const netPnl = costsData?.net_pnl ?? (totalPnl - totalCharges)
   const chargesPct = totalPnl ? (totalCharges / Math.abs(totalPnl) * 100).toFixed(1) : "0"
 
   return (
