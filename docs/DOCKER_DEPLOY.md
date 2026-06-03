@@ -123,6 +123,76 @@ without credentials.
 
 ---
 
+## SSL/TLS setup
+
+### Option A — Self-signed certificate (development / testing)
+
+1. **Generate the cert** (requires OpenSSL on PATH):
+
+   ```bat
+   deploy\gen_self_signed_cert.bat
+   ```
+
+   This writes `deploy/pypoc.key` and `deploy/pypoc.crt` (both git-ignored).
+
+2. **Copy certs to the nginx ssl directory:**
+
+   ```powershell
+   mkdir C:\tools\nginx-1.31.1\ssl
+   copy deploy\pypoc.key C:\tools\nginx-1.31.1\ssl\pypoc.key
+   copy deploy\pypoc.crt C:\tools\nginx-1.31.1\ssl\pypoc.crt
+   ```
+
+   Adjust the path if your nginx install differs.
+
+3. **Start nginx with the SSL config:**
+
+   ```powershell
+   nginx -c C:\Users\Administrator\pypoc\deploy\nginx_ssl.conf
+   ```
+
+   The HTTP server now redirects all traffic to HTTPS.
+   The dashboard proxies to port 8502 (FastAPI/Streamlit combined).
+
+### Option B — Let's Encrypt (production Linux)
+
+1. Install certbot:
+
+   ```bash
+   sudo apt install certbot python3-certbot-nginx -y
+   ```
+
+2. Obtain a cert (replace `your.domain.com`):
+
+   ```bash
+   sudo certbot --nginx -d your.domain.com
+   ```
+
+3. Update `nginx_ssl.conf`:
+   - Set `server_name your.domain.com;` in both server blocks.
+   - Replace the `ssl_certificate` paths with the paths certbot reports
+     (typically `/etc/letsencrypt/live/your.domain.com/fullchain.pem` and
+     `privkey.pem`).
+   - Update `auth_basic_user_file` to your `.htpasswd` path.
+
+4. Reload nginx:
+
+   ```bash
+   sudo nginx -s reload
+   ```
+
+   Certbot installs a cron/systemd timer to auto-renew the cert before expiry.
+
+### nginx_ssl.conf highlights
+
+- Port 80 issues a permanent 301 redirect to HTTPS — no plain-text traffic.
+- TLSv1.2 and TLSv1.3 only; weak ciphers (`aNULL`, `MD5`) excluded.
+- `auth_basic` on `location /` protects the dashboard behind HTTP Basic Auth.
+- WebSocket upgrade headers are forwarded so Streamlit live-reload works over SSL.
+- `proxy_read_timeout 86400` keeps long-lived WebSocket connections alive.
+
+---
+
 ## Backup
 
 SQLite database and snapshots live in `data/`. Back up with:
