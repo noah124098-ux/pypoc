@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate, NavLink } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom'
 import { LineChart, Line, ResponsiveContainer } from 'recharts'
 import { LiveTab } from './pages/LiveTab'
 import { PnlTab } from './pages/PnlTab'
@@ -24,6 +24,46 @@ const NAV = [
   { path: 'costs', label: '💰 Costs' },
   { path: 'portfolio', label: '🏦 Portfolio' },
 ]
+
+function TopBar({ snap, connected }: { snap: any, connected: boolean }) {
+  const navigate = useNavigate()
+  const equity = snap?.equity ?? 500000
+  const dayPnl = equity - (snap?.starting_equity_today ?? equity)
+  const regime = snap?.current_regime ?? '—'
+  const halted = snap?.halted ?? false
+  const positions: any[] = snap?.positions ?? []
+  const posCount = positions.length
+
+  return (
+    <div className="top-bar">
+      <span className="top-bar-logo">pypoc</span>
+      <span className={`top-bar-status ${connected ? 'live' : 'offline'}`}>
+        {connected ? '●LIVE' : '○OFFLINE'}
+      </span>
+      <span
+        className="top-bar-item clickable"
+        onClick={() => navigate('/pnl')}
+        title="Go to P&L"
+      >
+        Equity: ₹{equity.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+      </span>
+      <span className={`top-bar-item ${dayPnl >= 0 ? 'green' : 'red'}`}>
+        {dayPnl >= 0 ? '+' : ''}₹{Math.abs(dayPnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })} today
+      </span>
+      <span
+        className="top-bar-item clickable top-bar-regime"
+        onClick={() => navigate('/regime')}
+        title="Go to Regime"
+      >
+        {regime}
+      </span>
+      <span className="top-bar-item">{posCount} position{posCount !== 1 ? 's' : ''}</span>
+      {halted && (
+        <span className="top-bar-halt">⚠ HALTED</span>
+      )}
+    </div>
+  )
+}
 
 function Sidebar({ snap, connected }: { snap: any, connected: boolean }) {
   const equity = snap?.equity ?? 0
@@ -106,23 +146,26 @@ function Sidebar({ snap, connected }: { snap: any, connected: boolean }) {
 function Layout() {
   const { snap, connected } = useSnapshot()
   return (
-    <div className="app">
-      <Sidebar snap={snap} connected={connected} />
-      <main className="main-content">
-        <Routes>
-          <Route index element={<Navigate to="/live" replace />} />
-          <Route path="live" element={<LiveTab snap={snap} connected={connected} />} />
-          <Route path="pnl" element={<PnlTab />} />
-          <Route path="positions" element={<PositionsTab snap={snap} />} />
-          <Route path="regime" element={<RegimeTab snap={snap} />} />
-          <Route path="backtest" element={<BacktestTab />} />
-          <Route path="replay" element={<ReplayTab />} />
-          <Route path="ai-review" element={<AiReviewTab />} />
-          <Route path="controls" element={<ControlsTab snap={snap} />} />
-          <Route path="costs" element={<CostsTab />} />
-          <Route path="portfolio" element={<PortfolioTab />} />
-        </Routes>
-      </main>
+    <div className="app-wrapper">
+      <TopBar snap={snap} connected={connected} />
+      <div className="app">
+        <Sidebar snap={snap} connected={connected} />
+        <main className="main-content">
+          <Routes>
+            <Route index element={<Navigate to="/live" replace />} />
+            <Route path="live" element={<LiveTab snap={snap} connected={connected} />} />
+            <Route path="pnl" element={<PnlTab />} />
+            <Route path="positions" element={<PositionsTab snap={snap} />} />
+            <Route path="regime" element={<RegimeTab snap={snap} />} />
+            <Route path="backtest" element={<BacktestTab />} />
+            <Route path="replay" element={<ReplayTab />} />
+            <Route path="ai-review" element={<AiReviewTab />} />
+            <Route path="controls" element={<ControlsTab snap={snap} />} />
+            <Route path="costs" element={<CostsTab />} />
+            <Route path="portfolio" element={<PortfolioTab />} />
+          </Routes>
+        </main>
+      </div>
     </div>
   )
 }
