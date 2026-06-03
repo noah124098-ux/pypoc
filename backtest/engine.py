@@ -517,6 +517,9 @@ class BacktestEngine:
                 multiplier=cfg.get("multiplier", 3.0),
                 target_r_multiple=cfg.get("target_r_multiple", 2.0),
                 stock_dma_period=cfg.get("stock_dma_period", 50),
+                dma_falling_lookback=cfg.get("dma_falling_lookback", 10),
+                return_threshold=cfg.get("return_threshold", -0.03),
+                volume_spike_min=cfg.get("volume_spike_min", 1.5),
             ))
         if scfg.get("momentum_strength", {}).get("enabled", False):
             cfg = scfg["momentum_strength"]

@@ -568,31 +568,35 @@ def test_supertrend_signal_has_positive_rr():
 
 def _supertrend_short_df() -> pd.DataFrame:
     """
-    41-bar series where:
-    - The 20-bar DMA is clearly falling today (dma[-1] < dma[-21]).
-    - The series has exactly 22 non-null DMA values (n=41 with dma_period=20
-      gives 41-19=22 values), so the `len(dma.dropna()) >= 23` guard is False
-      and the "fresh-signal only" check is skipped.
+    100-bar series where ALL quality filters pass on the last bar:
+    - 94 bars of slow rise, then 6 bars of sharp decline (~0.8%/bar).
+    - 20-bar DMA is falling TODAY (dma[-1] < dma[-11]) but was NOT falling
+      yesterday (dma[-2] >= dma[-12]) — satisfies the fresh-signal check.
+    - 10-day return ~= -4.5% (satisfies the < -3% threshold).
+    - Volume on the last bar is 3x average (satisfies the 1.5x spike filter).
     We use stock_dma_period=20 (instead of the default 50) to keep n small.
     """
-    n = 41
+    n = 100
+    drop_bars = 6
     close = np.empty(n, dtype=float)
-    # First 20 bars: rising
-    for i in range(20):
-        close[i] = 1000.0 + i * 2.0
-    # Next 21 bars: steep decline
-    for i in range(21):
-        close[20 + i] = 1038.0 - (i + 1) * 4.0
+    for i in range(n - drop_bars):
+        close[i] = 1000.0 + i * 1.0
+    peak = close[n - drop_bars - 1]
+    for i in range(drop_bars):
+        close[n - drop_bars + i] = peak * (1.0 - (i + 1) * 0.008)
 
     high = close * 1.002
     low = close * 0.998
+    # Last bar has a volume spike (3x average) for the volume_spike_min=1.5 filter
+    volume = np.full(n, 2_000_000.0)
+    volume[-1] = 6_000_000.0
     return pd.DataFrame(
         {
             "open": np.r_[close[0], close[:-1]],
             "high": high,
             "low": low,
             "close": close,
-            "volume": np.full(n, 2_000_000.0),
+            "volume": volume,
         },
         index=pd.bdate_range("2023-01-02", periods=n),
     )
@@ -617,9 +621,12 @@ def test_supertrend_short_returns_signal_on_setup():
         strategy = SupertrendShort(
             atr_period=10, multiplier=3.0,
             target_r_multiple=2.0, stock_dma_period=20,
+            dma_falling_lookback=10,
+            return_threshold=-0.03,
+            volume_spike_min=1.5,
         )
         sig = strategy.evaluate("TEST", df, Regime.VOLATILE)
-    assert sig is not None, "SupertrendShort should fire when Supertrend bearish + DMA falling"
+    assert sig is not None, "SupertrendShort should fire when Supertrend bearish + DMA falling + volume spike"
     assert sig.strategy == "supertrend_short"
     assert sig.side == Side.SELL
     assert sig.stop_loss > sig.entry_price, "Short stop must be above entry"
@@ -645,6 +652,9 @@ def test_supertrend_short_signal_has_positive_rr():
     ):
         sig = SupertrendShort(
             target_r_multiple=2.0, stock_dma_period=20,
+            dma_falling_lookback=10,
+            return_threshold=-0.03,
+            volume_spike_min=1.5,
         ).evaluate("TEST", df, Regime.VOLATILE)
     if sig is not None:
         reward = sig.entry_price - sig.target    # short: profit = entry - target

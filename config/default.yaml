@@ -97,7 +97,7 @@ strategies:
     stock_dma_period: 50             # Block entries if stock 50-DMA falling >1% in 5 days
 
   supertrend:
-    enabled: false
+    enabled: true
     regimes: [TREND, VOLATILE]
     atr_period: 10
     multiplier: 3.0
@@ -112,12 +112,15 @@ strategies:
     target_r_multiple: 2.5
 
   supertrend_short:
-    enabled: false
+    enabled: true
     regimes: [VOLATILE, TREND]
     atr_period: 10
     multiplier: 3.0
     target_r_multiple: 2.0
     stock_dma_period: 50              # Only short stocks with falling 50-DMA (confirmed downtrend)
+    dma_falling_lookback: 10          # DMA must be falling over 10-bar window
+    return_threshold: -0.03           # 10-day return must be < -3%
+    volume_spike_min: 1.5             # Volume must be 1.5x 20-day average
 
 execution:
   slippage_bps: 5            # 5 basis points slippage assumption for paper
