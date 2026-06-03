@@ -86,8 +86,6 @@ $gatePassed = ($gateOutput | Where-Object { $_ -match "Passed\s*:\s*True" }) -ne
 # ---------------------------------------------------------------------------
 if ($gatePassed) {
     Write-Log "GATE PASSED — $metricSummary" "INFO"
-    Write-Log "=== Gate refresh finished SUCCESSFULLY ===" "INFO"
-    exit 0
 } else {
     # Collect failure reasons from check-gate output
     $failureLines = $gateOutput | Where-Object { $_ -match "^  X  " }
@@ -106,6 +104,37 @@ if ($gatePassed) {
 
     Add-Content -Path $FailureLog -Value $failureEntry
     Write-Log "Gate FAILED. Failure details written to $FailureLog" "WARN"
+}
+
+# ---------------------------------------------------------------------------
+# 5. Send Telegram notification with gate result
+# ---------------------------------------------------------------------------
+if ($null -ne $sharpe) {
+    $sharpeFmt  = [string]$sharpe
+    $passedFmt  = if ($gatePassed) { "True" } else { "False" }
+    $notifyArgs = @("-c", "
+import sys
+sys.path.insert(0, r'$RepoRoot')
+try:
+    from core.config import Secrets
+    from core.notifications.telegram import TelegramNotifier
+    sec = Secrets.from_env()
+    n = TelegramNotifier(sec.telegram_bot_token, sec.telegram_chat_id)
+    n.send_gate_refresh(sharpe=$sharpeFmt, passed=$passedFmt)
+except Exception as e:
+    print(f'Telegram gate notify failed: {e}')
+")
+    & $Python @notifyArgs 2>&1 | ForEach-Object { Add-Content -Path $RefreshLog -Value $_ }
+    Write-Log "Telegram gate notification sent."
+}
+
+# ---------------------------------------------------------------------------
+# 6. Exit with appropriate code
+# ---------------------------------------------------------------------------
+if ($gatePassed) {
+    Write-Log "=== Gate refresh finished SUCCESSFULLY ===" "INFO"
+    exit 0
+} else {
     Write-Log "=== Gate refresh finished with FAILURES ===" "WARN"
     exit 1
 }

@@ -165,6 +165,36 @@ def test_trade_alert_returns_bool():
         assert isinstance(result, bool)
 
 
+def test_trade_alert_with_regime_and_levels():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_trade_alert(
+            "WIPRO", "BUY", "trend_breakout", 300.0, "target_hit",
+            regime="TREND", stop_loss=450.0, target=500.0, confidence=0.75,
+        )
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "TREND" in text
+        assert "450" in text  # stop loss
+        assert "500" in text  # target
+        assert "75%" in text  # confidence
+
+
+def test_trade_alert_pnl_sign_positive():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_trade_alert("X", "BUY", "s", 1000.0, "target_hit")
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "₹+1,000" in text or "1,000" in text
+
+
+def test_trade_alert_pnl_sign_negative():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_trade_alert("X", "SELL", "s", -500.0, "stop_loss")
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "-500" in text or "500" in text
+
+
 # ---------------------------------------------------------------------------
 # send_daily_summary()
 # ---------------------------------------------------------------------------
@@ -228,3 +258,169 @@ def test_halt_alert_contains_siren_emoji():
         n.send_halt_alert("drawdown")
         text = mock_post.call_args[1]["json"]["text"]
         assert "\U0001f6a8" in text  # rotating light
+
+
+# ---------------------------------------------------------------------------
+# send_regime_change()
+# ---------------------------------------------------------------------------
+
+def test_regime_change_contains_old_and_new_regime():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_regime_change("TREND", "VOLATILE")
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "TREND" in text
+        assert "VOLATILE" in text
+
+
+def test_regime_change_contains_regime_change_emoji():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_regime_change("RANGE", "TREND")
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "\U0001f504" in text  # arrows in circle
+
+
+def test_regime_change_includes_adx_and_vix():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_regime_change("TREND", "VOLATILE", adx=24.0, vix=19.2)
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "ADX=24.0" in text
+        assert "VIX=19.2" in text
+
+
+def test_regime_change_without_adx_vix():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_regime_change("RANGE", "TREND")
+        text = mock_post.call_args[1]["json"]["text"]
+        # Should not crash and should still contain regime names
+        assert "RANGE" in text
+        assert "TREND" in text
+
+
+def test_regime_change_returns_bool():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)):
+        result = n.send_regime_change("TREND", "RANGE")
+        assert isinstance(result, bool)
+
+
+# ---------------------------------------------------------------------------
+# send_gate_refresh()
+# ---------------------------------------------------------------------------
+
+def test_gate_refresh_passed_contains_sharpe():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_gate_refresh(sharpe=1.45, passed=True)
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "1.45" in text
+
+
+def test_gate_refresh_passed_shows_passed():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_gate_refresh(sharpe=1.45, passed=True)
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "PASSED" in text
+
+
+def test_gate_refresh_failed_shows_failed():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_gate_refresh(sharpe=0.32, passed=False)
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "FAILED" in text
+
+
+def test_gate_refresh_failed_contains_action_hint():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_gate_refresh(sharpe=0.32, passed=False)
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "walk-forward" in text.lower()
+
+
+def test_gate_refresh_contains_chart_emoji():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_gate_refresh(sharpe=0.5, passed=False)
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "\U0001f4ca" in text  # bar chart
+
+
+def test_gate_refresh_returns_bool():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)):
+        result = n.send_gate_refresh(sharpe=1.2, passed=True)
+        assert isinstance(result, bool)
+
+
+# ---------------------------------------------------------------------------
+# send_startup()
+# ---------------------------------------------------------------------------
+
+def test_startup_contains_mode():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_startup(mode="paper", capital=1_000_000.0)
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "paper" in text
+
+
+def test_startup_contains_capital():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_startup(mode="paper", capital=500_000.0)
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "500,000" in text or "5,00,000" in text or "500000" in text
+
+
+def test_startup_contains_rocket_emoji():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_startup(mode="paper", capital=1_000_000.0)
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "\U0001f680" in text  # rocket
+
+
+def test_startup_returns_bool():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)):
+        result = n.send_startup(mode="paper", capital=1_000_000.0)
+        assert isinstance(result, bool)
+
+
+# ---------------------------------------------------------------------------
+# send_shutdown()
+# ---------------------------------------------------------------------------
+
+def test_shutdown_contains_reason():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_shutdown(reason="SIGINT received")
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "SIGINT received" in text
+
+
+def test_shutdown_contains_stop_emoji():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)) as mock_post:
+        n.send_shutdown(reason="normal")
+        text = mock_post.call_args[1]["json"]["text"]
+        assert "\U0001f6d1" in text  # stop sign
+
+
+def test_shutdown_returns_bool():
+    n = _notifier()
+    with patch("core.notifications.telegram.requests.post", return_value=_mock_response(200)):
+        result = n.send_shutdown(reason="test")
+        assert isinstance(result, bool)
+
+
+def test_shutdown_disabled_returns_false():
+    n = _notifier(enabled=False)
+    result = n.send_shutdown(reason="test")
+    assert result is False
