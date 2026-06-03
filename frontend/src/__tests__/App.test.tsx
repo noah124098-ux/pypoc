@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import '@testing-library/jest-dom'
 
 // Mock all page components to avoid deep dependency chains
 vi.mock('../pages/LiveTab', () => ({ LiveTab: () => <div>LiveTab</div> }))
@@ -42,7 +41,9 @@ describe('App', () => {
 
   it('renders the sidebar with logo', () => {
     render(<App />)
-    expect(screen.getByText('pypoc')).toBeInTheDocument()
+    // Logo appears in the sidebar header — use getAllByText in case of multiple matches
+    const logos = screen.getAllByText('pypoc')
+    expect(logos.length).toBeGreaterThan(0)
   })
 
   it('renders sidebar equity box', () => {

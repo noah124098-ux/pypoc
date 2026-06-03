@@ -97,7 +97,7 @@ strategies:
     stock_dma_period: 50             # Block entries if stock 50-DMA falling >1% in 5 days
 
   rsi_bounce:
-    enabled: true
+    enabled: false   # disabled: no gate improvement (Sharpe unchanged at 0.32)
     regimes: [RANGE, VOLATILE]
     rsi_period: 14
     rsi_oversold_threshold: 30
