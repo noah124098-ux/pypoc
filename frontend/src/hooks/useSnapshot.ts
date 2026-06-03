@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 
-const API = 'http://localhost:8502'
+// Same-origin when served by FastAPI, or explicit dev URL
+const API = window.location.port === '8502' ? '' : 'http://localhost:8502'
+const WS_URL = window.location.port === '8502'
+  ? `ws://${window.location.host}/ws/live`
+  : 'ws://localhost:8502/ws/live'
 
 export function useSnapshot() {
   const [snap, setSnap] = useState<any>(null)
@@ -9,7 +13,7 @@ export function useSnapshot() {
 
   useEffect(() => {
     function connect() {
-      const ws = new WebSocket(`ws://localhost:8502/ws/live`)
+      const ws = new WebSocket(WS_URL)
       wsRef.current = ws
       ws.onopen = () => setConnected(true)
       ws.onmessage = (e) => { try { setSnap(JSON.parse(e.data)) } catch {} }

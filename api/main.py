@@ -357,14 +357,23 @@ async def websocket_live(websocket: WebSocket):
 if REACT_BUILD.exists():
     app.mount("/assets", StaticFiles(directory=str(REACT_BUILD / "assets")), name="assets")
 
-    @app.get("/favicon.svg")
+    @app.get("/favicon.svg", include_in_schema=False)
     def favicon():
         return FileResponse(str(REACT_BUILD / "favicon.svg"))
 
+    @app.get("/icons.svg", include_in_schema=False)
+    def icons():
+        return FileResponse(str(REACT_BUILD / "icons.svg"))
+
+    # Serve React SPA — index.html for root and all non-API routes
+    _index = str(REACT_BUILD / "index.html")
+
+    @app.get("/", include_in_schema=False)
+    async def serve_root():
+        return FileResponse(_index)
+
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str, request: Request):
-        # API and WebSocket routes are matched above — this catches everything else
-        if full_path.startswith("api/") or full_path.startswith("ws/") or full_path == "health":
+        if full_path.startswith(("api/", "ws/", "health", "docs")):
             return JSONResponse({"error": "not found"}, status_code=404)
-        index = REACT_BUILD / "index.html"
-        return FileResponse(str(index)) if index.exists() else JSONResponse({"error": "React build not found"}, status_code=503)
+        return FileResponse(_index)
