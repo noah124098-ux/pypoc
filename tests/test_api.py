@@ -281,3 +281,109 @@ def test_connection_manager_broadcast():
 
     assert {"value": 1} in good.sent, "good connection should receive broadcast"
     assert bad not in mgr.active_connections, "stale connection should be removed"
+
+
+# ---------------------------------------------------------------------------
+# /api/status  (no auth required)
+# ---------------------------------------------------------------------------
+
+def test_status_returns_all_fields(client):
+    """GET /api/status returns required keys with no authentication."""
+    resp = client.get("/api/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    for key in ("api_version", "agent_running", "agent_halted", "equity",
+                "regime", "gate_passed", "gate_age_days", "services", "timestamp"):
+        assert key in body, f"missing key: {key}"
+
+
+def test_status_no_auth_needed(client):
+    """Status endpoint must be accessible without credentials."""
+    resp = client.get("/api/status")
+    assert resp.status_code == 200
+
+
+def test_status_reads_snapshot(client):
+    """Status reflects values from the seeded snapshot.json."""
+    resp = client.get("/api/status")
+    body = resp.json()
+    assert body["agent_running"] is True
+    assert body["agent_halted"] is False
+    assert body["equity"] == 100000.0
+    assert body["regime"] == "TREND"
+
+
+def test_status_reads_gate(client):
+    """Status reflects gate_passed from the seeded backtest_gate.json."""
+    resp = client.get("/api/status")
+    body = resp.json()
+    assert body["gate_passed"] is True
+
+
+def test_status_gate_age_days_is_number_or_none(client):
+    """gate_age_days is a float (gate has a timestamp) or None (no ts)."""
+    resp = client.get("/api/status")
+    body = resp.json()
+    age = body["gate_age_days"]
+    assert age is None or isinstance(age, (int, float))
+
+
+def test_status_services_dict(client):
+    """services sub-dict contains agent, dashboard, mcp keys."""
+    resp = client.get("/api/status")
+    body = resp.json()
+    svc = body["services"]
+    assert isinstance(svc, dict)
+    for key in ("agent", "dashboard", "mcp"):
+        assert key in svc
+
+
+def test_status_missing_snapshot(tmp_path, monkeypatch):
+    """When no snapshot exists agent_running is False."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+    from api.main import app
+    c = TestClient(app)
+    resp = c.get("/api/status")
+    assert resp.status_code == 200
+    assert resp.json()["agent_running"] is False
+
+
+def test_status_missing_gate(tmp_path, monkeypatch):
+    """When no gate file exists gate_passed is False and gate_age_days is None."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+    from api.main import app
+    c = TestClient(app)
+    resp = c.get("/api/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["gate_passed"] is False
+    assert body["gate_age_days"] is None
+
+
+# ---------------------------------------------------------------------------
+# Global exception handler
+# ---------------------------------------------------------------------------
+
+def test_global_exception_handler_returns_json(tmp_path, monkeypatch):
+    """Unhandled exceptions must return JSON {error, type} not an HTML traceback."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+    from api.main import app
+
+    # Mount a route that raises deliberately
+    @app.get("/api/__test_error__")
+    def raise_error():
+        raise RuntimeError("deliberate test error")
+
+    c = TestClient(app, raise_server_exceptions=False)
+    resp = c.get("/api/__test_error__", auth=AUTH)
+    assert resp.status_code == 500
+    body = resp.json()
+    assert "error" in body
+    assert "type" in body
+    assert body["type"] == "RuntimeError"
