@@ -1,64 +1,65 @@
 {
   "passed": false,
-  "timestamp": "2026-06-03T16:56:24.232672+00:00",
+  "timestamp": "2026-06-03T19:10:15.694964+00:00",
   "period_start": "2023-05-30T00:00:00",
   "period_end": "2026-05-29T00:00:00",
   "metrics": {
-    "n_trades": 53,
-    "win_rate_pct": 49.056603773584904,
-    "profit_factor": 2.1587267848628118,
-    "avg_win": 5842.40648038587,
-    "avg_loss": -2606.175591388667,
-    "total_pnl": 81535.82752253863,
-    "sharpe": -0.09955916985036231,
-    "sortino": -0.15287641432350094,
-    "max_drawdown_pct": 3.3917009066802173,
-    "cagr_pct": 6.254957095717528,
-    "expectancy": 1538.4118400478987,
+    "n_trades": 157,
+    "win_rate_pct": 35.03184713375796,
+    "profit_factor": 1.272617347921935,
+    "avg_win": 7960.001796050054,
+    "avg_loss": -3372.7010229839725,
+    "total_pnl": 93784.59443838768,
+    "sharpe": -0.028059975328235873,
+    "sortino": -0.035571248925027735,
+    "max_drawdown_pct": 11.696740724745974,
+    "cagr_pct": 5.937116242176921,
+    "expectancy": 597.3541047031063,
     "starting_equity": 500000.0,
-    "ending_equity": 599740.6693223756,
+    "ending_equity": 594378.3892680515,
     "period_days": 1095
   },
   "checks": [
     {
       "name": "sharpe",
-      "actual": -0.09955916985036231,
+      "actual": -0.028059975328235873,
       "threshold": 1.2,
       "pass_": false,
       "direction": "ge"
     },
     {
       "name": "max_drawdown_pct",
-      "actual": 3.3917009066802173,
+      "actual": 11.696740724745974,
       "threshold": 15.0,
       "pass_": true,
       "direction": "le"
     },
     {
       "name": "win_rate_pct",
-      "actual": 49.056603773584904,
+      "actual": 35.03184713375796,
       "threshold": 45.0,
-      "pass_": true,
+      "pass_": false,
       "direction": "ge"
     },
     {
       "name": "profit_factor",
-      "actual": 2.1587267848628118,
+      "actual": 1.272617347921935,
       "threshold": 1.5,
-      "pass_": true,
+      "pass_": false,
       "direction": "ge"
     },
     {
       "name": "n_trades",
-      "actual": 53.0,
+      "actual": 157.0,
       "threshold": 100.0,
-      "pass_": false,
+      "pass_": true,
       "direction": "ge"
     }
   ],
   "failures": [
     "sharpe",
-    "n_trades"
+    "win_rate_pct",
+    "profit_factor"
   ],
   "config": {
     "min_sharpe": 1.2,

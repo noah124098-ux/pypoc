@@ -29,7 +29,7 @@ All workflow launches from this repo are pre-approved. Use the `Workflow` tool f
 
 An automated, regime-aware **paper-trading agent for NSE Nifty 50** that consumes live Angel One SmartAPI tick data, classifies the market into TREND/RANGE/VOLATILE regimes, runs strategy logic appropriate to the regime, and sends every order through a hard guardrails layer with stop-loss, daily-loss circuit, drawdown circuit, and black-swan halts.
 
-**Status:** v2 — Phases 3/4/5/5b/6b/7 complete. 862 tests passing. Gate at -0.10 Sharpe (failing — see Open issues). No live broker active.
+**Status:** v2 — Phases 3/4/5/5b/6b/7 complete. 862 tests passing. Gate at -0.03 Sharpe (failing — see Open issues). No live broker active.
 
 **Repo:** https://github.com/noah124098-ux/pypoc
 
@@ -175,44 +175,44 @@ cd frontend && npm run build
 
 ## Open issues — pick up here
 
-### 1. Backtest gate failing — -0.10 Sharpe, only 53 trades
+### 1. Backtest gate failing — -0.03 Sharpe, Supertrend NaN bug
 
-Current gate state (file timestamp 2026-06-03, generated with TREND strategies disabled):
+Current gate run (file timestamp 2026-06-03, mixed config with some TREND strategies disabled):
 
 ```text
-Sharpe: -0.10, MaxDD: 3.4%, win: 49.1%, pf: 2.16, trades: 53
-Gate FAILED: sharpe (-0.10 < 1.2), n_trades (53 < 100)
+Sharpe: -0.03, MaxDD: 11.7%, win: 35.0%, pf: 1.27, trades: 157
+Gate FAILED: sharpe (-0.03 < 1.2), win_rate (35.0% < 45%), profit_factor (1.27 < 1.5)
 ```
 
-**Context:** The most recent gate run used a config with TREND strategies disabled
-(`feat(config): disable TREND strategies for best W3 Sharpe — pure defensive combo`,
-commit `88d00ca`). This reduced drawdown to 3.4% and improved win rate to 49.1% and
-profit factor to 2.16, but halved the trade count (53 vs 100+ required) and made Sharpe
-negative (-0.10 vs baseline 0.32 with all strategies enabled).
+**Root cause:** W3 (May 2025–Jun 2026) is a correction+recovery market. Long-only trend
+strategies fail: `trend_breakout` and `rsi_momentum` generate heavy losses. Both
+`supertrend` strategies produce 0 trades due to a NaN bug — kept intentionally to
+preserve the current baseline until a correct rewrite is done.
 
-**Gate failures are now:** `sharpe` and `n_trades` (not win_rate or profit_factor anymore).
-
-**Root cause (unchanged):** W3 (May 2025–Jun 2026) is a correction+recovery market.
-Long-only trend strategies fail: `trend_breakout` and `rsi_momentum` generate heavy losses.
-Both `supertrend` strategies produce 0 trades due to a NaN bug — kept intentionally.
+**All TREND strategies are W3 losers; only volume-confirmed or mean-reversion strategies survive.**
 
 **What's been tried that DEGRADES results** (see memory `project_gate_status.md`):
 every stock-level DMA filter, 52-week-high filter, regime directionality check,
 rolling autocorr filter — all hurt W1 more than they help W3.
 
 - **Supertrend NaN fix + enable both supertrend strategies (2026-06-02):** Indicator NaN bug
-  confirmed fixed but enabling supertrend+supertrend_short degraded gate to Sharpe -0.48,
-  MaxDD 34%, win 22.9%, pf 0.75. Both files reverted.
+  confirmed fixed (9% NaN in warm-up only, direction flips work, 2+ flips on 100-bar synthetic).
+  BUT enabling supertrend+supertrend_short degraded gate to Sharpe -0.48, MaxDD 34%, win 22.9%,
+  pf 0.75 (baseline: 0.32 Sharpe, 10.5% DD, 35.8% win, 1.41 pf). Both files reverted.
   The indicator fix is correct; the strategies themselves need signal-quality improvements
-  (regime=TREND + ADX filter + minimum trend strength) before they can be enabled.
+  (e.g., require regime=TREND + ADX filter + minimum trend strength) before they can be enabled.
 
-- **Disabling TREND strategies (2026-06-03):** Sharpe dropped from 0.32 to -0.10 and
-  trade count fell to 53. This is strictly worse overall. Strategies should be re-enabled.
+- **Disabling TREND strategies (2026-06-03):** Sharpe went from 0.32 to -0.10 (later -0.03
+  after partial re-enable), trade count varied. Disabling strategies is not the solution.
 
-**Best known baseline:** All 4 strategies enabled + VIX<18 + Hurst H>0.5 + market breadth 50%
-+ 1.5x RANGE boost → Sharpe 0.32, MaxDD 12.4%, win 38.6%, PF 1.42 (still failing gate).
+- **Best known baseline:** All 4 strategies enabled + VIX<18 + Hurst H>0.5 + market breadth 50%
+  + 1.5x RANGE boost → Sharpe 0.32, MaxDD 12.4%, win 38.6%, PF 1.42 (still failing gate).
 
-**Reproducible baseline run:** `python cli.py walk-forward --years 3 --end-date 2026-05-29`
+**Targeted portfolio experiments (not yet run):**
+- `obv_trend + mean_reversion + vol_compression` — volume-confirmed entries may survive W3 better
+  than pure price-breakout strategies. Not yet tested.
+
+**Reproducible gate run:** `python cli.py walk-forward --years 3 --end-date 2026-05-29`
 
 **Recommended next move:** Run `Workflow({ name: "gate-fix" })` to fan out parallel experiments.
 Fix the Supertrend NaN bug as a prerequisite — both strategies must generate trades.
