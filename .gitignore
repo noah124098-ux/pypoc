@@ -33,6 +33,12 @@ venv/
 *.egg-info/
 build/
 dist/
+.coverage
+htmlcov/
+
+# --- Node / Frontend ---
+node_modules/
+frontend/node_modules/
 
 # --- Databases & local stores ---
 *.db
