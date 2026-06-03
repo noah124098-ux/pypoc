@@ -1,18 +1,79 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import asyncio
 import json
 import sqlite3
+import logging
+import secrets
+import os
+from datetime import datetime
 from pathlib import Path
+from typing import List
 
+import psutil
+
+from contextlib import asynccontextmanager
 from core.runtime_snapshot import read as read_snapshot
 from mcp_server.tools import TradingAgentTools
 
+logger = logging.getLogger(__name__)
+
+security = HTTPBasic()
+
+
+def verify(creds: HTTPBasicCredentials = Depends(security)):
+    user_ok = secrets.compare_digest(creds.username.encode(), b"admin")
+    pass_ok = secrets.compare_digest(
+        creds.password.encode(),
+        os.getenv("DASHBOARD_PASSWORD", "pypoc2024").encode(),
+    )
+    if not (user_ok and pass_ok):
+        raise HTTPException(status_code=401, headers={"WWW-Authenticate": "Basic"})
+    return creds.username
+
+
+class ConnectionManager:
+    """Manages all active WebSocket connections and broadcasts to all at once."""
+
+    def __init__(self) -> None:
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.debug("WS connected — total: %d", len(self.active_connections))
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        logger.debug("WS disconnected — total: %d", len(self.active_connections))
+
+    async def broadcast(self, data: dict) -> None:
+        """Send *data* to every connected client, removing stale connections."""
+        stale: List[WebSocket] = []
+        for ws in list(self.active_connections):
+            try:
+                await ws.send_json(data)
+            except Exception:
+                stale.append(ws)
+        for ws in stale:
+            self.disconnect(ws)
+
+
+manager = ConnectionManager()
+
 REACT_BUILD = Path("frontend/dist")
 
-app = FastAPI(title="pypoc Trading API", version="2.0", docs_url="/api/docs", redoc_url=None)
+@asynccontextmanager
+async def lifespan(app):
+    asyncio.create_task(_broadcast_loop())
+    yield
+
+
+app = FastAPI(title="pypoc Trading API", version="2.0", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
@@ -22,33 +83,33 @@ def health():
 
 
 @app.get("/api/snapshot")
-def get_snapshot():
+def get_snapshot(_: str = Depends(verify)):
     snap = read_snapshot("data/snapshot.json")
     return snap or {"running": False}
 
 
 @app.get("/api/positions")
-def get_positions():
+def get_positions(_: str = Depends(verify)):
     return TradingAgentTools().get_positions()
 
 
 @app.get("/api/equity")
-def get_equity(limit: int = 200):
+def get_equity(limit: int = 200, _: str = Depends(verify)):
     return TradingAgentTools().get_equity_curve(limit=limit)
 
 
 @app.get("/api/trades")
-def get_trades(limit: int = 50):
+def get_trades(limit: int = 50, _: str = Depends(verify)):
     return TradingAgentTools().get_recent_trades(limit=limit)
 
 
 @app.get("/api/signals")
-def get_signals(limit: int = 50):
+def get_signals(limit: int = 50, _: str = Depends(verify)):
     return TradingAgentTools().get_recent_signals(limit=limit)
 
 
 @app.get("/api/gate")
-def get_gate():
+def get_gate(_: str = Depends(verify)):
     gate_path = Path("data/backtest_gate.json")
     if gate_path.exists():
         return json.loads(gate_path.read_text())
@@ -56,27 +117,27 @@ def get_gate():
 
 
 @app.get("/api/regime")
-def get_regime(limit: int = 100):
+def get_regime(limit: int = 100, _: str = Depends(verify)):
     return TradingAgentTools().get_regime_history(limit=limit)
 
 
 @app.get("/api/pnl")
-def get_pnl():
+def get_pnl(_: str = Depends(verify)):
     return TradingAgentTools().get_pnl()
 
 
 @app.get("/api/guardrails")
-def get_guardrails(limit: int = 50):
+def get_guardrails(limit: int = 50, _: str = Depends(verify)):
     return TradingAgentTools().get_guardrail_rejections(limit=limit)
 
 
 @app.get("/api/config")
-def get_config():
+def get_config(_: str = Depends(verify)):
     return TradingAgentTools().get_config_summary()
 
 
 @app.get("/api/universe")
-def get_universe():
+def get_universe(_: str = Depends(verify)):
     return TradingAgentTools().get_universe()
 
 
@@ -99,7 +160,7 @@ def _load_trades_filtered(days: int | None = None):
 
 
 @app.get("/api/analytics/strategy-performance")
-def get_strategy_performance(days: int = 90):
+def get_strategy_performance(days: int = 90, _: str = Depends(verify)):
     """Per-strategy ExtendedMetrics breakdown."""
     try:
         from core.analytics.metrics import compute_strategy_attribution
@@ -111,7 +172,7 @@ def get_strategy_performance(days: int = 90):
 
 
 @app.get("/api/analytics/monthly-pnl")
-def get_monthly_pnl(days: int = 365):
+def get_monthly_pnl(days: int = 365, _: str = Depends(verify)):
     """Monthly P&L summary: pnl, n_trades, win_rate per month."""
     try:
         from core.analytics.metrics import compute_monthly_pnl
@@ -126,7 +187,7 @@ def get_monthly_pnl(days: int = 365):
 
 
 @app.get("/api/analytics/extended-metrics")
-def get_extended_metrics(days: int = 365):
+def get_extended_metrics(days: int = 365, _: str = Depends(verify)):
     """Full ExtendedMetrics for all trades in the given window."""
     try:
         from core.analytics.metrics import compute_extended_metrics
@@ -142,7 +203,7 @@ def get_extended_metrics(days: int = 365):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/costs")
-def get_costs(days: int = 365):
+def get_costs(days: int = 365, _: str = Depends(verify)):
     """Charges breakdown: total charges, per-strategy charges, recent trade charges."""
     db_path = "data/agent.db"
     if not Path(db_path).exists():
@@ -212,7 +273,7 @@ def get_costs(days: int = 365):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/trades/list")
-def list_trades(limit: int = 50):
+def list_trades(limit: int = 50, _: str = Depends(verify)):
     """List recent trades for the replay selector with P&L info."""
     db_path = "data/agent.db"
     if not Path(db_path).exists():
@@ -239,7 +300,7 @@ def list_trades(limit: int = 50):
 
 
 @app.get("/api/trade/{trade_id}")
-def get_trade(trade_id: int):
+def get_trade(trade_id: int, _: str = Depends(verify)):
     """Full trade details for replay: entry/exit prices, strategy, regime, rationale, timing."""
     db_path = "data/agent.db"
     if not Path(db_path).exists():
@@ -276,7 +337,7 @@ def get_trade(trade_id: int):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/eod-review")
-def get_eod_review():
+def get_eod_review(_: str = Depends(verify)):
     """Return the last EOD review from data/last_review.json, or {available: false}."""
     p = Path("data/last_review.json")
     if p.exists():
@@ -294,9 +355,8 @@ def get_eod_review():
 # ---------------------------------------------------------------------------
 
 @app.get("/api/portfolio/angel-one")
-def get_angel_one_portfolio():
+def get_angel_one_portfolio(_: str = Depends(verify)):
     """Angel One live portfolio. Returns disconnected stub if credentials absent."""
-    import os
     api_key = os.getenv("ANGEL_ONE_API_KEY", "")
     client_code = os.getenv("ANGEL_ONE_CLIENT_CODE", "")
     password = os.getenv("ANGEL_ONE_PASSWORD", "")
@@ -323,30 +383,73 @@ def get_angel_one_portfolio():
         return {"connected": False, "message": str(exc)}
 
 
+# ---------------------------------------------------------------------------
+# System metrics endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/system")
+def get_system(_: str = Depends(verify)):
+    """EC2/machine resource metrics: CPU, memory, disk, uptime, Python processes."""
+    cpu = psutil.cpu_percent(interval=0.1)
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage("C:/Users/Administrator/pypoc")
+    boot_time = datetime.fromtimestamp(psutil.boot_time())
+    uptime_hours = (datetime.now() - boot_time).total_seconds() / 3600
+    return {
+        "cpu_pct": cpu,
+        "memory_used_gb": round(mem.used / 1e9, 2),
+        "memory_total_gb": round(mem.total / 1e9, 2),
+        "memory_pct": mem.percent,
+        "disk_used_gb": round(disk.used / 1e9, 2),
+        "disk_free_gb": round(disk.free / 1e9, 2),
+        "disk_pct": disk.percent,
+        "uptime_hours": round(uptime_hours, 1),
+        "python_processes": len([p for p in psutil.process_iter() if "python" in p.name().lower()])
+    }
+
+
 @app.post("/api/command/halt")
-def halt_agent(reason: str = "manual halt via API"):
-    from core.execution.command_queue import enqueue
+def halt_agent(reason: str = "manual halt via API", _: str = Depends(verify)):
+    from core.command_queue import enqueue
     cmd = enqueue("halt_agent", {"reason": reason})
     return {"queued": True, "command_id": cmd.id}
 
 
 @app.post("/api/command/resume")
-def resume_agent():
-    from core.execution.command_queue import enqueue
+def resume_agent(_: str = Depends(verify)):
+    from core.command_queue import enqueue
     cmd = enqueue("resume_agent", {})
     return {"queued": True, "command_id": cmd.id}
 
 
+async def _broadcast_loop() -> None:
+    """Single background task: read snapshot once per second and push to ALL clients."""
+    while True:
+        try:
+            snap = read_snapshot("data/snapshot.json") or {"running": False}
+            if manager.active_connections:
+                await manager.broadcast(snap)
+        except Exception as exc:
+            logger.warning("broadcast_loop error: %s", exc)
+        await asyncio.sleep(1)
+
+
 @app.websocket("/ws/live")
-async def websocket_live(websocket: WebSocket):
-    await websocket.accept()
+async def websocket_live(websocket: WebSocket, token: str = ""):
+    expected = os.getenv("DASHBOARD_PASSWORD", "pypoc2024")
+    if token != expected:
+        await websocket.close(1008)
+        return
+    await manager.connect(websocket)
     try:
+        # Send current snapshot immediately on connect so clients don't wait up to 1 s.
+        snap = read_snapshot('data/snapshot.json') or {'running': False}
+        await websocket.send_json(snap)
         while True:
-            snap = read_snapshot("data/snapshot.json") or {}
-            await websocket.send_json(snap)
-            await asyncio.sleep(1)
+            # Keep the connection alive; wait for client disconnect or any message.
+            await websocket.receive_text()
     except (WebSocketDisconnect, Exception):
-        pass
+        manager.disconnect(websocket)
 
 
 # ── Serve React SPA (must be last — catches all unmatched routes) ──────────

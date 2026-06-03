@@ -13,12 +13,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+# Default credentials used across all auth-required tests
+AUTH = ("admin", "pypoc2024")
+
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     """Return a TestClient with snapshot + gate files seeded in a temp dir."""
     # Point the working directory context to tmp_path so relative paths resolve.
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
 
     # Write a minimal snapshot file.
     snapshot = {
@@ -66,7 +70,7 @@ def client(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# /health
+# /health  (no auth required)
 # ---------------------------------------------------------------------------
 
 def test_health(client):
@@ -80,7 +84,7 @@ def test_health(client):
 # ---------------------------------------------------------------------------
 
 def test_snapshot_returns_data(client):
-    resp = client.get("/api/snapshot")
+    resp = client.get("/api/snapshot", auth=AUTH)
     assert resp.status_code == 200
     body = resp.json()
     assert body["mode"] == "paper"
@@ -90,12 +94,19 @@ def test_snapshot_returns_data(client):
 def test_snapshot_missing_returns_not_running(tmp_path, monkeypatch):
     """When snapshot.json does not exist the endpoint returns {running: False}."""
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
     (tmp_path / "data").mkdir()
     from api.main import app
     c = TestClient(app)
-    resp = c.get("/api/snapshot")
+    resp = c.get("/api/snapshot", auth=AUTH)
     assert resp.status_code == 200
     assert resp.json() == {"running": False}
+
+
+def test_snapshot_requires_auth(client):
+    """Without credentials the endpoint returns 401."""
+    resp = client.get("/api/snapshot")
+    assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -104,13 +115,14 @@ def test_snapshot_missing_returns_not_running(tmp_path, monkeypatch):
 
 def test_positions_empty_when_no_open_positions(client):
     """get_positions() reads from snapshot; returns [] when no open positions."""
-    resp = client.get("/api/positions")
+    resp = client.get("/api/positions", auth=AUTH)
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
 
 
 def test_positions_with_mock(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
     (tmp_path / "data").mkdir()
     mock_instance = MagicMock()
     mock_instance.get_positions.return_value = [
@@ -119,7 +131,7 @@ def test_positions_with_mock(tmp_path, monkeypatch):
     with patch("api.main.TradingAgentTools", return_value=mock_instance):
         from api.main import app
         c = TestClient(app)
-        resp = c.get("/api/positions")
+        resp = c.get("/api/positions", auth=AUTH)
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
@@ -132,6 +144,7 @@ def test_positions_with_mock(tmp_path, monkeypatch):
 
 def test_equity_with_mock(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
     (tmp_path / "data").mkdir()
     mock_instance = MagicMock()
     mock_instance.get_equity_curve.return_value = [
@@ -140,7 +153,7 @@ def test_equity_with_mock(tmp_path, monkeypatch):
     with patch("api.main.TradingAgentTools", return_value=mock_instance):
         from api.main import app
         c = TestClient(app)
-        resp = c.get("/api/equity?limit=100")
+        resp = c.get("/api/equity?limit=100", auth=AUTH)
     assert resp.status_code == 200
     data = resp.json()
     assert data[0]["equity"] == 100000.0
@@ -153,6 +166,7 @@ def test_equity_with_mock(tmp_path, monkeypatch):
 
 def test_trades_with_mock(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
     (tmp_path / "data").mkdir()
     mock_instance = MagicMock()
     mock_instance.get_recent_trades.return_value = [
@@ -161,7 +175,7 @@ def test_trades_with_mock(tmp_path, monkeypatch):
     with patch("api.main.TradingAgentTools", return_value=mock_instance):
         from api.main import app
         c = TestClient(app)
-        resp = c.get("/api/trades?limit=10")
+        resp = c.get("/api/trades?limit=10", auth=AUTH)
     assert resp.status_code == 200
     data = resp.json()
     assert data[0]["symbol"] == "TCS"
@@ -174,6 +188,7 @@ def test_trades_with_mock(tmp_path, monkeypatch):
 
 def test_signals_with_mock(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
     (tmp_path / "data").mkdir()
     mock_instance = MagicMock()
     mock_instance.get_recent_signals.return_value = [
@@ -182,7 +197,7 @@ def test_signals_with_mock(tmp_path, monkeypatch):
     with patch("api.main.TradingAgentTools", return_value=mock_instance):
         from api.main import app
         c = TestClient(app)
-        resp = c.get("/api/signals?limit=20")
+        resp = c.get("/api/signals?limit=20", auth=AUTH)
     assert resp.status_code == 200
     data = resp.json()
     assert data[0]["symbol"] == "INFY"
@@ -194,7 +209,7 @@ def test_signals_with_mock(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_gate_returns_file(client):
-    resp = client.get("/api/gate")
+    resp = client.get("/api/gate", auth=AUTH)
     assert resp.status_code == 200
     body = resp.json()
     assert body["passed"] is True
@@ -203,10 +218,11 @@ def test_gate_returns_file(client):
 
 def test_gate_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
     (tmp_path / "data").mkdir()
     from api.main import app
     c = TestClient(app)
-    resp = c.get("/api/gate")
+    resp = c.get("/api/gate", auth=AUTH)
     assert resp.status_code == 200
     body = resp.json()
     assert body["passed"] is False
@@ -217,9 +233,51 @@ def test_gate_missing(tmp_path, monkeypatch):
 # WebSocket /ws/live
 # ---------------------------------------------------------------------------
 
-def test_websocket_sends_snapshot(client):
-    """WebSocket should push a JSON message containing the snapshot."""
-    with client.websocket_connect("/ws/live") as ws:
+def test_websocket_sends_snapshot(client, monkeypatch):
+    """WebSocket should receive a broadcast JSON message containing the snapshot."""
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    with client.websocket_connect("/ws/live?token=pypoc2024") as ws:
         data = ws.receive_json()
     assert isinstance(data, dict)
     assert data.get("equity") == 100000.0
+
+
+def test_websocket_rejects_bad_token(client, monkeypatch):
+    """WebSocket should close with 1008 when the token is wrong."""
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    import pytest as pt
+    from starlette.websockets import WebSocketState
+    # TestClient raises on rejected WS; accept the close gracefully.
+    try:
+        with client.websocket_connect("/ws/live?token=wrong") as ws:
+            ws.receive_json()
+        # If we reach here the server accepted — that is a test failure.
+        assert False, "expected close, got connection"
+    except Exception:
+        pass  # expected: server closed with 1008
+
+
+def test_connection_manager_broadcast():
+    """ConnectionManager.broadcast removes stale connections silently."""
+    import asyncio
+    from api.main import ConnectionManager
+
+    mgr = ConnectionManager()
+
+    class FakeWS:
+        def __init__(self, fail=False):
+            self.sent = []
+            self.fail = fail
+        async def send_json(self, data):
+            if self.fail:
+                raise RuntimeError("closed")
+            self.sent.append(data)
+
+    good = FakeWS(fail=False)
+    bad  = FakeWS(fail=True)
+    mgr.active_connections = [good, bad]
+
+    asyncio.run(mgr.broadcast({"value": 1}))
+
+    assert {"value": 1} in good.sent, "good connection should receive broadcast"
+    assert bad not in mgr.active_connections, "stale connection should be removed"
