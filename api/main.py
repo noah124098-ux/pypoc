@@ -227,6 +227,34 @@ def get_guardrails(limit: int = 50, _: str = Depends(verify)):
     return TradingAgentTools().get_guardrail_rejections(limit=limit)
 
 
+@app.get("/api/atm-iv")
+def get_atm_iv(_: str = Depends(verify)):
+    """Return the current Nifty ATM CE implied volatility from NSE option chain.
+
+    Response
+    --------
+    ``{"atm_iv": <float|null>, "source": "nse_option_chain", "cached": <bool>}``
+
+    ``atm_iv`` is expressed as a percentage (e.g. 12.5 means 12.5%).
+    Returns ``null`` when NSE is unreachable (fail-open — never blocks trading).
+    """
+    from core.data.nse_atm_iv import get_atm_iv as _get_atm_iv, _cached_iv, _cache_timestamp
+    import time as _time
+
+    # Capture cache state before the (potentially cached) call
+    had_cache = _cached_iv is not None
+    iv = _get_atm_iv()
+
+    # Determine whether this response was served from cache
+    served_from_cache = had_cache and _cached_iv == iv
+
+    return {
+        "atm_iv": iv,
+        "source": "nse_option_chain",
+        "cached": served_from_cache,
+    }
+
+
 @app.get("/api/config")
 def get_config(_: str = Depends(verify)):
     return TradingAgentTools().get_config_summary()
