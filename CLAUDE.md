@@ -29,7 +29,7 @@ All workflow launches from this repo are pre-approved. Use the `Workflow` tool f
 
 An automated, regime-aware **paper-trading agent for NSE Nifty 50** that consumes live Angel One SmartAPI tick data, classifies the market into TREND/RANGE/VOLATILE regimes, runs strategy logic appropriate to the regime, and sends every order through a hard guardrails layer with stop-loss, daily-loss circuit, drawdown circuit, and black-swan halts.
 
-**Status:** v2 — Phases 3/4/5/6b/7 complete. 624 tests passing. Gate at 0.32 Sharpe (still failing — see Open issues). No live broker active.
+**Status:** v2 — Phases 3/4/5/5b/6b/7 complete. 862 tests passing. Gate at -0.10 Sharpe (failing — see Open issues). No live broker active.
 
 **Repo:** https://github.com/noah124098-ux/pypoc
 
@@ -46,8 +46,9 @@ An automated, regime-aware **paper-trading agent for NSE Nifty 50** that consume
 | Broker abstraction | `IBroker` interface; `PaperBroker` impl + `AngelOneLiveBroker` stub |
 | Live data source | Angel One SmartAPI (`core/data/angelone_feed.py` + `angelone_history.py`) |
 | Backtest data fallback | NSE Bhavcopy archives (`core/data/bhavcopy.py`), no creds needed |
-| MCP integration | Yes — `mcp_server/` exposes 10 read-only tools |
+| MCP integration | Yes — `mcp_server/` exposes read-only tools |
 | Backtest gate thresholds | Sharpe ≥ 1.2, MaxDD ≤ 15%, win rate ≥ 45%, profit factor ≥ 1.5, ≥100 trades, 3+ years walk-forward, file ≤30 days old |
+| Primary dashboard | React + FastAPI — served at `:8502` (SPA) / `:8503` (dev Vite) |
 
 ## Critical security constraint — DATA-ONLY
 
@@ -69,18 +70,30 @@ core/
                  nse_rate_limiter.py (rate limiter + circuit breaker),
                  upstox_feed.py (Upstox V3 WebSocket), angelone_portfolio.py
   regime/        Regime classifier (ADX + BB width + VIX)
-  strategies/    Three baseline strategies + IStrategy interface
+  strategies/    8 strategies + IStrategy interface + indicators (Hurst, autocorr)
   risk/          Position sizing + 14 hard guardrails (every order goes through, no overrides)
   execution/     Orchestrator (live loop), command_queue.py (file-based MCP mutations)
   persistence/   SQLite store with schema versioning + migrations
   llm/           EOD Claude reviewer, news_scorer.py (Claude sentiment scoring)
-  notifications/ Telegram notifier, email notifier (EOD HTML reports + halt alerts)
+  notifications/ Telegram notifier (richer alerts w/ regime/SL/target/confidence),
+                 email notifier (EOD HTML reports + halt alerts)
   config.py      Pydantic settings loaded from YAML + .env, hot-reload for risk params
-mcp_server/      MCP server (read-only) — 10 tools for inspecting the live agent
-frontend/        React dashboard (primary) — all 10 tabs, served at :8503 via FastAPI at :8502
-dashboard.py     Streamlit dashboard — DECOMMISSIONED (service disabled; code kept for reference)
-tests/           624 passing tests
-config/          Default YAML
+api/             FastAPI backend — REST + WebSocket, HTTP Basic Auth, request logging
+  main.py        All /api/* endpoints + /ws WebSocket broadcast loop + SPA static serving
+  run.py         Uvicorn entrypoint for :8502
+frontend/        React dashboard (primary) — 10 tabs, mobile-responsive, dark theme
+  src/           TypeScript source (App.tsx, pages/, hooks/)
+  dist/          Production build served by FastAPI at :8502
+mcp_server/      MCP server (read-only) — tools for inspecting the live agent
+dashboard/       Streamlit dashboard components — DECOMMISSIONED (kept for reference)
+dashboard.py     Streamlit entry point — DECOMMISSIONED
+deploy/          nginx SSL/TLS config + self-signed cert generator + EC2 setup scripts
+docker-compose.yml  Docker Compose service definitions
+Dockerfile       Multi-stage build: venv + React build + FastAPI
+tests/           862 passing tests (includes Vitest frontend unit tests via pytest adapter)
+config/
+  default.yaml   Default config (TREND strategies currently disabled for gate baseline)
+  environments/  dev.yaml, staging.yaml, prod.yaml overrides
 cli.py           Entry points: run | warmup | check-config | mcp-server | backtest |
                  walk-forward | check-gate | preflight | status | performance |
                  strategy-report | schedule-gate-refresh
@@ -90,7 +103,7 @@ scripts/         Windows startup/ops scripts: start_agent.bat, start_dashboard.b
                  refresh_gate.bat, refresh_gate.ps1,
                  backup_data.bat, rotate_logs.bat
 docs/            ARCHITECTURE.md, LIVE_BROKER_SETUP.md
-.env.example     Credentials template (Angel One + Upstox + Telegram + email)
+.env.example     Credentials template (Angel One + Upstox + Telegram + email + DASHBOARD_PASSWORD)
 ```
 
 ## How to run anything
@@ -99,7 +112,7 @@ docs/            ARCHITECTURE.md, LIVE_BROKER_SETUP.md
 # Activate venv (Windows)
 .\.venv\Scripts\Activate.ps1
 
-# Run the full test suite (must always be 624/624)
+# Run the full test suite (must always be 862/862)
 pytest -q
 
 # Pre-flight check before paper trading
@@ -134,35 +147,72 @@ python cli.py run
 
 # Run the MCP server (separate process; reads data/snapshot.json + data/agent.db)
 python cli.py mcp-server
+
+# --- React + FastAPI dashboard ---
+
+# Production: FastAPI serves React SPA + API on port 8502
+# Set DASHBOARD_PASSWORD in .env (default: pypoc2024)
+python api/run.py
+
+# Open browser: http://localhost:8502
+# API docs (Swagger): http://localhost:8502/docs
+
+# Development: Vite dev server (hot-reload) on port 5173
+cd frontend && npm run dev
+# API still needs to run separately: python api/run.py
+
+# Build React for production (output to frontend/dist)
+cd frontend && npm run build
 ```
+
+## Service ports
+
+| Port | Service |
+| --- | --- |
+| 8502 | FastAPI backend + React SPA (production) |
+| 5173 | Vite dev server (frontend hot-reload) |
+| 8765 | MCP server |
 
 ## Open issues — pick up here
 
-### 1. Backtest gate failing — 0.32 Sharpe, Supertrend NaN bug
+### 1. Backtest gate failing — -0.10 Sharpe, only 53 trades
 
-Current gate run (pinned `--end-date 2026-05-29`):
+Current gate state (file timestamp 2026-06-03, generated with TREND strategies disabled):
 
 ```text
-Aggregate: Sharpe ~0.32, MaxDD ~10.5%, win ~35.8%, pf ~1.41
-Gate FAILED: sharpe (0.32 < 1.2), win_rate (35.8% < 45%), profit_factor (1.41 < 1.5)
+Sharpe: -0.10, MaxDD: 3.4%, win: 49.1%, pf: 2.16, trades: 53
+Gate FAILED: sharpe (-0.10 < 1.2), n_trades (53 < 100)
 ```
 
-**Root cause:** W3 (May 2025–Jun 2026) is a correction+recovery market. Long-only trend
-strategies fail: `trend_breakout` and `rsi_momentum` generate heavy losses. Both
-`supertrend` strategies produce 0 trades due to a NaN bug — kept intentionally to
-preserve the current 0.32 baseline until a correct rewrite is done.
+**Context:** The most recent gate run used a config with TREND strategies disabled
+(`feat(config): disable TREND strategies for best W3 Sharpe — pure defensive combo`,
+commit `88d00ca`). This reduced drawdown to 3.4% and improved win rate to 49.1% and
+profit factor to 2.16, but halved the trade count (53 vs 100+ required) and made Sharpe
+negative (-0.10 vs baseline 0.32 with all strategies enabled).
+
+**Gate failures are now:** `sharpe` and `n_trades` (not win_rate or profit_factor anymore).
+
+**Root cause (unchanged):** W3 (May 2025–Jun 2026) is a correction+recovery market.
+Long-only trend strategies fail: `trend_breakout` and `rsi_momentum` generate heavy losses.
+Both `supertrend` strategies produce 0 trades due to a NaN bug — kept intentionally.
 
 **What's been tried that DEGRADES results** (see memory `project_gate_status.md`):
 every stock-level DMA filter, 52-week-high filter, regime directionality check,
 rolling autocorr filter — all hurt W1 more than they help W3.
-- **Supertrend NaN fix + enable both supertrend strategies (2026-06-02):** Indicator NaN bug
-  confirmed fixed (9% NaN in warm-up only, direction flips work, 2+ flips on 100-bar synthetic).
-  BUT enabling supertrend+supertrend_short degraded gate to Sharpe -0.48, MaxDD 34%, win 22.9%,
-  pf 0.75 (baseline: 0.32 Sharpe, 10.5% DD, 35.8% win, 1.41 pf). Both files reverted.
-  The indicator fix is correct; the strategies themselves need signal-quality improvements
-  (e.g., require regime=TREND + ADX filter + minimum trend strength) before they can be enabled.
 
-**Reproducible gate run:** `python cli.py walk-forward --years 3 --end-date 2026-05-29`
+- **Supertrend NaN fix + enable both supertrend strategies (2026-06-02):** Indicator NaN bug
+  confirmed fixed but enabling supertrend+supertrend_short degraded gate to Sharpe -0.48,
+  MaxDD 34%, win 22.9%, pf 0.75. Both files reverted.
+  The indicator fix is correct; the strategies themselves need signal-quality improvements
+  (regime=TREND + ADX filter + minimum trend strength) before they can be enabled.
+
+- **Disabling TREND strategies (2026-06-03):** Sharpe dropped from 0.32 to -0.10 and
+  trade count fell to 53. This is strictly worse overall. Strategies should be re-enabled.
+
+**Best known baseline:** All 4 strategies enabled + VIX<18 + Hurst H>0.5 + market breadth 50%
++ 1.5x RANGE boost → Sharpe 0.32, MaxDD 12.4%, win 38.6%, PF 1.42 (still failing gate).
+
+**Reproducible baseline run:** `python cli.py walk-forward --years 3 --end-date 2026-05-29`
 
 **Recommended next move:** Run `Workflow({ name: "gate-fix" })` to fan out parallel experiments.
 Fix the Supertrend NaN bug as a prerequisite — both strategies must generate trades.
@@ -174,23 +224,24 @@ Fix the Supertrend NaN bug as a prerequisite — both strategies must generate t
 | 3 | Live NSE data feeds (VIX, PCR), economic calendar blackouts, EOD Claude reviewer | **DONE** |
 | 4 | EOD reviewer (Claude Opus 4.7) producing parameter-adjustment proposals | **DONE** |
 | 5 | Streamlit dashboard + Telegram alerts + email EOD report + dark mode | **DONE** |
-| 5b | React dashboard (10 tabs) — full parity with Streamlit; Streamlit decommissioned | **DONE** |
+| 5b | React dashboard (10 tabs, mobile, FastAPI backend, HTTP Basic Auth, WebSocket) — Streamlit decommissioned | **DONE** |
 | 6b | MCP mutating tools via file-based command-queue (halt_agent, place_paper_order) | **DONE** |
 | 7 | AngelOneLiveBroker + Upstox V3 feed + hot-reload risk params + SQLite migrations | **DONE** |
+| 7b | FastAPI production hardening: WebSocket manager, SSL/TLS nginx, auth, status endpoint | **DONE** |
 | 8 | Live deployment with small capital, after backtest gate + paper proof | not started |
 
 ### 3. Recently completed (last 10 commits)
 
-- `c5537e5` .env.example: expanded template with Upstox vars
-- `0a3f5fa` dashboard: dark mode toggle + Plotly dark template
-- `1ece4e8` scripts: monitor_paper.py + watch_trades.py utilities
-- `311ade1` broker: on_exit callback + per-trade Telegram alerts
-- `67b8643` data: NSE API rate limiter + circuit breaker + retry
-- `466e9f5` cli: preflight 10-point check
-- `466e9f5` logging: structured trade log, rotation, quiet hours
-- `3bbc40f` test: +66 tests for NSE data + analytics (→ 624 total)
-- `2291d66` docs: comprehensive README rewrite
-- `e8648da` persistence: SQLite schema versioning + migrations
+- `88d00ca` config: disable TREND strategies for best W3 Sharpe — pure defensive combo
+- `31a9931` test(api): add exception-branch coverage for costs and list-trades endpoints
+- `e089e7b` feat(api): add /api/status endpoint, global exception handler, request logging middleware
+- `1ef0e56` feat(security): add DASHBOARD_PASSWORD to .env.example and fix integration tests
+- `cbd9429` feat(security): HTTP Basic Auth on all /api/* endpoints + WS token check
+- `900b49d` feat(api): proper WebSocket connection manager — single broadcast loop O(n)
+- `dc79626` feat(deploy): add SSL/TLS nginx config and self-signed cert generator
+- `21a2286` feat(notifications): richer Telegram alerts with regime, SL/target, confidence + 4 new event methods
+- `1ff2063` test(frontend): add Vitest unit tests for App and hooks
+- `18c8d8b` feat(frontend): equity sparkline, regime chart, P&L markers, header bar, mobile layout
 
 ### 4. EC2 environment
 
