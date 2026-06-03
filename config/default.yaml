@@ -96,6 +96,17 @@ strategies:
     target_r_multiple: 2.0
     stock_dma_period: 50             # Block entries if stock 50-DMA falling >1% in 5 days
 
+  rsi_bounce:
+    enabled: true
+    regimes: [RANGE, VOLATILE]
+    rsi_period: 14
+    rsi_oversold_threshold: 30
+    dma_period: 200
+    atr_period: 14
+    atr_stop_multiplier: 1.5
+    target_r_multiple: 2.0
+    volume_ratio_min: 1.2
+
   supertrend:
     enabled: false
     regimes: [TREND, VOLATILE]
@@ -110,6 +121,17 @@ strategies:
     atr_period: 14
     atr_stop_multiplier: 1.5
     target_r_multiple: 2.5
+
+  vix_spike_bounce:
+    enabled: true
+    regimes: [VOLATILE]
+    rsi_period: 14
+    rsi_oversold_threshold: 35.0
+    dma_period: 200
+    atr_period: 14
+    atr_stop_multiplier: 2.0
+    target_r_multiple: 1.5
+    volume_ratio_min: 1.5
 
   supertrend_short:
     enabled: false

@@ -143,3 +143,32 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .spinner { width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Mobile / tablet responsive layout (max-width: 768px) ── */
+@media (max-width: 768px) {
+  .app { flex-direction: column; }
+  .sidebar { width: 100%; min-width: unset; height: auto; flex-direction: row; padding: 8px 12px; overflow-x: auto; }
+  .equity-box { display: none; }
+  .regime-chip { display: none; }
+  nav { flex-direction: row; gap: 4px; }
+  .nav-link { padding: 6px 10px; font-size: 12px; white-space: nowrap; }
+  .sidebar-footer { display: none; }
+  .main-content { padding: 0; }
+  .tab-content { padding: 12px; }
+  .kpi-row { grid-template-columns: repeat(2, 1fr); }
+
+  /* Top-bar collapses: keep logo + status visible, hide lower-priority items */
+  .top-bar { padding: 0 10px; gap: 8px; flex-wrap: nowrap; overflow-x: auto; }
+  .top-bar-logo { font-size: 13px; }
+  .top-bar-item { font-size: 12px; white-space: nowrap; }
+  .top-bar-regime { display: none; }
+
+  /* Replay two-column layout stacks vertically */
+  .replay-layout { grid-template-columns: 1fr; }
+  .replay-list { max-height: 240px; }
+
+  /* Trade table scrolls horizontally on small screens */
+  .trade-table { display: block; overflow-x: auto; white-space: nowrap; }
+
+  /* Link grid becomes single column */
+  .link-grid { grid-template-columns: 1fr; }
+}

@@ -43,8 +43,10 @@ from core.strategies.base import IStrategy
 from core.strategies.mean_reversion import MeanReversion
 from core.strategies.momentum_strength import MomentumStrength
 from core.strategies.nr_pattern import NRPatternBreakout
+from core.strategies.rsi_bounce import RsiBounce
 from core.strategies.supertrend_short import SupertrendShort
 from core.strategies.trend_breakout import TrendBreakout
+from core.strategies.vix_spike_bounce import VixSpikeBounce
 from core.strategies.volatility_compression import VolatilityCompression
 from core.types import Candle, OrderType, Regime, Side, Signal, Tick
 
@@ -125,6 +127,9 @@ class Orchestrator:
         if isinstance(self.broker, PaperBroker):
             self.broker.on_exit = self._on_position_exit
 
+        # Track previous regime for change detection
+        self._prev_regime_value: str = Regime.UNKNOWN.value
+
     # ---------- public API ----------
 
     def warmup(self) -> None:
@@ -152,6 +157,27 @@ class Orchestrator:
         self.feed.connect()
         self.feed.subscribe(self.symbols)
         log.info("Orchestrator running. Universe size: %d", len(self.symbols))
+        if self.telegram and self.s.notifications.telegram_enabled:
+            try:
+                self.telegram.send_startup(
+                    mode=self.s.mode,
+                    capital=self.broker.equity(),
+                )
+            except Exception as _e:
+                log.warning("Telegram startup alert failed: %s", _e)
+
+    def shutdown(self, reason: str = "normal") -> None:
+        """Graceful shutdown — notify Telegram and disconnect feed."""
+        log.info("Orchestrator shutting down: %s", reason)
+        if self.telegram and self.s.notifications.telegram_enabled:
+            try:
+                self.telegram.send_shutdown(reason=reason)
+            except Exception as _e:
+                log.warning("Telegram shutdown alert failed: %s", _e)
+        try:
+            self.feed.disconnect()
+        except Exception:
+            pass
 
     def tick_lifecycle(self) -> None:
         """Periodic housekeeping — call from a 1-second timer in run loop."""
@@ -254,6 +280,30 @@ class Orchestrator:
     def _on_candle_close(self, candle: Candle) -> None:
         if candle.interval != "5m":
             return  # decisions on 5-min closes; tune via config later
+
+        # Re-classify regime on each 5-min close if we have Nifty history.
+        # Emit a Telegram alert if the regime transitions to a new value.
+        if self.nifty_ohlc_daily is not None and not self.nifty_ohlc_daily.empty:
+            new_snap = self.regime_classifier.classify(self.nifty_ohlc_daily, vix=self.vix or 15.0)
+            new_regime_val = new_snap.regime.value
+            if new_regime_val != self._prev_regime_value and self._prev_regime_value != Regime.UNKNOWN.value:
+                log.info(
+                    "Regime changed: %s -> %s (%s)",
+                    self._prev_regime_value, new_regime_val, new_snap.rationale,
+                )
+                if self.telegram and self.s.notifications.telegram_enabled:
+                    try:
+                        self.telegram.send_regime_change(
+                            old_regime=self._prev_regime_value,
+                            new_regime=new_regime_val,
+                            adx=getattr(new_snap, "adx", None),
+                            vix=self.vix if self.vix > 0 else None,
+                        )
+                    except Exception as _e:
+                        log.warning("Telegram regime change alert failed: %s", _e)
+            self._prev_regime_value = new_regime_val
+            self.current_regime = new_snap
+
         # Track regime distribution for EOD daily_summary event
         regime_key = self.current_regime.regime.value
         self._regime_ticks[regime_key] = self._regime_ticks.get(regime_key, 0) + 1
@@ -449,6 +499,10 @@ class Orchestrator:
                     strategy=sig.strategy,
                     pnl=0.0,
                     reason="entry",
+                    regime=sig.regime.value,
+                    stop_loss=sig.stop_loss,
+                    target=sig.target,
+                    confidence=sig.confidence,
                 )
             except Exception as _e:
                 log.warning("Telegram entry alert failed: %s", _e)
@@ -622,6 +676,28 @@ class Orchestrator:
                 dma_falling_lookback=cfg.get("dma_falling_lookback", 10),
                 return_threshold=cfg.get("return_threshold", -0.03),
                 volume_spike_min=cfg.get("volume_spike_min", 1.5),
+            ))
+        if scfg.get("rsi_bounce", {}).get("enabled", False):
+            cfg = scfg["rsi_bounce"]
+            out.append(RsiBounce(
+                rsi_period=cfg.get("rsi_period", 14),
+                rsi_oversold_threshold=cfg.get("rsi_oversold_threshold", 30.0),
+                dma_period=cfg.get("dma_period", 200),
+                atr_period=cfg.get("atr_period", 14),
+                atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
+                target_r_multiple=cfg.get("target_r_multiple", 2.0),
+                volume_ratio_min=cfg.get("volume_ratio_min", 1.2),
+            ))
+        if scfg.get("vix_spike_bounce", {}).get("enabled", False):
+            cfg = scfg["vix_spike_bounce"]
+            out.append(VixSpikeBounce(
+                rsi_period=cfg.get("rsi_period", 14),
+                rsi_oversold_threshold=cfg.get("rsi_oversold_threshold", 35.0),
+                dma_period=cfg.get("dma_period", 200),
+                atr_period=cfg.get("atr_period", 14),
+                atr_stop_multiplier=cfg.get("atr_stop_multiplier", 2.0),
+                target_r_multiple=cfg.get("target_r_multiple", 1.5),
+                volume_ratio_min=cfg.get("volume_ratio_min", 1.5),
             ))
         if scfg.get("momentum_strength", {}).get("enabled", False):
             cfg = scfg["momentum_strength"]
