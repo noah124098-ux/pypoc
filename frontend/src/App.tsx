@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate, NavLink } from 'react-router-dom'
+import { LineChart, Line, ResponsiveContainer } from 'recharts'
 import { LiveTab } from './pages/LiveTab'
 import { PnlTab } from './pages/PnlTab'
 import { PositionsTab } from './pages/PositionsTab'
@@ -9,7 +10,7 @@ import { ReplayTab } from './pages/ReplayTab'
 import { AiReviewTab } from './pages/AiReviewTab'
 import { CostsTab } from './pages/CostsTab'
 import { PortfolioTab } from './pages/PortfolioTab'
-import { useSnapshot } from './hooks/useSnapshot'
+import { useSnapshot, useApi } from './hooks/useSnapshot'
 
 const NAV = [
   { path: 'live', label: '🟢 Live' },
@@ -30,6 +31,18 @@ function Sidebar({ snap, connected }: { snap: any, connected: boolean }) {
   const regime = snap?.current_regime ?? '—'
   const halted = snap?.halted ?? false
 
+  const { data: eqHistory } = useApi<any[]>('/api/equity?limit=20', 30000)
+
+  const sparkData = (eqHistory ?? []).map((pt: any) => ({ v: pt.equity ?? pt.value ?? pt.equity_value ?? 0 }))
+  const sparkTrending = sparkData.length >= 2
+    ? sparkData[sparkData.length - 1].v >= sparkData[0].v
+    : true
+  const sparkColor = sparkTrending ? '#48bb78' : '#fc8181'
+
+  const lastUpdatedSecs = snap?.ts
+    ? Math.round((Date.now() / 1000) - snap.ts)
+    : null
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -43,6 +56,27 @@ function Sidebar({ snap, connected }: { snap: any, connected: boolean }) {
         <div className={dayPnl >= 0 ? 'eq-pnl green' : 'eq-pnl red'}>
           {dayPnl >= 0 ? '+' : ''}₹{Math.abs(dayPnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })} today
         </div>
+        {sparkData.length >= 2 && (
+          <div style={{ width: '100%', height: 40, marginTop: 6 }}>
+            <ResponsiveContainer width="100%" height={40}>
+              <LineChart data={sparkData} margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
+                <Line
+                  type="monotone"
+                  dataKey="v"
+                  stroke={sparkColor}
+                  strokeWidth={1.5}
+                  dot={false}
+                  isAnimationActive={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+        {lastUpdatedSecs !== null && (
+          <div style={{ fontSize: 10, color: 'var(--text2)', marginTop: 4 }}>
+            Last updated {lastUpdatedSecs}s ago
+          </div>
+        )}
       </div>
 
       {halted && <div className="halt-banner">⛔ HALTED</div>}
