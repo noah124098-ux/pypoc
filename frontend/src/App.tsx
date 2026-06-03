@@ -80,7 +80,7 @@ function Layout() {
           <Route path="live" element={<LiveTab snap={snap} connected={connected} />} />
           <Route path="pnl" element={<PnlTab />} />
           <Route path="positions" element={<PositionsTab snap={snap} />} />
-          <Route path="regime" element={<RegimeTab />} />
+          <Route path="regime" element={<RegimeTab snap={snap} />} />
           <Route path="backtest" element={<BacktestTab />} />
           <Route path="replay" element={<ReplayTab />} />
           <Route path="ai-review" element={<AiReviewTab />} />
