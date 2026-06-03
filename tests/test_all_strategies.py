@@ -516,12 +516,18 @@ def _supertrend_mock_bands(df: pd.DataFrame, *, bullish_flip: bool = True):
 
 
 def test_supertrend_returns_signal_on_setup():
-    df = _supertrend_df()
+    # Use a 100-bar uptrend so DMA filters (20-DMA, 50-DMA + 10-bar lookback) all resolve.
+    # Disable quality filter thresholds (adx_min=0, volume_ratio_min=0) so synthetic
+    # data doesn't need to produce real ADX/volume values.
+    df = _supertrend_df(110)
     with patch(
         "core.strategies.supertrend.supertrend_bands",
         side_effect=lambda df_, p, m: _supertrend_mock_bands(df_, bullish_flip=True),
     ):
-        strategy = Supertrend(atr_period=10, multiplier=3.0, target_r_multiple=2.0)
+        strategy = Supertrend(
+            atr_period=10, multiplier=3.0, target_r_multiple=2.0,
+            adx_min=0.0, volume_ratio_min=0.0,  # bypass quality filters for smoke test
+        )
         sig = strategy.evaluate("TEST", df, Regime.TREND)
     assert sig is not None, "Supertrend should fire on direction flip to bullish"
     assert sig.strategy == "supertrend"

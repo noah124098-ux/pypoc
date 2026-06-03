@@ -51,6 +51,8 @@ def _write_snapshot(path: Path, **overrides) -> None:
 
 
 def _add_trade(store: Store, **overrides) -> None:
+    from datetime import datetime
+    today = datetime.utcnow().strftime("%Y-%m-%d")
     defaults = dict(
         symbol="RELIANCE",
         side="SELL",
@@ -61,8 +63,8 @@ def _add_trade(store: Store, **overrides) -> None:
         charges=20.0,
         strategy="rsi_momentum",
         exit_reason="target",
-        opened_at="2026-06-02T09:30:00",
-        closed_at="2026-06-02T11:00:00",
+        opened_at=f"{today}T09:30:00",
+        closed_at=f"{today}T11:00:00",
     )
     defaults.update(overrides)
     store.record_trade(**defaults)
