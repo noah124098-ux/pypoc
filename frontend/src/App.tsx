@@ -10,6 +10,7 @@ import { ReplayTab } from './pages/ReplayTab'
 import { AiReviewTab } from './pages/AiReviewTab'
 import { CostsTab } from './pages/CostsTab'
 import { PortfolioTab } from './pages/PortfolioTab'
+import { AngelOneTab } from './pages/AngelOneTab'
 import { useSnapshot, useApi } from './hooks/useSnapshot'
 
 const NAV = [
@@ -23,6 +24,7 @@ const NAV = [
   { path: 'controls', label: '⚙️ Controls' },
   { path: 'costs', label: '💰 Costs' },
   { path: 'portfolio', label: '🏦 Portfolio' },
+  { path: 'angel-one', label: '🔌 Angel One' },
 ]
 
 function TopBar({ snap, connected }: { snap: any, connected: boolean }) {
@@ -163,6 +165,7 @@ function Layout() {
             <Route path="controls" element={<ControlsTab snap={snap} />} />
             <Route path="costs" element={<CostsTab />} />
             <Route path="portfolio" element={<PortfolioTab />} />
+            <Route path="angel-one" element={<AngelOneTab />} />
           </Routes>
         </main>
       </div>
