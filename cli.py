@@ -762,6 +762,76 @@ def cmd_check_gate(args):
     if data.get("failures"):
         print(f"Failures:             {data['failures']}")
 
+    # ------------------------------------------------------------------
+    # Optional live broker connection check (--check-live)
+    # ------------------------------------------------------------------
+    if getattr(args, "check_live", False):
+        from dotenv import load_dotenv
+        import os
+
+        load_dotenv(override=False)
+        live_api_key = os.getenv("ANGEL_ONE_LIVE_API_KEY", "")
+        live_client_code = os.getenv("ANGEL_ONE_LIVE_CLIENT_CODE", "")
+        live_password = os.getenv("ANGEL_ONE_LIVE_PASSWORD", "")
+        live_totp_secret = os.getenv("ANGEL_ONE_LIVE_TOTP_SECRET", "")
+        data_feed_key = os.getenv("ANGEL_ONE_API_KEY", "")
+
+        missing = [
+            k for k, v in {
+                "ANGEL_ONE_LIVE_API_KEY": live_api_key,
+                "ANGEL_ONE_LIVE_CLIENT_CODE": live_client_code,
+                "ANGEL_ONE_LIVE_PASSWORD": live_password,
+                "ANGEL_ONE_LIVE_TOTP_SECRET": live_totp_secret,
+            }.items() if not v
+        ]
+
+        print()
+        print("Live broker connection check (--check-live):")
+        if missing:
+            print(
+                f"  SKIP — ANGEL_ONE_LIVE_* credentials incomplete "
+                f"(missing: {', '.join(missing)})"
+            )
+        elif live_api_key == data_feed_key and data_feed_key:
+            print(
+                "  FAIL — ANGEL_ONE_LIVE_API_KEY matches ANGEL_ONE_API_KEY. "
+                "These must be separate Angel One API apps."
+            )
+        else:
+            try:
+                from core.broker.angelone_live import AngelOneLiveBroker
+                from core.config import load_settings
+
+                settings = load_settings(args.config, env=getattr(args, "env", None))
+                broker = AngelOneLiveBroker.from_env(settings.execution)
+                broker.connect()
+                try:
+                    rms = broker._smart_api.getRMS()
+                    if rms and rms.get("status"):
+                        data_rms = rms.get("data") or {}
+                        cash = data_rms.get("availablecash", "?")
+                        net = data_rms.get("net", "?")
+                        print(
+                            f"  OK — session established; getRMS() success "
+                            f"(availablecash={cash}, net={net})"
+                        )
+                    else:
+                        msg = (rms or {}).get("message", "unknown")
+                        print(f"  WARN — session established but getRMS() returned non-success: {msg}")
+                except Exception as rms_exc:
+                    print(f"  WARN — session established but getRMS() raised: {rms_exc}")
+                finally:
+                    try:
+                        broker.disconnect()
+                    except Exception:
+                        pass
+            except RuntimeError as exc:
+                print(f"  FAIL — generateSession failed: {exc}")
+            except ValueError as exc:
+                print(f"  FAIL — credential error: {exc}")
+            except Exception as exc:
+                print(f"  FAIL — unexpected error: {type(exc).__name__}: {exc}")
+
 
 def cmd_status(args):
     """Quick status check — reads snapshot.json and prints a compact live overview."""
@@ -1259,6 +1329,129 @@ def cmd_preflight(args):
           snap_ok, snap_detail)
 
     # ------------------------------------------------------------------
+    # 15. ANGEL_ONE_LIVE_* credentials present (required for live mode)
+    # ------------------------------------------------------------------
+    settings_for_mode = None
+    try:
+        settings_for_mode = load_settings(args.config, env=getattr(args, "env", None))
+    except Exception:
+        pass
+
+    current_mode = getattr(settings_for_mode, "mode", "paper") if settings_for_mode else "paper"
+    live_creds = {
+        "ANGEL_ONE_LIVE_API_KEY": os.getenv("ANGEL_ONE_LIVE_API_KEY", ""),
+        "ANGEL_ONE_LIVE_CLIENT_CODE": os.getenv("ANGEL_ONE_LIVE_CLIENT_CODE", ""),
+        "ANGEL_ONE_LIVE_PASSWORD": os.getenv("ANGEL_ONE_LIVE_PASSWORD", ""),
+        "ANGEL_ONE_LIVE_TOTP_SECRET": os.getenv("ANGEL_ONE_LIVE_TOTP_SECRET", ""),
+    }
+    missing_live_creds = [k for k, v in live_creds.items() if not v]
+    data_feed_key = os.getenv("ANGEL_ONE_API_KEY", "")
+    live_api_key = live_creds.get("ANGEL_ONE_LIVE_API_KEY", "")
+    cross_contaminated = bool(
+        live_api_key and data_feed_key and live_api_key == data_feed_key
+    )
+    if current_mode == "live":
+        # Hard requirement in live mode: all four creds must be present and not cross-contaminated.
+        live_creds_ok = (len(missing_live_creds) == 0) and (not cross_contaminated)
+        if missing_live_creds:
+            live_creds_detail = f"missing: {', '.join(missing_live_creds)}"
+        elif cross_contaminated:
+            live_creds_detail = (
+                "SECURITY: ANGEL_ONE_LIVE_API_KEY == ANGEL_ONE_API_KEY — must be a SEPARATE app"
+            )
+        else:
+            live_creds_detail = "all ANGEL_ONE_LIVE_* vars present and distinct from data-feed key"
+    else:
+        # In paper mode, live creds are optional — warn if missing but do not fail.
+        live_creds_ok = True
+        if missing_live_creds:
+            live_creds_detail = (
+                f"not set (OK for paper mode) — required before switching to mode=live: "
+                f"{', '.join(missing_live_creds)}"
+            )
+        elif cross_contaminated:
+            live_creds_ok = False
+            live_creds_detail = (
+                "SECURITY: ANGEL_ONE_LIVE_API_KEY == ANGEL_ONE_API_KEY — must be a SEPARATE app"
+            )
+        else:
+            live_creds_detail = "ANGEL_ONE_LIVE_* vars present and distinct from data-feed key"
+    check(
+        "15. ANGEL_ONE_LIVE_* credentials present (required for live mode)",
+        live_creds_ok,
+        live_creds_detail,
+    )
+
+    # ------------------------------------------------------------------
+    # 16. AngelOneLiveBroker can connect (attempt generateSession)
+    #     Only run if --check-live flag is passed.
+    # ------------------------------------------------------------------
+    if getattr(args, "check_live", False):
+        live_connect_ok = False
+        live_connect_detail = ""
+        if missing_live_creds:
+            live_connect_detail = (
+                f"skipped — ANGEL_ONE_LIVE_* credentials incomplete "
+                f"(missing: {', '.join(missing_live_creds)})"
+            )
+            live_connect_ok = False
+        elif cross_contaminated:
+            live_connect_detail = "skipped — cross-contamination guard would block connection"
+            live_connect_ok = False
+        else:
+            try:
+                from core.broker.angelone_live import AngelOneLiveBroker
+                from core.config import ExecutionCfg
+
+                # Build a minimal ExecutionCfg from settings if available.
+                if settings_for_mode is not None:
+                    exec_cfg = settings_for_mode.execution
+                else:
+                    exec_cfg = ExecutionCfg(
+                        slippage_bps=5.0,
+                        brokerage_per_order_inr=20.0,
+                        stt_pct=0.1,
+                        exchange_txn_pct=0.00345,
+                        gst_pct=18.0,
+                        signal_cooldown_minutes=60,
+                    )
+
+                broker = AngelOneLiveBroker.from_env(exec_cfg)
+                broker.connect()
+                # Verify a JWT token was returned by getRMS (read-only).
+                try:
+                    rms = broker._smart_api.getRMS()
+                    token_ok = bool(rms and rms.get("status"))
+                    if token_ok:
+                        live_connect_ok = True
+                        live_connect_detail = "session established; getRMS() returned success"
+                    else:
+                        live_connect_detail = (
+                            f"session established but getRMS() returned non-success: "
+                            f"{(rms or {}).get('message', 'unknown')}"
+                        )
+                except Exception as rms_exc:
+                    live_connect_detail = (
+                        f"session established but getRMS() raised: {rms_exc}"
+                    )
+                finally:
+                    try:
+                        broker.disconnect()
+                    except Exception:
+                        pass
+            except RuntimeError as exc:
+                live_connect_detail = f"generateSession failed: {exc}"
+            except ValueError as exc:
+                live_connect_detail = f"credential error: {exc}"
+            except Exception as exc:
+                live_connect_detail = f"unexpected error: {type(exc).__name__}: {exc}"
+        check(
+            "16. AngelOneLiveBroker can connect (generateSession + getRMS verified)",
+            live_connect_ok,
+            live_connect_detail,
+        )
+
+    # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
     n_fail = sum(1 for ok, _ in results if not ok)
@@ -1449,6 +1642,12 @@ def main():
 
     cg = sub.add_parser("check-gate", help="Check the walk-forward gate result")
     cg.add_argument("--json", action="store_true", help="Output raw gate.json as formatted JSON")
+    cg.add_argument(
+        "--check-live",
+        action="store_true",
+        dest="check_live",
+        help="Attempt a read-only getRMS() call to verify live broker connection",
+    )
     cg.set_defaults(func=cmd_check_gate)
 
     sub.add_parser(
@@ -1499,10 +1698,20 @@ def main():
     )
     bs.set_defaults(func=cmd_benchmark_strategies)
 
-    sub.add_parser(
+    pf = sub.add_parser(
         "preflight",
-        help="Run all 10 pre-flight checks before starting live paper trading",
-    ).set_defaults(func=cmd_preflight)
+        help="Run all pre-flight checks before starting live paper trading",
+    )
+    pf.add_argument(
+        "--check-live",
+        action="store_true",
+        dest="check_live",
+        help=(
+            "Also run check 16: attempt AngelOneLiveBroker.connect() + getRMS() "
+            "to verify live broker credentials are valid (requires ANGEL_ONE_LIVE_* in .env)"
+        ),
+    )
+    pf.set_defaults(func=cmd_preflight)
 
     hc = sub.add_parser(
         "health-check",
