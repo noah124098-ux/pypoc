@@ -5,6 +5,10 @@ import { PositionsTab } from './pages/PositionsTab'
 import { RegimeTab } from './pages/RegimeTab'
 import { BacktestTab } from './pages/BacktestTab'
 import { ControlsTab } from './pages/ControlsTab'
+import { ReplayTab } from './pages/ReplayTab'
+import { AiReviewTab } from './pages/AiReviewTab'
+import { CostsTab } from './pages/CostsTab'
+import { PortfolioTab } from './pages/PortfolioTab'
 import { useSnapshot } from './hooks/useSnapshot'
 
 const NAV = [
@@ -13,7 +17,11 @@ const NAV = [
   { path: 'positions', label: '📋 Positions' },
   { path: 'regime', label: '🌡️ Regime' },
   { path: 'backtest', label: '🔬 Backtest' },
+  { path: 'replay', label: '🎬 Replay' },
+  { path: 'ai-review', label: '🤖 AI Review' },
   { path: 'controls', label: '⚙️ Controls' },
+  { path: 'costs', label: '💰 Costs' },
+  { path: 'portfolio', label: '🏦 Portfolio' },
 ]
 
 function Sidebar({ snap, connected }: { snap: any, connected: boolean }) {
@@ -74,7 +82,11 @@ function Layout() {
           <Route path="positions" element={<PositionsTab snap={snap} />} />
           <Route path="regime" element={<RegimeTab />} />
           <Route path="backtest" element={<BacktestTab />} />
+          <Route path="replay" element={<ReplayTab />} />
+          <Route path="ai-review" element={<AiReviewTab />} />
           <Route path="controls" element={<ControlsTab snap={snap} />} />
+          <Route path="costs" element={<CostsTab />} />
+          <Route path="portfolio" element={<PortfolioTab />} />
         </Routes>
       </main>
     </div>
