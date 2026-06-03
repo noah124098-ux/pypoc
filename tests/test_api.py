@@ -387,3 +387,82 @@ def test_global_exception_handler_returns_json(tmp_path, monkeypatch):
     assert "error" in body
     assert "type" in body
     assert body["type"] == "RuntimeError"
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting
+# ---------------------------------------------------------------------------
+
+def test_snapshot_rate_limit_returns_429_after_60_requests(tmp_path, monkeypatch):
+    """The 61st request to /api/snapshot within a minute must return 429."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    snapshot = {"running": False}
+    (data_dir / "snapshot.json").write_text(json.dumps(snapshot))
+
+    # Reset the in-memory rate-limit storage between test runs by importing fresh
+    # and patching the limiter storage.
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)
+
+    from slowapi import Limiter
+    from slowapi.util import get_remote_address
+
+    # Replace with a fresh limiter so prior test runs don't bleed state.
+    fresh_limiter = Limiter(key_func=get_remote_address)
+    api_main.app.state.limiter = fresh_limiter
+    api_main.limiter = fresh_limiter
+
+    # Re-decorate the route with the fresh limiter by accessing the endpoint directly
+    # and relying on the fact that slowapi reads app.state.limiter at request time.
+    c = TestClient(api_main.app)
+
+    statuses = []
+    for _ in range(62):
+        resp = c.get("/api/snapshot", auth=AUTH)
+        statuses.append(resp.status_code)
+
+    ok_count = statuses.count(200)
+    rate_limited_count = statuses.count(429)
+
+    assert ok_count >= 60, f"Expected at least 60 successful requests, got {ok_count}"
+    assert rate_limited_count >= 1, f"Expected at least one 429 response, got none (statuses: {set(statuses)})"
+
+
+def test_equity_rate_limit_returns_429_after_20_requests(tmp_path, monkeypatch):
+    """The 21st request to /api/equity within a minute must return 429."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)
+
+    from slowapi import Limiter
+    from slowapi.util import get_remote_address
+    from unittest.mock import MagicMock, patch
+
+    fresh_limiter = Limiter(key_func=get_remote_address)
+    api_main.app.state.limiter = fresh_limiter
+    api_main.limiter = fresh_limiter
+
+    mock_tools = MagicMock()
+    mock_tools.get_equity_curve.return_value = []
+
+    statuses = []
+    with patch.object(api_main, "TradingAgentTools", return_value=mock_tools):
+        c = TestClient(api_main.app)
+        for _ in range(22):
+            resp = c.get("/api/equity", auth=AUTH)
+            statuses.append(resp.status_code)
+
+    ok_count = statuses.count(200)
+    rate_limited_count = statuses.count(429)
+
+    assert ok_count >= 20, f"Expected at least 20 successful requests, got {ok_count}"
+    assert rate_limited_count >= 1, f"Expected at least one 429 response, got none (statuses: {set(statuses)})"

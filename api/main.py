@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import List
 
 import psutil
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from contextlib import asynccontextmanager
 from core.runtime_snapshot import read as read_snapshot
@@ -80,6 +83,10 @@ async def lifespan(app):
 app = FastAPI(title="pypoc Trading API", version="2.0", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 
 # ---------------------------------------------------------------------------
 # Global exception handlers
@@ -120,7 +127,8 @@ def health():
 
 
 @app.get("/api/snapshot")
-def get_snapshot(_: str = Depends(verify)):
+@limiter.limit("60/minute")
+def get_snapshot(request: Request, _: str = Depends(verify)):
     snap = read_snapshot("data/snapshot.json")
     return snap or {"running": False}
 
@@ -131,7 +139,8 @@ def get_positions(_: str = Depends(verify)):
 
 
 @app.get("/api/equity")
-def get_equity(limit: int = 200, _: str = Depends(verify)):
+@limiter.limit("20/minute")
+def get_equity(request: Request, limit: int = 200, _: str = Depends(verify)):
     return TradingAgentTools().get_equity_curve(limit=limit)
 
 
