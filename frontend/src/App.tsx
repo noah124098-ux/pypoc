@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom'
 import { LineChart, Line, ResponsiveContainer } from 'recharts'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { LiveTab } from './pages/LiveTab'
 import { PnlTab } from './pages/PnlTab'
 import { PositionsTab } from './pages/PositionsTab'
@@ -14,6 +14,7 @@ import { PortfolioTab } from './pages/PortfolioTab'
 import { AngelOneTab } from './pages/AngelOneTab'
 import { AnalyticsTab } from './pages/AnalyticsTab'
 import { useSnapshot, useApi } from './hooks/useSnapshot'
+import { useGuardrailNotifications, useToasts, type Toast } from './hooks/useNotifications'
 
 const NAV = [
   { path: 'live', label: '🟢 Live' },
@@ -84,6 +85,108 @@ function useMarketCountdown(): string {
   }, [])
 
   return label
+}
+
+// ── Notification Center ──────────────────────────────────────────────────────
+function NotificationCenter() {
+  const { items, unreadCount, markAllRead } = useGuardrailNotifications()
+  const [open, setOpen] = useState(false)
+  const dropRef = useRef<HTMLDivElement>(null)
+
+  // Close on outside click
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (dropRef.current && !dropRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    if (open) document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  function handleOpen() {
+    setOpen(prev => !prev)
+  }
+
+  function handleMarkAllRead(e: React.MouseEvent) {
+    e.stopPropagation()
+    markAllRead()
+  }
+
+  function formatTs(ts: number): string {
+    if (!ts) return ''
+    const d = new Date(ts * 1000)
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }
+
+  return (
+    <div className="notif-wrapper" ref={dropRef}>
+      <button
+        className="notif-bell-btn"
+        onClick={handleOpen}
+        aria-label="Notifications"
+        title="Guardrail rejections"
+      >
+        <span className="notif-bell-icon" aria-hidden="true">&#128276;</span>
+        {unreadCount > 0 && (
+          <span className="notif-badge" aria-label={`${unreadCount} unread`}>
+            {unreadCount > 9 ? '9+' : unreadCount}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="notif-dropdown" role="dialog" aria-label="Notifications panel">
+          <div className="notif-dropdown-header">
+            <span className="notif-dropdown-title">Guardrail Rejections</span>
+            {unreadCount > 0 && (
+              <button className="notif-mark-read-btn" onClick={handleMarkAllRead}>
+                Mark all read
+              </button>
+            )}
+          </div>
+          <div className="notif-list">
+            {items.length === 0 ? (
+              <div className="notif-empty">No recent rejections</div>
+            ) : (
+              items.map(item => (
+                <div key={item.id} className="notif-item">
+                  <div className="notif-item-main">
+                    <span className="notif-symbol">{item.symbol}</span>
+                    <span className="notif-strategy">{item.strategy}</span>
+                    <span className="notif-rule">blocked by {item.rule}</span>
+                  </div>
+                  {item.ts > 0 && (
+                    <div className="notif-item-time">{formatTs(item.ts)}</div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Toast Container ───────────────────────────────────────────────────────────
+function ToastContainer({ toasts, dismiss }: { toasts: Toast[]; dismiss: (id: string) => void }) {
+  if (toasts.length === 0) return null
+  return (
+    <div className="toast-container" aria-live="polite">
+      {toasts.map(t => (
+        <div
+          key={t.id}
+          className={`toast toast-${t.type}${t.exiting ? ' toast-exit' : ''}`}
+          role="alert"
+        >
+          <span className="toast-msg">{t.message}</span>
+          <button className="toast-close" onClick={() => dismiss(t.id)} aria-label="Dismiss">
+            &times;
+          </button>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function CopyApiButton() {
@@ -160,6 +263,7 @@ function TopBar({ snap, connected, darkMode, onToggleDark, onHamburger }: {
       )}
       <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
         <CopyApiButton />
+        <NotificationCenter />
         <button
           className="top-bar-btn"
           onClick={onToggleDark}
@@ -264,6 +368,41 @@ function Layout({ darkMode, onToggleDark }: { darkMode: boolean; onToggleDark: (
   const { snap, connected } = useSnapshot()
   const navigate = useNavigate()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const { toasts, addToast, dismiss } = useToasts()
+
+  // Track previous snap values to detect transitions
+  const prevSnapRef = useRef<any>(null)
+
+  useEffect(() => {
+    const prev = prevSnapRef.current
+    if (snap === null) {
+      prevSnapRef.current = snap
+      return
+    }
+
+    // running=false -> running=true: "Agent started"
+    const prevRunning = prev?.running ?? null
+    const currRunning = snap?.running ?? null
+    if (prevRunning === false && currRunning === true) {
+      addToast('Agent started', 'success')
+    }
+
+    // halted changed to true
+    const prevHalted = prev?.halted ?? false
+    const currHalted = snap?.halted ?? false
+    if (!prevHalted && currHalted) {
+      addToast('Agent HALTED', 'error')
+    }
+
+    // drawdown_warning became true
+    const prevDDWarn = prev?.drawdown_warning ?? false
+    const currDDWarn = snap?.drawdown_warning ?? false
+    if (!prevDDWarn && currDDWarn) {
+      addToast('Drawdown warning threshold reached', 'warning')
+    }
+
+    prevSnapRef.current = snap
+  }, [snap, addToast])
 
   const closeSidebar = useCallback(() => setSidebarOpen(false), [])
   const toggleSidebar = useCallback(() => setSidebarOpen(prev => !prev), [])
@@ -317,6 +456,7 @@ function Layout({ darkMode, onToggleDark }: { darkMode: boolean; onToggleDark: (
           </Routes>
         </main>
       </div>
+      <ToastContainer toasts={toasts} dismiss={dismiss} />
     </div>
   )
 }
