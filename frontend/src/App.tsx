@@ -51,7 +51,7 @@ function Sidebar({ snap, connected }: { snap: any, connected: boolean }) {
 
       <nav>
         {NAV.map(n => (
-          <NavLink key={n.path} to={n.path} className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
+          <NavLink key={n.path} to={`/${n.path}`} className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             {n.label}
           </NavLink>
         ))}
@@ -76,7 +76,7 @@ function Layout() {
       <Sidebar snap={snap} connected={connected} />
       <main className="main-content">
         <Routes>
-          <Route index element={<Navigate to="live" />} />
+          <Route index element={<Navigate to="/live" replace />} />
           <Route path="live" element={<LiveTab snap={snap} connected={connected} />} />
           <Route path="pnl" element={<PnlTab />} />
           <Route path="positions" element={<PositionsTab snap={snap} />} />
