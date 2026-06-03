@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom'
 import { LineChart, Line, ResponsiveContainer } from 'recharts'
+import { useState, useEffect, useCallback } from 'react'
 import { LiveTab } from './pages/LiveTab'
 import { PnlTab } from './pages/PnlTab'
 import { PositionsTab } from './pages/PositionsTab'
@@ -27,7 +28,89 @@ const NAV = [
   { path: 'angel-one', label: '🔌 Angel One' },
 ]
 
-function TopBar({ snap, connected }: { snap: any, connected: boolean }) {
+/** Returns IST (UTC+5:30) hours, minutes, and day-of-week */
+function getISTTime(): { h: number; m: number; dayOfWeek: number } {
+  const now = new Date()
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60000
+  const istMs = utcMs + 5.5 * 3600000
+  const ist = new Date(istMs)
+  return { h: ist.getHours(), m: ist.getMinutes(), dayOfWeek: ist.getDay() }
+}
+
+function formatCountdown(totalMins: number): string {
+  const h = Math.floor(totalMins / 60)
+  const m = totalMins % 60
+  if (h > 0) return `${h}h ${m}m`
+  return `${m}m`
+}
+
+function useMarketCountdown(): string {
+  const [label, setLabel] = useState('')
+
+  useEffect(() => {
+    function compute() {
+      const { h, m, dayOfWeek } = getISTTime()
+      const nowMins = h * 60 + m
+      const openMins = 9 * 60 + 15   // 09:15 IST
+      const closeMins = 15 * 60 + 30 // 15:30 IST
+      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6
+
+      if (isWeekend) {
+        // Next Monday open
+        const daysToMon = dayOfWeek === 6 ? 2 : 1
+        const minsToOpen = daysToMon * 24 * 60 - nowMins + openMins
+        setLabel(`Opens in ${formatCountdown(minsToOpen)}`)
+        return
+      }
+
+      if (nowMins < openMins) {
+        setLabel(`Opens in ${formatCountdown(openMins - nowMins)}`)
+      } else if (nowMins < closeMins) {
+        setLabel(`Closes in ${formatCountdown(closeMins - nowMins)}`)
+      } else {
+        // After close — next trading day (skip weekend)
+        const isFriday = dayOfWeek === 5
+        const daysToNext = isFriday ? 3 : 1
+        const minsToOpen = daysToNext * 24 * 60 - nowMins + openMins
+        setLabel(`Opens in ${formatCountdown(minsToOpen)}`)
+      }
+    }
+
+    compute()
+    const id = setInterval(compute, 60000)
+    return () => clearInterval(id)
+  }, [])
+
+  return label
+}
+
+function CopyApiButton() {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(window.location.origin).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }, [])
+
+  return (
+    <button
+      className="top-bar-btn"
+      onClick={handleCopy}
+      title="Copy API base URL to clipboard"
+    >
+      {copied ? 'Copied!' : 'Copy API URL'}
+    </button>
+  )
+}
+
+function TopBar({ snap, connected, darkMode, onToggleDark }: {
+  snap: any
+  connected: boolean
+  darkMode: boolean
+  onToggleDark: () => void
+}) {
   const navigate = useNavigate()
   const equity = snap?.equity ?? 500000
   const dayPnl = equity - (snap?.starting_equity_today ?? equity)
@@ -35,6 +118,7 @@ function TopBar({ snap, connected }: { snap: any, connected: boolean }) {
   const halted = snap?.halted ?? false
   const positions: any[] = snap?.positions ?? []
   const posCount = positions.length
+  const marketLabel = useMarketCountdown()
 
   return (
     <div className="top-bar">
@@ -60,9 +144,24 @@ function TopBar({ snap, connected }: { snap: any, connected: boolean }) {
         {regime}
       </span>
       <span className="top-bar-item">{posCount} position{posCount !== 1 ? 's' : ''}</span>
+      {marketLabel && (
+        <span className="top-bar-item top-bar-market" title="NSE market hours (IST)">
+          {marketLabel}
+        </span>
+      )}
       {halted && (
         <span className="top-bar-halt">⚠ HALTED</span>
       )}
+      <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <CopyApiButton />
+        <button
+          className="top-bar-btn"
+          onClick={onToggleDark}
+          title={darkMode ? 'Switch to light mode (current: dark)' : 'Switch to dark mode (current: light)'}
+        >
+          {darkMode ? '☀ Light' : '🌙 Dark'}
+        </button>
+      </span>
     </div>
   )
 }
@@ -140,16 +239,47 @@ function Sidebar({ snap, connected }: { snap: any, connected: boolean }) {
         <a href="/docs" target="_blank" rel="noopener noreferrer" className="legacy-link">
           API Docs ↗
         </a>
+        <div className="kbd-hints">
+          <span title="R = Refresh page">R</span>
+          <span title="H = Home / Live tab">H</span>
+          <span title="B = Backtest tab">B</span>
+        </div>
       </div>
     </aside>
   )
 }
 
-function Layout() {
+function Layout({ darkMode, onToggleDark }: { darkMode: boolean; onToggleDark: () => void }) {
   const { snap, connected } = useSnapshot()
+  const navigate = useNavigate()
+
+  // Global keyboard shortcuts (skip when focus is in an input element)
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+
+      switch (e.key.toUpperCase()) {
+        case 'R':
+          window.location.reload()
+          break
+        case 'H':
+          navigate('/live')
+          break
+        case 'B':
+          navigate('/backtest')
+          break
+      }
+    }
+
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [navigate])
+
   return (
     <div className="app-wrapper">
-      <TopBar snap={snap} connected={connected} />
+      <TopBar snap={snap} connected={connected} darkMode={darkMode} onToggleDark={onToggleDark} />
       <div className="app">
         <Sidebar snap={snap} connected={connected} />
         <main className="main-content">
@@ -174,10 +304,39 @@ function Layout() {
 }
 
 export default function App() {
+  // Persist dark mode to localStorage; default true (dark)
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('dark_mode')
+      if (stored !== null) return stored === 'true'
+    } catch {
+      // localStorage unavailable (e.g. private browsing)
+    }
+    return true
+  })
+
+  // Apply / remove light-mode class on <body> when preference changes
+  useEffect(() => {
+    if (darkMode) {
+      document.body.classList.remove('light-mode')
+    } else {
+      document.body.classList.add('light-mode')
+    }
+    try {
+      localStorage.setItem('dark_mode', String(darkMode))
+    } catch {
+      // ignore
+    }
+  }, [darkMode])
+
+  const handleToggleDark = useCallback(() => {
+    setDarkMode(prev => !prev)
+  }, [])
+
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/*" element={<Layout />} />
+        <Route path="/*" element={<Layout darkMode={darkMode} onToggleDark={handleToggleDark} />} />
       </Routes>
     </BrowserRouter>
   )

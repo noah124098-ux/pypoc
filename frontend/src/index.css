@@ -143,6 +143,28 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .spinner { width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Top-bar buttons ── */
+.top-bar-btn { background: var(--bg3); color: var(--text2); border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; transition: all .15s; white-space: nowrap; }
+.top-bar-btn:hover { color: var(--text); border-color: var(--blue); }
+
+/* ── Market countdown in top-bar ── */
+.top-bar-market { color: var(--yellow); font-size: 12px; white-space: nowrap; }
+
+/* ── Keyboard shortcut hints in sidebar footer ── */
+.kbd-hints { display: flex; gap: 6px; margin-top: 8px; }
+.kbd-hints span { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px; font-size: 11px; color: var(--text2); cursor: default; }
+.kbd-hints span:hover { color: var(--text); }
+
+/* ── Light mode overrides (applied via body.light-mode) ── */
+body.light-mode {
+  --bg: #f7f8fa;
+  --bg2: #ffffff;
+  --bg3: #edf2f7;
+  --border: #e2e8f0;
+  --text: #1a202c;
+  --text2: #718096;
+}
+
 /* ── Mobile / tablet responsive layout (max-width: 768px) ── */
 @media (max-width: 768px) {
   .app { flex-direction: column; }
