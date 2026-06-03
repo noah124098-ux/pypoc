@@ -45,6 +45,7 @@ from core.strategies.mean_reversion import MeanReversion
 from core.strategies.momentum_strength import MomentumStrength
 from core.strategies.nr_pattern import NRPatternBreakout
 from core.strategies.obv_trend import ObvTrend
+from core.strategies.rsi_bounce import RsiBounce
 from core.strategies.rsi_momentum import RsiMomentum
 from core.strategies.supertrend import Supertrend
 from core.strategies.supertrend_short import SupertrendShort
@@ -520,6 +521,17 @@ class BacktestEngine:
                 dma_falling_lookback=cfg.get("dma_falling_lookback", 10),
                 return_threshold=cfg.get("return_threshold", -0.03),
                 volume_spike_min=cfg.get("volume_spike_min", 1.5),
+            ))
+        if scfg.get("rsi_bounce", {}).get("enabled", False):
+            cfg = scfg["rsi_bounce"]
+            out.append(RsiBounce(
+                rsi_period=cfg.get("rsi_period", 14),
+                rsi_oversold_threshold=cfg.get("rsi_oversold_threshold", 30.0),
+                dma_period=cfg.get("dma_period", 200),
+                atr_period=cfg.get("atr_period", 14),
+                atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
+                target_r_multiple=cfg.get("target_r_multiple", 2.0),
+                volume_ratio_min=cfg.get("volume_ratio_min", 1.2),
             ))
         if scfg.get("momentum_strength", {}).get("enabled", False):
             cfg = scfg["momentum_strength"]
