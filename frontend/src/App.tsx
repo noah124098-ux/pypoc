@@ -1,20 +1,21 @@
 import { BrowserRouter, Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom'
 import { LineChart, Line, ResponsiveContainer } from 'recharts'
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { LiveTab } from './pages/LiveTab'
-import { PnlTab } from './pages/PnlTab'
-import { PositionsTab } from './pages/PositionsTab'
-import { RegimeTab } from './pages/RegimeTab'
-import { BacktestTab } from './pages/BacktestTab'
-import { ControlsTab } from './pages/ControlsTab'
-import { ReplayTab } from './pages/ReplayTab'
-import { AiReviewTab } from './pages/AiReviewTab'
-import { CostsTab } from './pages/CostsTab'
-import { PortfolioTab } from './pages/PortfolioTab'
-import { AngelOneTab } from './pages/AngelOneTab'
-import { AnalyticsTab } from './pages/AnalyticsTab'
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { useSnapshot, useApi } from './hooks/useSnapshot'
 import { useGuardrailNotifications, useToasts, type Toast } from './hooks/useNotifications'
+
+const LiveTab = lazy(() => import('./pages/LiveTab').then(m => ({ default: m.LiveTab })))
+const PnlTab = lazy(() => import('./pages/PnlTab').then(m => ({ default: m.PnlTab })))
+const PositionsTab = lazy(() => import('./pages/PositionsTab').then(m => ({ default: m.PositionsTab })))
+const RegimeTab = lazy(() => import('./pages/RegimeTab').then(m => ({ default: m.RegimeTab })))
+const BacktestTab = lazy(() => import('./pages/BacktestTab').then(m => ({ default: m.BacktestTab })))
+const ControlsTab = lazy(() => import('./pages/ControlsTab').then(m => ({ default: m.ControlsTab })))
+const ReplayTab = lazy(() => import('./pages/ReplayTab').then(m => ({ default: m.ReplayTab })))
+const AiReviewTab = lazy(() => import('./pages/AiReviewTab').then(m => ({ default: m.AiReviewTab })))
+const CostsTab = lazy(() => import('./pages/CostsTab').then(m => ({ default: m.CostsTab })))
+const PortfolioTab = lazy(() => import('./pages/PortfolioTab').then(m => ({ default: m.PortfolioTab })))
+const AngelOneTab = lazy(() => import('./pages/AngelOneTab').then(m => ({ default: m.AngelOneTab })))
+const AnalyticsTab = lazy(() => import('./pages/AnalyticsTab').then(m => ({ default: m.AnalyticsTab })))
 
 const NAV = [
   { path: 'live', label: '🟢 Live' },
@@ -439,21 +440,23 @@ function Layout({ darkMode, onToggleDark }: { darkMode: boolean; onToggleDark: (
         <div className="sidebar-backdrop" onClick={closeSidebar} />
         <Sidebar snap={snap} connected={connected} onClose={closeSidebar} />
         <main className="main-content" onClick={sidebarOpen ? closeSidebar : undefined}>
-          <Routes>
-            <Route index element={<Navigate to="/live" replace />} />
-            <Route path="live" element={<LiveTab snap={snap} connected={connected} />} />
-            <Route path="pnl" element={<PnlTab />} />
-            <Route path="positions" element={<PositionsTab snap={snap} />} />
-            <Route path="regime" element={<RegimeTab snap={snap} />} />
-            <Route path="backtest" element={<BacktestTab />} />
-            <Route path="replay" element={<ReplayTab />} />
-            <Route path="ai-review" element={<AiReviewTab />} />
-            <Route path="controls" element={<ControlsTab snap={snap} />} />
-            <Route path="costs" element={<CostsTab />} />
-            <Route path="portfolio" element={<PortfolioTab />} />
-            <Route path="angel-one" element={<AngelOneTab />} />
-            <Route path="analytics" element={<AnalyticsTab />} />
-          </Routes>
+          <Suspense fallback={<div className="loading-tab">Loading...</div>}>
+            <Routes>
+              <Route index element={<Navigate to="/live" replace />} />
+              <Route path="live" element={<LiveTab snap={snap} connected={connected} />} />
+              <Route path="pnl" element={<PnlTab />} />
+              <Route path="positions" element={<PositionsTab snap={snap} />} />
+              <Route path="regime" element={<RegimeTab snap={snap} />} />
+              <Route path="backtest" element={<BacktestTab />} />
+              <Route path="replay" element={<ReplayTab />} />
+              <Route path="ai-review" element={<AiReviewTab />} />
+              <Route path="controls" element={<ControlsTab snap={snap} />} />
+              <Route path="costs" element={<CostsTab />} />
+              <Route path="portfolio" element={<PortfolioTab />} />
+              <Route path="angel-one" element={<AngelOneTab />} />
+              <Route path="analytics" element={<AnalyticsTab />} />
+            </Routes>
+          </Suspense>
         </main>
       </div>
       <ToastContainer toasts={toasts} dismiss={dismiss} />
