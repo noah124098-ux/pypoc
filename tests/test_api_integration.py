@@ -7,9 +7,16 @@ from __future__ import annotations
 
 import base64
 import os
+from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
+
+# SPA tests require a built React app.
+# Use an absolute path anchored to the repo root (parent of tests/) so the
+# check is stable regardless of which cwd other fixtures may have set.
+_REPO_ROOT = Path(__file__).parent.parent
+_REACT_BUILD_EXISTS = (_REPO_ROOT / "frontend" / "dist").exists()
 
 # ---------------------------------------------------------------------------
 # App + client fixtures
@@ -17,9 +24,23 @@ from starlette.testclient import TestClient
 
 @pytest.fixture(scope="module")
 def app():
-    """Import the FastAPI app once for the whole module."""
-    from api.main import app as _app
-    return _app
+    """Import (or reload) the FastAPI app from the repo root working directory.
+
+    Reloads api.main so that the REACT_BUILD existence check runs from the
+    correct working directory, even when other test modules called chdir().
+    """
+    import importlib
+    import sys
+    import os
+
+    _orig_cwd = os.getcwd()
+    os.chdir(str(_REPO_ROOT))
+    try:
+        import api.main as _mod
+        importlib.reload(_mod)
+        return _mod.app
+    finally:
+        os.chdir(_orig_cwd)
 
 
 @pytest.fixture(scope="module")
@@ -107,6 +128,7 @@ class TestSnapshotEndpoint:
         assert resp.status_code == 401
 
 
+@pytest.mark.skipif(not _REACT_BUILD_EXISTS, reason="frontend/dist not built — run 'npm run build' in frontend/")
 class TestSPARoutes:
     def test_spa_serves_html(self, client):
         """GET / returns HTML document starting with <!doctype."""
