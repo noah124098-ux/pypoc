@@ -2,8 +2,10 @@ import { useApi } from '../hooks/useSnapshot'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts'
 
 export function PnlTab() {
-  const { data: equity } = useApi<any[]>('/api/equity?limit=500', 30000)
-  const { data: trades } = useApi<any[]>('/api/trades?limit=200', 30000)
+  const { data: equity, loading: equityLoading } = useApi<any[]>('/api/equity?limit=500', 30000)
+  const { data: trades, loading: tradesLoading } = useApi<any[]>('/api/trades?limit=200', 30000)
+
+  const loading = equityLoading || tradesLoading
 
   const chartData = (equity ?? []).map((e: any) => ({
     ts: new Date(e.ts).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }),
@@ -19,6 +21,17 @@ export function PnlTab() {
   const losses = allTrades.filter((t: any) => t.pnl <= 0)
   const avgLoss = losses.length ? losses.reduce((s: number, t: any) => s + t.pnl, 0) / losses.length : 0
   const pf = avgLoss ? Math.abs(avgWin / avgLoss).toFixed(2) : '—'
+
+  if (loading) {
+    return (
+      <div className="tab-content">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 200, color: 'var(--text2)', gap: 10 }}>
+          <div className="spinner" />
+          <span>Loading P&L data…</span>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="tab-content">
@@ -53,7 +66,19 @@ export function PnlTab() {
               </defs>
             </AreaChart>
           </ResponsiveContainer>
-        ) : <div className="empty-state">No equity history yet — run the paper agent</div>}
+        ) : (
+          <div className="empty-card">
+            <div style={{ fontSize: 48, marginBottom: 12 }}>📊</div>
+            <h3>No equity history yet</h3>
+            <p>Start the paper agent to begin tracking P&L.</p>
+            <div className="info-box" style={{ marginTop: 12, textAlign: 'left' }}>
+              <p style={{ marginBottom: 8 }}><strong>1. Add credentials:</strong></p>
+              <code>copy .env.example .env</code>
+              <p style={{ marginTop: 8, marginBottom: 8 }}><strong>2. Start agent:</strong></p>
+              <code>scripts\service_manager.bat start-agent</code>
+            </div>
+          </div>
+        )}
       </section>
     </div>
   )
