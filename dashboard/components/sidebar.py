@@ -404,10 +404,7 @@ def render_sidebar(snap: dict, config: dict, gate: dict) -> bool:
             st.cache_data.clear()
             st.rerun()
 
-        # Auto-refresh: rerun after 30s if toggle is on
-        if auto_refresh:
-            import time as _sidebar_time
-            _sidebar_time.sleep(30)
-            st.rerun()
+        # Auto-refresh is handled at the top of dashboard.py via streamlit-autorefresh
+        # (no blocking sleep needed here)
 
     return dark_mode

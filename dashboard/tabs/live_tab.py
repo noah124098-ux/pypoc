@@ -26,6 +26,19 @@ from dashboard.components.kpi_row import _agent_is_running
 from dashboard.design import COLORS, _badge, _metric_card, _section, regime_hex
 from dashboard.utils.charts import safe_html, color_pnl, is_market_hours, fmt_inr, time_ago
 from dashboard.utils.db import query_df
+from dashboard.utils.snapshot import read_snapshot
+
+
+def _api_get(path: str, fallback_fn, timeout: float = 2.0):
+    """Try FastAPI backend; fall back to *fallback_fn* silently."""
+    try:
+        import requests
+        r = requests.get(f"http://localhost:8502{path}", timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return fallback_fn()
 
 try:
     import pytz as _pytz
@@ -591,8 +604,27 @@ def _render_open_positions(snap: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def render(snap: dict, config: dict, conn) -> None:
-    """Render the Paper Agent tab — live command center."""
+    """Render the Paper Agent tab — live command center.
+
+    Snapshot and positions are refreshed from the FastAPI backend when it is
+    running on port 8502.  Direct file/SQLite reads are used as fallback.
+    """
     st.header("Paper Agent — Live Command Center")
+
+    # Refresh snapshot from API (non-blocking, falls back to the passed-in snap)
+    snap = _api_get("/api/snapshot", lambda: snap)
+
+    # Overlay positions from API when available
+    try:
+        _api_positions = _api_get(
+            "/api/positions",
+            lambda: None,
+        )
+        if _api_positions is not None and isinstance(_api_positions, list):
+            snap = dict(snap)
+            snap["open_positions"] = _api_positions
+    except Exception:
+        pass
 
     # ── 1. TOP STATUS BAR ────────────────────────────────────────────────────
     _render_top_status_bar(snap, config, conn)

@@ -20,6 +20,9 @@ python-telegram-bot==21.7
 anthropic==0.40.0
 mcp>=1.23.0
 pillow>=12.2.0
+fastapi>=0.115.0
+uvicorn>=0.32.0
+httpx>=0.28.0
 pytest>=9.0.3
 pytest-asyncio==0.24.0
 freezegun==1.5.1

@@ -15,6 +15,28 @@ from __future__ import annotations
 import plotly.io as pio
 import streamlit as st
 
+
+# ---------------------------------------------------------------------------
+# FastAPI backend helper — falls back to direct SQLite/file reads silently
+# ---------------------------------------------------------------------------
+
+def _api_get(path: str, fallback_fn, timeout: float = 2.0):
+    """Try to fetch data from the local FastAPI backend (port 8502).
+
+    If the API is unavailable (not started, wrong port, timeout) the
+    *fallback_fn* callable is invoked and its return value is used instead.
+    This keeps the dashboard fully functional whether or not the API process
+    is running.
+    """
+    try:
+        import requests
+        r = requests.get(f"http://localhost:8502{path}", timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return fallback_fn()
+
 st.set_page_config(
     page_title="pypoc | NSE Agent",
     page_icon="📈",
@@ -84,8 +106,17 @@ LIGHT_CSS = """<style>.stApp { background-color: #ffffff; }</style>"""
 
 def main() -> None:
     """Main entry point - render sidebar then all tabs."""
+    # Auto-refresh via streamlit-autorefresh (non-blocking, replaces time.sleep)
+    if st.session_state.get("auto_refresh", False):
+        try:
+            from streamlit_autorefresh import st_autorefresh
+            st_autorefresh(interval=5000, key="live_refresh")  # every 5s
+        except ImportError:
+            pass  # graceful degradation if package missing
+
     _load_progress = st.progress(0, text="Loading dashboard data…")
-    snap = read_snapshot()
+    # Use FastAPI backend when available; fall back to direct file read
+    snap = _api_get("/api/snapshot", read_snapshot)
     _load_progress.progress(30, text="Reading gate & config…")
     gate = read_gate()
     config = read_config()
@@ -158,11 +189,7 @@ def main() -> None:
     with tab_costs:
         costs_tab.render(snap, config, conn)
 
-    # Auto-refresh
-    if st.session_state.get("auto_refresh", False):
-        import time
-        time.sleep(30)
-        st.rerun()
+    # Auto-refresh is handled at the top of main() via streamlit-autorefresh
 
 
 main()
