@@ -96,21 +96,8 @@ strategies:
     target_r_multiple: 2.0
     stock_dma_period: 50             # Block entries if stock 50-DMA falling >1% in 5 days
 
-  momentum_strength:
-    enabled: false   # disabled: 20-DMA filter insufficient for W3 protection — degrades Sharpe to 0.00, pf 1.23
-    regimes: [TREND]
-    rsi_period: 20
-    rsi_momentum_low: 55.0
-    rsi_momentum_high: 70.0
-    dma_period: 50
-    short_dma_period: 20
-    atr_period: 14
-    atr_stop_multiplier: 1.5
-    target_r_multiple: 2.5
-    volume_confirm_ratio: 1.2
-
   rsi_bounce:
-    enabled: false   # disabled: no gate improvement (Sharpe unchanged at 0.32 with 50-DMA too)
+    enabled: false   # disabled: no gate improvement (Sharpe unchanged at 0.32)
     regimes: [RANGE, VOLATILE]
     rsi_period: 14
     rsi_oversold_threshold: 30
@@ -136,7 +123,7 @@ strategies:
     target_r_multiple: 2.5
 
   vix_spike_bounce:
-    enabled: false   # disabled: RSI=30 filter too strict, 0 trades in W3; RSI=35 also 0 trades — no gate improvement
+    enabled: true
     regimes: [VOLATILE]
     rsi_period: 14
     rsi_oversold_threshold: 35.0
@@ -145,28 +132,6 @@ strategies:
     atr_stop_multiplier: 2.0
     target_r_multiple: 1.5
     volume_ratio_min: 1.5
-
-  volume_breakout_confirm:
-    enabled: false   # disabled: gate run 2026-06-04 degraded aggregate Sharpe 0.32→0.12; W3 hurt badly (correction market)
-    regimes: [TREND]
-    donchian_period: 10
-    volume_avg_period: 20
-    volume_spike_min: 2.5
-    close_quality_pct: 0.80
-    dma_period: 50
-    atr_period: 14
-    atr_stop_multiplier: 1.5
-    target_r_multiple: 2.0
-
-  gap_and_hold:
-    enabled: false   # disabled: gate run 2026-06-04 degraded Sharpe 0.32→0.12; RANGE entries hurt in W3 correction
-    regimes: [TREND, RANGE]
-    gap_pct_min: 0.005
-    volume_avg_period: 20
-    volume_ratio_min: 1.5
-    atr_period: 14
-    atr_stop_buffer: 0.5
-    target_r_multiple: 2.0
 
   supertrend_short:
     enabled: false
@@ -185,7 +150,7 @@ execution:
   stt_pct: 0.025              # securities transaction tax on sell
   exchange_txn_pct: 0.00345
   gst_pct: 18.0               # 18% on (brokerage + exchange txn charges)
-  signal_cooldown_minutes: 60 # same symbol cannot be re-entered for 60 min after exit
+  signal_cooldown_minutes: 30 # same symbol cannot be re-entered for 30 min after exit
 
 backtest_gate:
   min_sharpe: 1.2
