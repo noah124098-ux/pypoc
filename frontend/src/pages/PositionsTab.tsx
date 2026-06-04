@@ -1,10 +1,52 @@
+import { useState, useMemo, type ReactElement } from 'react'
 import { useApi } from '../hooks/useSnapshot'
 
+type FilterMode = 'all' | 'accepted' | 'rejected'
+
+/** Wrap text with <mark> spans for matching segments */
+function highlight(text: string, query: string): ReactElement {
+  if (!query) return <>{text}</>
+  const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
+  const parts = text.split(regex)
+  return (
+    <>
+      {parts.map((part, i) =>
+        regex.test(part) ? (
+          <mark key={i} className="search-highlight">{part}</mark>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </>
+  )
+}
+
 export function PositionsTab({ snap }: { snap: any }) {
-  const { data: signals, loading: signalsLoading } = useApi<any[]>('/api/signals?limit=20', 15000)
+  const { data: signals, loading: signalsLoading } = useApi<any[]>('/api/signals?limit=50', 15000)
   const positions = snap?.open_positions ?? []
   const agentRunning = snap?.running ?? false
   const bothEmpty = positions.length === 0 && (!signals || signals.length === 0)
+
+  const [filterText, setFilterText] = useState('')
+  const [filterMode, setFilterMode] = useState<FilterMode>('all')
+
+  const filteredSignals = useMemo(() => {
+    const raw: any[] = signals ?? []
+    return raw.filter(s => {
+      const q = filterText.trim().toLowerCase()
+      const matchText =
+        !q ||
+        (s.symbol ?? '').toLowerCase().includes(q) ||
+        (s.strategy ?? '').toLowerCase().includes(q)
+      const matchMode =
+        filterMode === 'all' ||
+        (filterMode === 'accepted' && s.accepted) ||
+        (filterMode === 'rejected' && !s.accepted)
+      return matchText && matchMode
+    })
+  }, [signals, filterText, filterMode])
+
+  const q = filterText.trim()
 
   return (
     <div className="tab-content">
@@ -47,9 +89,32 @@ export function PositionsTab({ snap }: { snap: any }) {
           Accepted signals become trades. Rejected signals show which guardrail blocked them.
         </p>
 
+        {/* Search + filter controls */}
+        <div className="signals-toolbar">
+          <input
+            className="search-input"
+            type="text"
+            placeholder="Filter by symbol or strategy…"
+            value={filterText}
+            onChange={e => setFilterText(e.target.value)}
+            aria-label="Filter signals"
+          />
+          <div className="toggle-group" role="group" aria-label="Signal status filter">
+            {(['all', 'accepted', 'rejected'] as FilterMode[]).map(mode => (
+              <button
+                key={mode}
+                className={'toggle-btn' + (filterMode === mode ? ' active' : '')}
+                onClick={() => setFilterMode(mode)}
+              >
+                {mode === 'all' ? 'Show all' : mode === 'accepted' ? 'Accepted only' : 'Rejected only'}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {signalsLoading && (!signals || signals.length === 0) ? (
           <div className="empty-state">Loading signals…</div>
-        ) : (signals ?? []).length > 0 ? (
+        ) : filteredSignals.length > 0 ? (
           <div className="trade-table-wrap">
             <table className="trade-table">
               <thead>
@@ -62,10 +127,10 @@ export function PositionsTab({ snap }: { snap: any }) {
                 </tr>
               </thead>
               <tbody>
-                {(signals ?? []).map((s: any, i: number) => (
+                {filteredSignals.map((s: any, i: number) => (
                   <tr key={i} className={s.accepted ? 'win' : 'loss'}>
-                    <td>{s.symbol}</td>
-                    <td>{s.strategy}</td>
+                    <td>{highlight(s.symbol ?? '', q)}</td>
+                    <td>{highlight(s.strategy ?? '', q)}</td>
                     <td>{s.side}</td>
                     <td>
                       <span className={s.accepted ? 'badge green' : 'badge red'}>
@@ -78,6 +143,8 @@ export function PositionsTab({ snap }: { snap: any }) {
               </tbody>
             </table>
           </div>
+        ) : (signals ?? []).length > 0 ? (
+          <div className="empty-state">No signals match the current filter.</div>
         ) : bothEmpty ? (
           <div className="empty-state combined">
             <p>
