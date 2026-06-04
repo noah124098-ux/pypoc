@@ -25,8 +25,10 @@ export function useGuardrailNotifications() {
 
   const fetchRejections = useCallback(async () => {
     try {
-      const data: any[] = await apiGet('/api/guardrails?limit=20')
-      const rejections: GuardrailRejection[] = (data ?? []).map((r: any, i: number) => ({
+      const raw: any = await apiGet('/api/guardrails?limit=20')
+      // API may return {data: [...], total: N} or a plain array
+      const arr: any[] = Array.isArray(raw) ? raw : (raw?.data ?? [])
+      const rejections: GuardrailRejection[] = arr.map((r: any, i: number) => ({
         id: r.id ?? `${r.ts ?? i}-${r.symbol ?? i}`,
         symbol: r.symbol ?? '—',
         strategy: r.strategy ?? '—',

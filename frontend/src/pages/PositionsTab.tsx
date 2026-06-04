@@ -22,7 +22,10 @@ function highlight(text: string, query: string): ReactElement {
 }
 
 export function PositionsTab({ snap }: { snap: any }) {
-  const { data: signals, loading: signalsLoading } = useApi<any[]>('/api/signals?limit=50', 15000)
+  const { data: signalsRaw, loading: signalsLoading } = useApi<any>('/api/signals?limit=50', 15000)
+  const signals: any[] | null = signalsRaw
+    ? (Array.isArray(signalsRaw) ? signalsRaw : signalsRaw.data ?? null)
+    : null
   const positions = snap?.open_positions ?? []
   const agentRunning = snap?.running ?? false
   const bothEmpty = positions.length === 0 && (!signals || signals.length === 0)

@@ -39,7 +39,10 @@ function PositionCard({ p }: { p: any }) {
 }
 
 export function LiveTab({ snap, connected }: { snap: any; connected: boolean }) {
-  const { data: trades } = useApi<any[]>('/api/trades?limit=5', 15000)
+  const { data: tradesRaw } = useApi<any>('/api/trades?limit=5', 15000)
+  const trades: any[] | null = tradesRaw
+    ? (Array.isArray(tradesRaw) ? tradesRaw : tradesRaw.data ?? null)
+    : null
   const equity = snap?.equity ?? 0
   const dayPnl = equity - (snap?.starting_equity_today ?? equity)
   const dayPct = snap?.starting_equity_today ? (dayPnl / snap.starting_equity_today * 100) : 0

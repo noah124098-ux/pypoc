@@ -983,13 +983,16 @@ export function AnalyticsTab() {
   const { data: extMetrics, loading: metricsLoading } =
     useApi<ExtendedMetrics>('/api/analytics/extended-metrics?days=365', 60000)
   const { data: tradesRaw, loading: tradesLoading } =
-    useApi<Trade[]>('/api/trades?limit=500', 60000)
+    useApi<any>('/api/trades?limit=500', 60000)
 
   const loading = attrLoading || monthlyLoading || metricsLoading || tradesLoading
 
   const attrData = (attribution && !('error' in attribution)) ? attribution as Record<string, StrategyMetrics> : {}
   const monthlyData: MonthlyPnlRow[] = Array.isArray(monthlyRaw) ? monthlyRaw : []
-  const trades: Trade[] = Array.isArray(tradesRaw) ? tradesRaw : []
+  // API returns paginated {data: [...]} or plain array — unwrap safely
+  const trades: Trade[] = tradesRaw
+    ? (Array.isArray(tradesRaw) ? tradesRaw : tradesRaw.data ?? [])
+    : []
   const metrics = (extMetrics && !('error' in (extMetrics as any))) ? extMetrics as ExtendedMetrics : null
 
   // KPI values

@@ -31,7 +31,7 @@ export function ReplayTab() {
   const [searchText, setSearchText] = useState("")
   const [sortMode, setSortMode] = useState<SortMode>("date")
 
-  const tradeList: any[] = (tradesRaw as any) ?? []
+  const tradeList: any[] = Array.isArray(tradesRaw) ? tradesRaw : []
   const q = searchText.trim()
 
   const filteredAndSorted = useMemo(() => {

@@ -210,10 +210,18 @@ function buildCsvUrl(trades: Trade[]): string {
 }
 
 export function PnlTab() {
-  const { data: equity, loading: equityLoading } = useApi<EquityPoint[]>('/api/equity?limit=500', 30000)
-  const { data: trades, loading: tradesLoading } = useApi<Trade[]>('/api/trades?limit=200', 60000)
+  const { data: equityRaw, loading: equityLoading } = useApi<any>('/api/equity?limit=500', 30000)
+  const { data: tradesRaw, loading: tradesLoading } = useApi<any>('/api/trades?limit=200', 60000)
 
   const loading = equityLoading || tradesLoading
+
+  // API returns paginated {data: [...]} or plain array — unwrap safely
+  const equity: EquityPoint[] | null = equityRaw
+    ? (Array.isArray(equityRaw) ? equityRaw : equityRaw.data ?? null)
+    : null
+  const trades: Trade[] | null = tradesRaw
+    ? (Array.isArray(tradesRaw) ? tradesRaw : tradesRaw.data ?? null)
+    : null
 
   const allTrades = trades ?? []
   const totalPnl = allTrades.reduce((s, t) => s + (t.pnl ?? 0), 0)

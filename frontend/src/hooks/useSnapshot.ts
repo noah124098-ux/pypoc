@@ -49,12 +49,22 @@ export function useApi<T>(path: string, interval = 30000) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    // Skip fetching when path is empty (conditional hooks pattern)
+    if (!path) {
+      setLoading(false)
+      setData(null)
+      return
+    }
+
     async function load() {
       try { setData(await apiGet(path)) } catch {} finally { setLoading(false) }
     }
     load()
-    const t = setInterval(load, interval)
-    return () => clearInterval(t)
+    // Only set up polling if interval > 0
+    if (interval > 0) {
+      const t = setInterval(load, interval)
+      return () => clearInterval(t)
+    }
   }, [path, interval])
 
   return { data, loading }

@@ -287,9 +287,12 @@ function Sidebar({ snap, connected, onClose }: { snap: any, connected: boolean, 
   const regime = snap?.current_regime ?? '—'
   const halted = snap?.halted ?? false
 
-  const { data: eqHistory } = useApi<any[]>('/api/equity?limit=20', 30000)
+  const { data: eqHistoryRaw } = useApi<any>('/api/equity?limit=20', 30000)
+  const eqHistory: any[] = eqHistoryRaw
+    ? (Array.isArray(eqHistoryRaw) ? eqHistoryRaw : eqHistoryRaw.data ?? [])
+    : []
 
-  const sparkData = (eqHistory ?? []).map((pt: any) => ({ v: pt.equity ?? pt.value ?? pt.equity_value ?? 0 }))
+  const sparkData = eqHistory.map((pt: any) => ({ v: pt.equity ?? pt.value ?? pt.equity_value ?? 0 }))
   const sparkTrending = sparkData.length >= 2
     ? sparkData[sparkData.length - 1].v >= sparkData[0].v
     : true
