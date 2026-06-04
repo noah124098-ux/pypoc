@@ -9,6 +9,10 @@ import {
   Tooltip,
   ResponsiveContainer,
   Cell,
+  ScatterChart,
+  Scatter,
+  Legend,
+  ReferenceLine,
 } from 'recharts'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -453,6 +457,522 @@ function BestWorstTable({ trades }: { trades: Trade[] }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Feature 1: Trade Correlation Matrix
+// Heatmap showing strategy pair co-occurrence and P&L correlation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Assign a stable colour to a strategy name */
+const STRATEGY_COLORS: Record<string, string> = {
+  trend_breakout: '#4299e1',
+  rsi_momentum: '#9f7aea',
+  supertrend: '#48bb78',
+  supertrend_short: '#ed8936',
+  mean_reversion: '#ecc94b',
+  momentum: '#fc8181',
+}
+const FALLBACK_COLORS = ['#4299e1', '#9f7aea', '#48bb78', '#ed8936', '#ecc94b', '#fc8181', '#38b2ac', '#f687b3']
+
+function stratColor(name: string, idx: number): string {
+  return STRATEGY_COLORS[name] ?? FALLBACK_COLORS[idx % FALLBACK_COLORS.length]
+}
+
+function TradeCorrelationMatrix({ trades }: { trades: Trade[] }) {
+  const { strategies, matrix } = useMemo(() => {
+    // Collect all unique strategies
+    const stratSet = Array.from(new Set(trades.map(t => t.strategy).filter(Boolean))) as string[]
+    if (stratSet.length < 2) return { strategies: stratSet, matrix: [] }
+
+    // Group P&L arrays per strategy
+    const pnlByStrategy: Record<string, number[]> = {}
+    stratSet.forEach(s => { pnlByStrategy[s] = [] })
+    trades.forEach(t => {
+      if (t.strategy && pnlByStrategy[t.strategy] !== undefined) {
+        pnlByStrategy[t.strategy].push(t.pnl ?? 0)
+      }
+    })
+
+    // Build n×n correlation matrix using Pearson correlation of per-trade PnL
+    // For co-occurrence: count trades where both strategies traded on the same day
+    const tradeDatesByStrategy: Record<string, Set<string>> = {}
+    stratSet.forEach(s => { tradeDatesByStrategy[s] = new Set() })
+    trades.forEach(t => {
+      if (!t.strategy) return
+      const d = (t.closed_at ?? t.exit_time ?? t.opened_at ?? t.entry_time ?? '').split('T')[0]
+      if (d) tradeDatesByStrategy[t.strategy].add(d)
+    })
+
+    // Correlation matrix: use Pearson between date-bucketed daily PnL series
+    // Gather all unique dates across all strategies
+    const allDates = Array.from(new Set(trades.map(t => (t.closed_at ?? t.exit_time ?? t.opened_at ?? t.entry_time ?? '').split('T')[0]).filter(Boolean))).sort()
+
+    // Build daily PnL series per strategy
+    const dailyPnl: Record<string, number[]> = {}
+    stratSet.forEach(s => {
+      dailyPnl[s] = allDates.map(d => {
+        const dayTrades = trades.filter(t => t.strategy === s && (t.closed_at ?? t.exit_time ?? t.opened_at ?? t.entry_time ?? '').startsWith(d))
+        return dayTrades.reduce((acc, t) => acc + (t.pnl ?? 0), 0)
+      })
+    })
+
+    function pearson(xs: number[], ys: number[]): number {
+      const n = xs.length
+      if (n < 2) return 0
+      const mx = xs.reduce((a, b) => a + b, 0) / n
+      const my = ys.reduce((a, b) => a + b, 0) / n
+      let num = 0, dx = 0, dy = 0
+      for (let i = 0; i < n; i++) {
+        const xi = xs[i] - mx, yi = ys[i] - my
+        num += xi * yi
+        dx += xi * xi
+        dy += yi * yi
+      }
+      const denom = Math.sqrt(dx * dy)
+      return denom === 0 ? 0 : num / denom
+    }
+
+    const mat = stratSet.map(s1 =>
+      stratSet.map(s2 => ({
+        s1,
+        s2,
+        r: s1 === s2 ? 1 : pearson(dailyPnl[s1], dailyPnl[s2]),
+      }))
+    )
+
+    return { strategies: stratSet, matrix: mat }
+  }, [trades])
+
+  if (strategies.length < 2) {
+    return (
+      <section className="section chart-section">
+        <h2>Strategy Correlation Matrix</h2>
+        <div className="empty-state">Need at least 2 strategies with trades to show correlation.</div>
+      </section>
+    )
+  }
+
+  function correlationColor(r: number): string {
+    // -1 = red, 0 = neutral, +1 = green
+    if (r >= 0) {
+      const alpha = 0.1 + r * 0.75
+      return `rgba(72,187,120,${alpha.toFixed(2)})`
+    } else {
+      const alpha = 0.1 + Math.abs(r) * 0.75
+      return `rgba(252,129,129,${alpha.toFixed(2)})`
+    }
+  }
+
+  const cellSize = Math.min(80, Math.floor(480 / strategies.length))
+
+  return (
+    <section className="section chart-section">
+      <h2>Strategy Correlation Matrix</h2>
+      <p style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14, marginTop: 0 }}>
+        Pearson correlation of daily P&amp;L between strategy pairs. Green = positive correlation, Red = negative.
+      </p>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'separate', borderSpacing: 3 }}>
+          <thead>
+            <tr>
+              <th style={{ width: cellSize, minWidth: 60 }} />
+              {strategies.map((s, i) => (
+                <th
+                  key={s}
+                  style={{
+                    width: cellSize,
+                    minWidth: cellSize,
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: stratColor(s, i),
+                    padding: '4px 2px',
+                    textAlign: 'center',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    maxWidth: cellSize,
+                  }}
+                  title={s}
+                >
+                  {s.replace(/_/g, ' ')}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {matrix.map((row, ri) => (
+              <tr key={strategies[ri]}>
+                <td
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: stratColor(strategies[ri], ri),
+                    paddingRight: 8,
+                    textAlign: 'right',
+                    whiteSpace: 'nowrap',
+                    maxWidth: cellSize,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                  title={strategies[ri]}
+                >
+                  {strategies[ri].replace(/_/g, ' ')}
+                </td>
+                {row.map((cell, ci) => (
+                  <td
+                    key={ci}
+                    title={`${cell.s1} vs ${cell.s2}: ${cell.r.toFixed(3)}`}
+                    style={{
+                      width: cellSize,
+                      height: cellSize,
+                      background: correlationColor(cell.r),
+                      borderRadius: 4,
+                      textAlign: 'center',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: Math.abs(cell.r) > 0.5 ? '#fff' : 'var(--text)',
+                      cursor: 'default',
+                      border: '1px solid rgba(255,255,255,0.05)',
+                    }}
+                  >
+                    {cell.r.toFixed(2)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {/* Legend */}
+      <div style={{ display: 'flex', gap: 16, marginTop: 12, fontSize: 11, color: 'var(--text2)', alignItems: 'center' }}>
+        <span>Legend:</span>
+        {[[-1, 'Strong negative'], [-0.5, 'Weak negative'], [0, 'Neutral'], [0.5, 'Weak positive'], [1, 'Strong positive']].map(([r, label]) => (
+          <span key={label as string} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{
+              width: 14, height: 14, borderRadius: 2,
+              background: correlationColor(r as number),
+              border: '1px solid rgba(255,255,255,0.1)',
+              display: 'inline-block',
+            }} />
+            {label as string}
+          </span>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Feature 2: Risk/Reward Scatter Plot
+// X = entry time (chronological index), Y = P&L
+// Color by strategy, size by position size (qty)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ScatterPoint {
+  x: number      // trade index (chronological)
+  y: number      // P&L
+  r: number      // dot radius (normalised qty)
+  label: string  // tooltip label
+  strategy: string
+  symbol: string
+  dateStr: string
+  qty: number
+}
+
+function RiskRewardScatter({ trades }: { trades: Trade[] }) {
+  const { byStrategy, strategies } = useMemo(() => {
+    if (!trades.length) return { byStrategy: {}, strategies: [] }
+
+    // Sort trades chronologically
+    const sorted = [...trades].sort((a, b) => {
+      const ta = new Date(a.opened_at ?? a.entry_time ?? '').getTime()
+      const tb = new Date(b.opened_at ?? b.entry_time ?? '').getTime()
+      return ta - tb
+    })
+
+    const maxQty = Math.max(1, ...sorted.map(t => t.qty ?? 1))
+    const stratSet = Array.from(new Set(sorted.map(t => t.strategy ?? 'unknown')))
+
+    const groups: Record<string, ScatterPoint[]> = {}
+    stratSet.forEach(s => { groups[s] = [] })
+
+    sorted.forEach((t, idx) => {
+      const strat = t.strategy ?? 'unknown'
+      const qty = t.qty ?? 1
+      const r = 4 + (qty / maxQty) * 12   // radius 4–16 px
+      const openedAt = t.opened_at ?? t.entry_time ?? ''
+      const dateStr = openedAt ? new Date(openedAt).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }) : `#${idx + 1}`
+      groups[strat].push({
+        x: idx + 1,
+        y: t.pnl ?? 0,
+        r,
+        label: `${t.symbol ?? '—'} (${strat})`,
+        strategy: strat,
+        symbol: t.symbol ?? '—',
+        dateStr,
+        qty,
+      })
+    })
+
+    return { byStrategy: groups, strategies: stratSet }
+  }, [trades])
+
+  if (!trades.length) {
+    return (
+      <section className="section chart-section">
+        <h2>Risk / Reward Scatter</h2>
+        <div className="empty-state">No trades yet to show scatter plot.</div>
+      </section>
+    )
+  }
+
+  const CustomDot = (props: any) => {
+    const { cx, cy, payload, fill } = props
+    const r = payload?.r ?? 5
+    return <circle cx={cx} cy={cy} r={r} fill={fill} fillOpacity={0.75} stroke={fill} strokeWidth={1} />
+  }
+
+  const CustomTooltip = ({ active, payload }: any) => {
+    if (!active || !payload?.length) return null
+    const d = payload[0].payload as ScatterPoint
+    return (
+      <div style={{ background: '#1a202c', border: '1px solid #2d3748', borderRadius: 6, padding: '8px 12px', fontSize: 12 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>{d.symbol} — {d.strategy}</div>
+        <div style={{ color: 'var(--text2)' }}>Date: {d.dateStr}</div>
+        <div style={{ color: 'var(--text2)' }}>Qty: {d.qty}</div>
+        <div style={{ color: (d.y ?? 0) >= 0 ? '#48bb78' : '#fc8181', fontWeight: 600 }}>
+          P&amp;L: {fmtPnl(d.y)}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <section className="section chart-section">
+      <h2>Risk / Reward Scatter</h2>
+      <p style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 12, marginTop: 0 }}>
+        Each dot = one trade. X = trade sequence, Y = P&amp;L. Dot size proportional to position size (qty). Color by strategy.
+      </p>
+      <ResponsiveContainer width="100%" height={340}>
+        <ScatterChart margin={{ top: 10, right: 20, bottom: 20, left: 60 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#2d3748" />
+          <XAxis
+            type="number"
+            dataKey="x"
+            name="Trade #"
+            tick={{ fontSize: 11, fill: '#718096' }}
+            label={{ value: 'Trade Sequence', position: 'insideBottom', offset: -10, fill: '#718096', fontSize: 11 }}
+          />
+          <YAxis
+            type="number"
+            dataKey="y"
+            name="P&L"
+            tick={{ fontSize: 11, fill: '#718096' }}
+            tickFormatter={(v: number) => (v >= 0 ? '+' : '') + Math.round(v / 1000) + 'k'}
+          />
+          <ReferenceLine y={0} stroke="#4a5568" strokeDasharray="4 4" />
+          <Tooltip content={<CustomTooltip />} />
+          <Legend
+            wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
+            formatter={(value) => <span style={{ color: 'var(--text)', fontSize: 12 }}>{value.replace(/_/g, ' ')}</span>}
+          />
+          {strategies.map((s, i) => (
+            <Scatter
+              key={s}
+              name={s}
+              data={byStrategy[s]}
+              fill={stratColor(s, i)}
+              shape={<CustomDot />}
+              isAnimationActive={false}
+            />
+          ))}
+        </ScatterChart>
+      </ResponsiveContainer>
+    </section>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Feature 3: Equity Attribution Waterfall Chart
+// Shows how each strategy contributed to total P&L
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface WaterfallBar {
+  name: string
+  start: number
+  end: number
+  value: number
+  isTotal: boolean
+  fill: string
+}
+
+function EquityAttributionWaterfall({ attribution }: { attribution: Record<string, StrategyMetrics> }) {
+  const bars = useMemo<WaterfallBar[]>(() => {
+    const entries = Object.entries(attribution)
+      .map(([name, m]) => ({ name, pnl: m.total_pnl ?? 0 }))
+      .sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl))  // largest contributors first
+
+    if (!entries.length) return []
+
+    const STARTING_EQUITY = 500_000
+    let running = STARTING_EQUITY
+    const result: WaterfallBar[] = []
+
+    // Starting equity bar
+    result.push({
+      name: 'Starting',
+      start: 0,
+      end: STARTING_EQUITY,
+      value: STARTING_EQUITY,
+      isTotal: true,
+      fill: '#4299e1',
+    })
+
+    entries.forEach((e) => {
+      const start = running
+      const end = running + e.pnl
+      result.push({
+        name: e.name.replace(/_/g, ' '),
+        start: Math.min(start, end),
+        end: Math.max(start, end),
+        value: e.pnl,
+        isTotal: false,
+        fill: e.pnl >= 0 ? '#48bb78' : '#fc8181',
+      })
+      running = end
+    })
+
+    // Final total
+    result.push({
+      name: 'Total',
+      start: 0,
+      end: running,
+      value: running,
+      isTotal: true,
+      fill: running >= STARTING_EQUITY ? '#48bb78' : '#fc8181',
+    })
+
+    return result
+  }, [attribution])
+
+  if (!bars.length) {
+    return (
+      <section className="section chart-section">
+        <h2>Equity Attribution Waterfall</h2>
+        <div className="empty-state">No strategy attribution data yet.</div>
+      </section>
+    )
+  }
+
+  // Custom bar rendering for waterfall effect using recharts BarChart
+  // We use a stacked bar: invisible "spacer" + visible "delta"
+  const chartData = bars.map(b => ({
+    name: b.name,
+    spacer: b.isTotal ? 0 : b.start,
+    delta: b.isTotal ? b.end : (b.end - b.start),
+    fill: b.fill,
+    isTotal: b.isTotal,
+    value: b.value,
+  }))
+
+  const CustomBarLabel = (props: any) => {
+    const { x, y, width, height, value, isTotal } = props
+    if (!value) return null
+    const label = isTotal
+      ? '₹' + Math.round(value / 1000) + 'k'
+      : (value >= 0 ? '+' : '') + Math.round(value / 1000) + 'k'
+    return (
+      <text
+        x={x + width / 2}
+        y={value >= 0 || isTotal ? y - 4 : y + height + 14}
+        textAnchor="middle"
+        fontSize={10}
+        fill={value >= 0 ? '#48bb78' : '#fc8181'}
+        fontWeight={600}
+      >
+        {label}
+      </text>
+    )
+  }
+
+  const CustomTooltip = ({ active, payload }: any) => {
+    if (!active || !payload?.length) return null
+    const d = payload.find((p: any) => p.dataKey === 'delta')
+    if (!d) return null
+    const item = d.payload
+    return (
+      <div style={{ background: '#1a202c', border: '1px solid #2d3748', borderRadius: 6, padding: '8px 12px', fontSize: 12 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>{item.name}</div>
+        <div style={{ color: item.isTotal ? 'var(--blue)' : (item.value >= 0 ? '#48bb78' : '#fc8181'), fontWeight: 600 }}>
+          {item.isTotal
+            ? '₹' + item.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })
+            : fmtPnl(item.value)
+          }
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <section className="section chart-section">
+      <h2>Equity Attribution Waterfall</h2>
+      <p style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 12, marginTop: 0 }}>
+        How each strategy contributed to net equity. Starting equity ₹5L → individual strategy P&amp;L → final equity.
+      </p>
+      <ResponsiveContainer width="100%" height={300}>
+        <BarChart data={chartData} margin={{ top: 20, right: 20, bottom: 5, left: 60 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#2d3748" vertical={false} />
+          <XAxis
+            dataKey="name"
+            tick={{ fontSize: 11, fill: '#718096' }}
+          />
+          <YAxis
+            tick={{ fontSize: 11, fill: '#718096' }}
+            tickFormatter={(v: number) => '₹' + Math.round(v / 1000) + 'k'}
+          />
+          <Tooltip content={<CustomTooltip />} />
+          {/* Invisible spacer to lift the bar */}
+          <Bar dataKey="spacer" stackId="wf" fill="transparent" isAnimationActive={false} />
+          {/* Visible delta bar */}
+          <Bar dataKey="delta" stackId="wf" isAnimationActive={false} radius={[3, 3, 0, 0]}>
+            {chartData.map((entry, i) => (
+              <Cell key={i} fill={entry.fill} />
+            ))}
+            <CustomBarLabel />
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+
+      {/* Summary row under waterfall */}
+      <div style={{ display: 'flex', gap: 12, marginTop: 12, flexWrap: 'wrap' }}>
+        {Object.entries(attribution)
+          .sort(([, a], [, b]) => (b.total_pnl ?? 0) - (a.total_pnl ?? 0))
+          .map(([name, m], i) => {
+            const pnl = m.total_pnl ?? 0
+            return (
+              <div
+                key={name}
+                style={{
+                  background: 'var(--bg3)',
+                  borderRadius: 6,
+                  padding: '6px 10px',
+                  fontSize: 12,
+                  borderLeft: `3px solid ${stratColor(name, i)}`,
+                }}
+              >
+                <span style={{ color: 'var(--text2)', marginRight: 6 }}>{name.replace(/_/g, ' ')}</span>
+                <span style={{ color: pnl >= 0 ? '#48bb78' : '#fc8181', fontWeight: 600 }}>{fmtPnl(pnl)}</span>
+                {m.n_trades != null && (
+                  <span style={{ color: 'var(--text2)', fontSize: 10, marginLeft: 6 }}>({m.n_trades}t)</span>
+                )}
+              </div>
+            )
+          })
+        }
+      </div>
+    </section>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main AnalyticsTab
 // ─────────────────────────────────────────────────────────────────────────────
 export function AnalyticsTab() {
@@ -566,6 +1086,31 @@ export function AnalyticsTab() {
 
           {/* Best / Worst Trades */}
           <BestWorstTable trades={trades} />
+
+          {/* ── NEW: Trade Correlation Matrix ─────────────────────── */}
+          {trades.length > 0
+            ? <TradeCorrelationMatrix trades={trades} />
+            : (
+              <section className="section chart-section">
+                <h2>Strategy Correlation Matrix</h2>
+                <div className="empty-state">No trades yet to compute correlation.</div>
+              </section>
+            )
+          }
+
+          {/* ── NEW: Risk / Reward Scatter ────────────────────────── */}
+          <RiskRewardScatter trades={trades} />
+
+          {/* ── NEW: Equity Attribution Waterfall ────────────────── */}
+          {Object.keys(attrData).length > 0
+            ? <EquityAttributionWaterfall attribution={attrData} />
+            : (
+              <section className="section chart-section">
+                <h2>Equity Attribution Waterfall</h2>
+                <div className="empty-state">No strategy attribution data yet.</div>
+              </section>
+            )
+          }
         </>
       )}
     </div>
