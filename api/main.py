@@ -635,6 +635,99 @@ def get_trade(trade_id: int, _: str = Depends(verify)):
 
 
 # ---------------------------------------------------------------------------
+# News sentiment endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/api/news/score")
+def post_news_score(payload: dict, _: str = Depends(verify)):
+    """Score news sentiment for one or more symbols.
+
+    Request body: ``{"symbols": {"RELIANCE": ["headline1", ...], ...}}``
+    Returns: list of ``{symbol, score, confidence, summary}``
+    """
+    from core.llm.news_scorer import score_batch
+
+    symbols_with_headlines: dict[str, list[str]] = payload.get("symbols", {})
+    if not symbols_with_headlines:
+        return []
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return JSONResponse(
+            {"error": "ANTHROPIC_API_KEY not configured", "requires_key": True},
+            status_code=503,
+        )
+
+    results = score_batch(
+        symbols_with_headlines=symbols_with_headlines,
+        api_key=api_key,
+    )
+    return [
+        {
+            "symbol": v.symbol,
+            "score": v.score,
+            "confidence": v.confidence,
+            "summary": v.summary,
+        }
+        for v in results.values()
+    ]
+
+
+# ---------------------------------------------------------------------------
+# AI commentary endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/api/ai/commentary")
+def post_ai_commentary(payload: dict, _: str = Depends(verify)):
+    """Generate live Claude market commentary for a symbol.
+
+    Request body: ``{"symbol": "RELIANCE", "question": "View on today", "context": "..."}``
+    Returns: ``{"commentary": str, "model": str}``
+    """
+    symbol: str = payload.get("symbol", "NIFTY50")
+    question: str = payload.get("question", "What is your view on today?")
+    context: str = payload.get("context", "")
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return JSONResponse(
+            {"error": "ANTHROPIC_API_KEY not configured", "requires_key": True},
+            status_code=503,
+        )
+
+    model_id = "claude-haiku-4-5-20251001"
+
+    prompt_parts = [
+        "You are a concise, experienced NSE intraday market analyst.",
+        f"Symbol under review: {symbol}",
+    ]
+    if context.strip():
+        prompt_parts.append(f"Additional context provided by the user:\n{context.strip()}")
+    prompt_parts.append(f"Question: {question}")
+    prompt_parts.append(
+        "Answer in 3-5 sentences. Be direct and actionable. "
+        "Focus on risk, momentum, and what a short-term trader should watch."
+    )
+    prompt = "\n\n".join(prompt_parts)
+
+    try:
+        import anthropic as _anthropic
+
+        client = _anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model=model_id,
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        commentary = msg.content[0].text.strip()
+    except Exception as exc:
+        logger.warning("AI commentary call failed: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    return {"commentary": commentary, "model": model_id}
+
+
+# ---------------------------------------------------------------------------
 # EOD review endpoint
 # ---------------------------------------------------------------------------
 
