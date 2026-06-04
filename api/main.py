@@ -842,6 +842,59 @@ def get_eod_review(_: str = Depends(verify)):
 # Portfolio endpoint
 # ---------------------------------------------------------------------------
 
+@app.post("/api/credentials/save-angel-one")
+def save_angel_one_creds(body: dict, _: str = Depends(verify)):
+    """Save Angel One credentials to the .env file (append or update).
+
+    Accepts: {api_key, client_code, password, totp_secret}
+    Security: requires HTTP Basic Auth (same auth as all other endpoints).
+    """
+    api_key = body.get("api_key", "").strip()
+    client_code = body.get("client_code", "").strip()
+    password = body.get("password", "").strip()
+    totp_secret = body.get("totp_secret", "").strip()
+
+    if not all([api_key, client_code, password, totp_secret]):
+        raise HTTPException(status_code=400, detail="All four credential fields are required")
+
+    env_path = Path(".env")
+    lines: list[str] = []
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+
+    # Map of env var name -> new value
+    updates = {
+        "ANGEL_ONE_API_KEY": api_key,
+        "ANGEL_ONE_CLIENT_CODE": client_code,
+        "ANGEL_ONE_PASSWORD": password,
+        "ANGEL_ONE_TOTP_SECRET": totp_secret,
+    }
+
+    # Track which keys we updated in-place
+    updated_keys: set[str] = set()
+    new_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        matched = False
+        for key in updates:
+            if stripped.startswith(f"{key}=") or stripped.startswith(f"# {key}="):
+                new_lines.append(f"{key}={updates[key]}")
+                updated_keys.add(key)
+                matched = True
+                break
+        if not matched:
+            new_lines.append(line)
+
+    # Append any keys that were not already present
+    for key, val in updates.items():
+        if key not in updated_keys:
+            new_lines.append(f"{key}={val}")
+
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    logger.info("Angel One credentials saved to .env by authenticated user")
+    return {"saved": True, "message": "Credentials saved. Restart the agent to use new credentials."}
+
+
 @app.get("/api/portfolio/angel-one")
 def get_angel_one_portfolio(_: str = Depends(verify)):
     """Angel One live portfolio. Returns disconnected stub if credentials absent."""

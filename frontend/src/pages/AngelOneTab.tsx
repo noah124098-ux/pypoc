@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useApi } from '../hooks/useSnapshot'
+import { useApi, apiPost, apiGet } from '../hooks/useSnapshot'
 
 // Persists credentials in sessionStorage (memory-only, never hits disk or network until "Connect")
 const SESSION_KEY = 'ao_creds'
@@ -19,6 +19,14 @@ export function AngelOneTab() {
   const [connected, setConnected] = useState(!!stored?.connected)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+
+  // Save to .env state
+  const [saving, setSaving] = useState(false)
+  const [saveResult, setSaveResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  // Test connection state
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
 
   const { data: portfolio, loading: portLoading } = useApi<any>(
     connected ? '/api/portfolio/angel-one' : '',
@@ -48,6 +56,47 @@ export function AngelOneTab() {
     setClientCode('')
     setPassword('')
     setTotpSecret('')
+    setSaveResult(null)
+    setTestResult(null)
+  }
+
+  async function handleSaveToEnv() {
+    if (!apiKey || !clientCode || !password || !totpSecret) {
+      setSaveResult({ ok: false, message: 'All fields are required' })
+      return
+    }
+    setSaving(true)
+    setSaveResult(null)
+    try {
+      const res = await apiPost('/api/credentials/save-angel-one', {
+        api_key: apiKey,
+        client_code: clientCode,
+        password: password,
+        totp_secret: totpSecret,
+      })
+      setSaveResult({ ok: true, message: res.message || 'Credentials saved successfully.' })
+    } catch (err: any) {
+      setSaveResult({ ok: false, message: err?.message || 'Failed to save credentials' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleTestConnection() {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const res = await apiGet('/api/portfolio/angel-one')
+      if (res?.connected === true) {
+        setTestResult({ ok: true, message: 'Connection successful — Angel One API is reachable.' })
+      } else {
+        setTestResult({ ok: false, message: res?.message || 'Connection failed — check credentials.' })
+      }
+    } catch (err: any) {
+      setTestResult({ ok: false, message: err?.message || 'Connection test failed' })
+    } finally {
+      setTesting(false)
+    }
   }
 
   const p = portfolio as any
@@ -55,18 +104,18 @@ export function AngelOneTab() {
 
   return (
     <div className="tab-content">
-      <h1 className="tab-title">🔌 Angel One Connect</h1>
+      <h1 className="tab-title">Angel One Connect</h1>
 
       {/* Security note */}
       <div className="status-banner" style={{
         background: 'rgba(66,153,225,.1)', border: '1px solid rgba(66,153,225,.3)', color: '#4299e1', marginBottom: 20
       }}>
         <strong>DATA-ONLY mode.</strong> These credentials are used exclusively to fetch your live portfolio (read-only).
-        No orders will be placed. Credentials are stored in browser session memory only — never on disk, never sent to any third-party.
+        No orders will be placed. Credentials are stored in browser session memory only — never sent to any third-party.
       </div>
 
       {!connected ? (
-        /* ── Credential Form ── */
+        /* -- Credential Form -- */
         <section className="section" style={{ maxWidth: 480 }}>
           <h2>Connect Angel One Account</h2>
           <p className="small" style={{ marginBottom: 16 }}>
@@ -129,14 +178,68 @@ export function AngelOneTab() {
               <div className="status-banner red">{error}</div>
             )}
 
-            <button
-              onClick={handleConnect}
-              disabled={loading}
-              className="btn-success"
-              style={{ marginTop: 8, padding: '10px 24px', fontSize: 14 }}
-            >
-              {loading ? 'Connecting...' : '🔌 Connect'}
-            </button>
+            <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+              <button
+                onClick={handleConnect}
+                disabled={loading}
+                className="btn-success"
+                style={{ padding: '10px 24px', fontSize: 14 }}
+              >
+                {loading ? 'Connecting...' : 'Connect'}
+              </button>
+
+              <button
+                onClick={handleSaveToEnv}
+                disabled={saving || !apiKey || !clientCode || !password || !totpSecret}
+                style={{
+                  padding: '10px 24px',
+                  fontSize: 14,
+                  background: 'rgba(66,153,225,.15)',
+                  border: '1px solid rgba(66,153,225,.4)',
+                  color: '#4299e1',
+                  borderRadius: 6,
+                  cursor: saving ? 'wait' : 'pointer',
+                  opacity: (!apiKey || !clientCode || !password || !totpSecret) ? 0.5 : 1,
+                }}
+              >
+                {saving ? 'Saving...' : 'Save to .env'}
+              </button>
+
+              <button
+                onClick={handleTestConnection}
+                disabled={testing}
+                style={{
+                  padding: '10px 24px',
+                  fontSize: 14,
+                  background: 'rgba(128,128,128,.1)',
+                  border: '1px solid var(--border)',
+                  color: 'var(--text)',
+                  borderRadius: 6,
+                  cursor: testing ? 'wait' : 'pointer',
+                }}
+              >
+                {testing ? 'Testing...' : 'Test Connection'}
+              </button>
+            </div>
+
+            {/* Save result toast */}
+            {saveResult && (
+              <div className={`status-banner ${saveResult.ok ? 'green' : 'red'}`} style={{ marginTop: 8 }}>
+                {saveResult.ok ? 'Saved' : 'Error'}: {saveResult.message}
+                {saveResult.ok && (
+                  <p className="small" style={{ marginTop: 6, opacity: 0.85 }}>
+                    Restart the agent process to use the new credentials.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Test connection result */}
+            {testResult && (
+              <div className={`status-banner ${testResult.ok ? 'green' : 'red'}`} style={{ marginTop: 8 }}>
+                {testResult.ok ? 'Success' : 'Failed'}: {testResult.message}
+              </div>
+            )}
           </div>
 
           <div className="info-box" style={{ marginTop: 24 }}>
@@ -151,10 +254,10 @@ export function AngelOneTab() {
         </section>
 
       ) : (
-        /* ── Connected View ── */
+        /* -- Connected View -- */
         <>
-          <div className="status-banner green" style={{ marginBottom: 20 }}>
-            ✅ Connected to Angel One — <strong>{clientCode}</strong>
+          <div className="status-banner green" style={{ marginBottom: 20, display: 'flex', alignItems: 'center' }}>
+            Connected to Angel One — <strong style={{ marginLeft: 4 }}>{clientCode}</strong>
             <button
               onClick={handleDisconnect}
               style={{ marginLeft: 'auto', background: 'none', border: '1px solid rgba(72,187,120,.4)', color: 'var(--green)', borderRadius: 4, padding: '2px 10px', cursor: 'pointer', fontSize: 12 }}
@@ -162,6 +265,58 @@ export function AngelOneTab() {
               Disconnect
             </button>
           </div>
+
+          {/* Action buttons in connected view */}
+          <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
+            <button
+              onClick={handleSaveToEnv}
+              disabled={saving}
+              style={{
+                padding: '8px 18px',
+                fontSize: 13,
+                background: 'rgba(66,153,225,.15)',
+                border: '1px solid rgba(66,153,225,.4)',
+                color: '#4299e1',
+                borderRadius: 6,
+                cursor: saving ? 'wait' : 'pointer',
+              }}
+            >
+              {saving ? 'Saving...' : 'Save to .env'}
+            </button>
+
+            <button
+              onClick={handleTestConnection}
+              disabled={testing}
+              style={{
+                padding: '8px 18px',
+                fontSize: 13,
+                background: 'rgba(128,128,128,.1)',
+                border: '1px solid var(--border)',
+                color: 'var(--text)',
+                borderRadius: 6,
+                cursor: testing ? 'wait' : 'pointer',
+              }}
+            >
+              {testing ? 'Testing...' : 'Test Connection'}
+            </button>
+          </div>
+
+          {/* Save/Test result banners in connected view */}
+          {saveResult && (
+            <div className={`status-banner ${saveResult.ok ? 'green' : 'red'}`} style={{ marginBottom: 12 }}>
+              {saveResult.ok ? 'Saved' : 'Error'}: {saveResult.message}
+              {saveResult.ok && (
+                <p className="small" style={{ marginTop: 6, opacity: 0.85 }}>
+                  Restart the agent process to use the new credentials.
+                </p>
+              )}
+            </div>
+          )}
+          {testResult && (
+            <div className={`status-banner ${testResult.ok ? 'green' : 'red'}`} style={{ marginBottom: 12 }}>
+              {testResult.ok ? 'Success' : 'Failed'}: {testResult.message}
+            </div>
+          )}
 
           {/* Account summary from API */}
           {portLoading ? (
@@ -171,27 +326,27 @@ export function AngelOneTab() {
             </div>
           ) : p?.connected === false ? (
             <div className="status-banner red">
-              ❌ {p?.message ?? 'Connection failed — check credentials and try again'}
+              {p?.message ?? 'Connection failed — check credentials and try again'}
             </div>
           ) : (
             <>
               <div className="kpi-row" style={{ marginBottom: 20 }}>
                 <div className="kpi-card">
                   <div className="kpi-label">Net Value</div>
-                  <div className="kpi-value">₹{(p?.net_value ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
+                  <div className="kpi-value">{'₹'}{(p?.net_value ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
                 </div>
                 <div className="kpi-card">
                   <div className="kpi-label">Available Cash</div>
-                  <div className="kpi-value green">₹{(p?.available_cash ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
+                  <div className="kpi-value green">{'₹'}{(p?.available_cash ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
                 </div>
                 <div className="kpi-card">
                   <div className="kpi-label">Used Margin</div>
-                  <div className="kpi-value yellow">₹{(p?.used_margin ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
+                  <div className="kpi-value yellow">{'₹'}{(p?.used_margin ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
                 </div>
                 <div className="kpi-card">
                   <div className="kpi-label">Unrealized P&L</div>
                   <div className={`kpi-value ${(p?.total_pnl_today ?? 0) >= 0 ? 'green' : 'red'}`}>
-                    ₹{(p?.total_pnl_today ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                    {'₹'}{(p?.total_pnl_today ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                   </div>
                 </div>
               </div>
@@ -217,10 +372,10 @@ export function AngelOneTab() {
                           <td><strong>{pos.symbol}</strong></td>
                           <td><span className="badge">{pos.product_type}</span></td>
                           <td>{pos.qty}</td>
-                          <td>₹{(pos.avg_price ?? 0).toFixed(2)}</td>
-                          <td>₹{(pos.ltp ?? 0).toFixed(2)}</td>
+                          <td>{'₹'}{(pos.avg_price ?? 0).toFixed(2)}</td>
+                          <td>{'₹'}{(pos.ltp ?? 0).toFixed(2)}</td>
                           <td className={pos.pnl >= 0 ? 'green' : 'red'}>
-                            ₹{(pos.pnl ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                            {'₹'}{(pos.pnl ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                           </td>
                           <td className={pos.day_change_pct >= 0 ? 'green' : 'red'}>
                             {(pos.day_change_pct ?? 0).toFixed(2)}%
@@ -236,7 +391,7 @@ export function AngelOneTab() {
 
               <div className="info-box" style={{ marginTop: 16 }}>
                 <p className="small">
-                  ⚠️ <strong>Read-only view.</strong> This dashboard cannot place, modify, or cancel orders.
+                  <strong>Read-only view.</strong> This dashboard cannot place, modify, or cancel orders.
                   Trading is done by the paper agent using simulated capital only.
                   Refreshes every 30 seconds.
                 </p>
