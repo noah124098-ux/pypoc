@@ -146,6 +146,28 @@ strategies:
     target_r_multiple: 1.5
     volume_ratio_min: 1.5
 
+  volume_breakout_confirm:
+    enabled: false   # disabled: gate run 2026-06-04 degraded aggregate Sharpe 0.32→0.12; W3 hurt badly (correction market)
+    regimes: [TREND]
+    donchian_period: 10
+    volume_avg_period: 20
+    volume_spike_min: 2.5
+    close_quality_pct: 0.80
+    dma_period: 50
+    atr_period: 14
+    atr_stop_multiplier: 1.5
+    target_r_multiple: 2.0
+
+  gap_and_hold:
+    enabled: false   # disabled: gate run 2026-06-04 degraded Sharpe 0.32→0.12; RANGE entries hurt in W3 correction
+    regimes: [TREND, RANGE]
+    gap_pct_min: 0.005
+    volume_avg_period: 20
+    volume_ratio_min: 1.5
+    atr_period: 14
+    atr_stop_buffer: 0.5
+    target_r_multiple: 2.0
+
   supertrend_short:
     enabled: false
     regimes: [VOLATILE, TREND]
