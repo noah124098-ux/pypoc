@@ -1,8 +1,29 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+
+const NIFTY_50_SYMBOLS = [
+  'ADANIENT', 'ADANIPORTS', 'APOLLOHOSP', 'ASIANPAINT', 'AXISBANK',
+  'BAJAJ-AUTO', 'BAJFINANCE', 'BAJAJFINSV', 'BEL', 'BHARTIARTL',
+  'BPCL', 'BRITANNIA', 'CIPLA', 'COALINDIA', 'DRREDDY',
+  'EICHERMOT', 'GRASIM', 'HCLTECH', 'HDFCBANK', 'HDFCLIFE',
+  'HEROMOTOCO', 'HINDALCO', 'HINDUNILVR', 'ICICIBANK', 'INDUSINDBK',
+  'INFY', 'ITC', 'JSWSTEEL', 'KOTAKBANK', 'LT',
+  'M&M', 'MARUTI', 'NESTLEIND', 'NTPC', 'ONGC',
+  'POWERGRID', 'RELIANCE', 'SBILIFE', 'SBIN', 'SHRIRAMFIN',
+  'SUNPHARMA', 'TATACONSUM', 'TATAMOTORS', 'TATASTEEL', 'TCS',
+  'TECHM', 'TITAN', 'TRENT', 'ULTRACEMCO', 'WIPRO',
+]
 
 const TOP_NIFTY_SYMBOLS = [
   'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK',
   'HCLTECH', 'WIPRO', 'BAJFINANCE', 'LTIM', 'AXISBANK',
+]
+
+const QUESTION_PRESETS = [
+  'View on today',
+  'Entry signal quality',
+  'Risk assessment',
+  'Key support and resistance levels',
+  'Momentum analysis',
 ]
 
 interface Suggestion {
@@ -139,6 +160,60 @@ export function AiReviewTab() {
     setSelectedSymbols(prev =>
       prev.includes(sym) ? prev.filter(s => s !== sym) : [...prev, sym]
     )
+  }
+
+  // Commentary state
+  const [commentarySymbol, setCommentarySymbol] = useState('RELIANCE')
+  const [commentaryQuestion, setCommentaryQuestion] = useState('View on today')
+  const [commentaryContext, setCommentaryContext] = useState('')
+  const [commentaryLoading, setCommentaryLoading] = useState(false)
+  const [commentaryResult, setCommentaryResult] = useState<{ commentary: string; model: string } | null>(null)
+  const [commentaryError, setCommentaryError] = useState('')
+  const [displayedText, setDisplayedText] = useState('')
+  const typingRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  function startTypingAnimation(text: string) {
+    if (typingRef.current) clearInterval(typingRef.current)
+    setDisplayedText('')
+    let i = 0
+    typingRef.current = setInterval(() => {
+      if (i < text.length) {
+        setDisplayedText(text.slice(0, i + 1))
+        i++
+      } else {
+        if (typingRef.current) clearInterval(typingRef.current)
+      }
+    }, 12)
+  }
+
+  async function askClaude() {
+    setCommentaryLoading(true)
+    setCommentaryError('')
+    setCommentaryResult(null)
+    setDisplayedText('')
+    try {
+      const r = await fetch('http://localhost:8502/api/ai/commentary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: commentarySymbol,
+          question: commentaryQuestion,
+          context: commentaryContext,
+        }),
+      })
+      const d = await r.json()
+      if (d.requires_key || d.error?.includes('ANTHROPIC_API_KEY')) {
+        setCommentaryError('requires_key')
+      } else if (d.error) {
+        setCommentaryError(d.error)
+      } else {
+        setCommentaryResult(d)
+        startTypingAnimation(d.commentary)
+      }
+    } catch {
+      setCommentaryError('API not reachable — ensure the FastAPI backend is running.')
+    }
+    setCommentaryLoading(false)
   }
 
   // review is unavailable when API returns {available: false} or null/network error
@@ -279,7 +354,193 @@ export function AiReviewTab() {
 
       <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '8px 0 24px' }} />
 
-      {/* Section 2: News Sentiment Scorer */}
+      {/* Section 2: Live Claude Commentary */}
+      <section className="section">
+        <h2>Live Market Commentary</h2>
+        <div className="small" style={{ marginBottom: 16 }}>
+          Ask Claude Haiku for instant market analysis on any Nifty 50 symbol.
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+          {/* Symbol selector */}
+          <div>
+            <label style={{ fontSize: 12, color: 'var(--text2)', display: 'block', marginBottom: 4 }}>
+              Symbol
+            </label>
+            <select
+              value={commentarySymbol}
+              onChange={e => setCommentarySymbol(e.target.value)}
+              style={{
+                width: '100%',
+                background: 'var(--bg3)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                color: 'var(--text)',
+                fontSize: 13,
+                padding: '7px 10px',
+                cursor: 'pointer',
+              }}
+            >
+              {NIFTY_50_SYMBOLS.map(s => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Question input with preset buttons */}
+          <div>
+            <label style={{ fontSize: 12, color: 'var(--text2)', display: 'block', marginBottom: 4 }}>
+              Question
+            </label>
+            <input
+              type="text"
+              value={commentaryQuestion}
+              onChange={e => setCommentaryQuestion(e.target.value)}
+              placeholder="What would you like to know?"
+              style={{
+                width: '100%',
+                background: 'var(--bg3)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                color: 'var(--text)',
+                fontSize: 13,
+                padding: '7px 10px',
+                boxSizing: 'border-box',
+              }}
+            />
+          </div>
+        </div>
+
+        {/* Preset question chips */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+          {QUESTION_PRESETS.map(q => (
+            <button
+              key={q}
+              onClick={() => setCommentaryQuestion(q)}
+              style={{
+                padding: '3px 10px',
+                borderRadius: 12,
+                fontSize: 11,
+                cursor: 'pointer',
+                border: commentaryQuestion === q
+                  ? '1px solid var(--blue)'
+                  : '1px solid var(--border)',
+                background: commentaryQuestion === q
+                  ? 'rgba(66,153,225,.15)'
+                  : 'var(--bg3)',
+                color: commentaryQuestion === q ? 'var(--blue)' : 'var(--text2)',
+              }}
+            >
+              {q}
+            </button>
+          ))}
+        </div>
+
+        {/* Optional context */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 12, color: 'var(--text2)', display: 'block', marginBottom: 4 }}>
+            Additional context (optional)
+          </label>
+          <textarea
+            rows={2}
+            value={commentaryContext}
+            onChange={e => setCommentaryContext(e.target.value)}
+            placeholder="e.g. RSI is 72, broke out above 200 DMA today, heavy volume"
+            style={{
+              width: '100%',
+              background: 'var(--bg3)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              color: 'var(--text)',
+              fontSize: 12,
+              padding: '8px 10px',
+              resize: 'vertical',
+              fontFamily: 'inherit',
+              lineHeight: 1.5,
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+
+        <button
+          className="btn-success"
+          onClick={askClaude}
+          disabled={commentaryLoading}
+          style={{ marginBottom: 16 }}
+        >
+          {commentaryLoading ? 'Asking Claude...' : 'Ask Claude'}
+        </button>
+
+        {/* Error states */}
+        {commentaryError === 'requires_key' && (
+          <div
+            className="info-card"
+            style={{
+              maxWidth: 480,
+              padding: '16px 20px',
+              borderLeft: '4px solid var(--yellow)',
+              marginBottom: 12,
+            }}
+          >
+            <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>
+              Requires ANTHROPIC_API_KEY
+            </div>
+            <p style={{ color: 'var(--text2)', fontSize: 13, margin: 0 }}>
+              Add <code style={{ background: 'var(--bg3)', padding: '1px 5px', borderRadius: 4 }}>ANTHROPIC_API_KEY=sk-ant-...</code> to your <code style={{ background: 'var(--bg3)', padding: '1px 5px', borderRadius: 4 }}>.env</code> file and restart the API server.
+            </p>
+          </div>
+        )}
+        {commentaryError && commentaryError !== 'requires_key' && (
+          <div className="status-banner red" style={{ marginBottom: 12 }}>
+            {commentaryError}
+          </div>
+        )}
+
+        {/* Commentary response box with typing animation */}
+        {commentaryResult && displayedText && (
+          <div
+            style={{
+              background: 'rgba(66,153,225,.08)',
+              border: '1px solid rgba(66,153,225,.35)',
+              borderLeft: '4px solid var(--blue)',
+              borderRadius: 8,
+              padding: '16px 20px',
+              marginBottom: 12,
+            }}
+          >
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              marginBottom: 10,
+              fontSize: 12,
+              color: 'var(--blue)',
+              fontWeight: 600,
+            }}>
+              <span>Claude Haiku</span>
+              <span style={{ color: 'var(--text2)', fontWeight: 400 }}>
+                — {commentarySymbol} — {commentaryQuestion}
+              </span>
+            </div>
+            <p style={{
+              lineHeight: 1.7,
+              fontSize: 14,
+              color: 'var(--text)',
+              margin: 0,
+              whiteSpace: 'pre-wrap',
+            }}>
+              {displayedText}
+              {displayedText.length < (commentaryResult.commentary.length) && (
+                <span style={{ opacity: 0.6, animation: 'none' }}>|</span>
+              )}
+            </p>
+          </div>
+        )}
+      </section>
+
+      <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '8px 0 24px' }} />
+
+      {/* Section 3: News Sentiment Scorer */}
       <section className="section">
         <h2>News Sentiment Scorer</h2>
         <div className="small" style={{ marginBottom: 12 }}>
