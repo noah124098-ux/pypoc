@@ -29,7 +29,7 @@ All workflow launches from this repo are pre-approved. Use the `Workflow` tool f
 
 An automated, regime-aware **paper-trading agent for NSE Nifty 50** that consumes live Angel One SmartAPI tick data, classifies the market into TREND/RANGE/VOLATILE regimes, runs strategy logic appropriate to the regime, and sends every order through a hard guardrails layer with stop-loss, daily-loss circuit, drawdown circuit, and black-swan halts.
 
-**Status:** v3 — React+FastAPI deployed. Phases 3/4/5/5b/6b/7/7b/7c complete. 1219 tests passing. Gate at 0.11 Sharpe (failing due to data drift — stable baseline was 0.32; see Open issues). No live broker active. React+FastAPI dashboard at :8502 (11 tabs, auth: admin/pypoc2024).
+**Status:** v3 — React+FastAPI deployed. Phases 3/4/5/5b/6b/7/7b/7c complete. 1219 tests passing. Gate at -0.086 Sharpe (failing due to bhavcopy data drift — stable baseline was 0.32 on May 29 data; see Open issues). No live broker active. React+FastAPI dashboard at http://localhost:8502 (11 tabs, auth: admin/pypoc2024, mobile-responsive, code-splitting).
 
 **Model:** claude-opus-4-8 (default for all sessions). effortLevel: max.
 
@@ -42,7 +42,7 @@ An automated, regime-aware **paper-trading agent for NSE Nifty 50** that consume
 | Trading style | Multi-style, regime-aware (TREND / RANGE / VOLATILE) |
 | Universe | Nifty 50 only |
 | Risk model | Conservative — 1-2% per trade, max 5 positions, daily-loss circuit -3%, drawdown circuit -10% |
-| Decision engine | Hybrid — rules trade autonomously intraday; Claude Opus 4-8 reviews trades EOD and proposes parameter tweaks |
+| Decision engine | Hybrid — rules trade autonomously intraday; Claude Opus 4.8 reviews trades EOD and proposes parameter tweaks |
 | Mode | Paper-trade only for v1. No live broker active. |
 | Deployment | Portable: local Windows for dev, EC2 Windows Server for 24/7 |
 | Broker abstraction | `IBroker` interface; `PaperBroker` impl + `AngelOneLiveBroker` stub |
@@ -177,24 +177,27 @@ cd frontend && npm run build
 
 ## Open issues — pick up here
 
-### 1. Backtest gate failing — 0.105 Sharpe
+### 1. Backtest gate failing — -0.086 Sharpe (data drift from 0.32 baseline)
 
 Current gate run (file timestamp 2026-06-04, all strategies enabled):
 
 ```text
-Sharpe: 0.105, MaxDD: 12.4%, win: 38.0%, pf: 1.31, trades: 163
-Gate FAILED: sharpe (0.105 < 1.2), win_rate (38.0% < 45%), profit_factor (1.31 < 1.5)
+Sharpe: -0.086, MaxDD: ~12%, win: ~36%, pf: 1.14, trades: 184
+Gate FAILED: sharpe (-0.086 < 1.2), profit_factor (1.14 < 1.5)
 ```
 
-**Best known baseline (all strategies enabled + VIX<18 + Hurst H>0.5 + breadth 50% + 1.5x RANGE boost):** Sharpe 0.32, MaxDD 12.4%, win 38.6%, PF 1.42 — still failing gate.
+**Data drift issue:** Bhavcopy data is highly sensitive to end-date. Same code + config:
+- May 29 data: Sharpe 0.32, MaxDD 12.4%, win 38.6%, PF 1.42
+- Early June data: Sharpe 0.105, MaxDD 12.4%, win 38.0%, PF 1.31
+- June 4 data: Sharpe -0.086, PF 1.14, trades 184
 
-**Root cause:** W3 (May 2025–Jun 2026) is a correction+recovery market. Long-only trend
-strategies fail: `trend_breakout` and `rsi_momentum` generate heavy losses. W3 ends
-mid-2026; a new walk-forward window starting 2025-08 may capture the recovery rally.
+**Root cause:** W3 (May 2025-Jun 2026) is a correction+recovery market. Long-only trend
+strategies fail: `trend_breakout` and `rsi_momentum` generate heavy losses. As more correction
+data enters the window, aggregate Sharpe degrades further.
 
 **What's been tried that DEGRADES results** (see memory `project_gate_status.md`):
-every stock-level DMA filter, 52-week-high filter, regime directionality check,
-rolling autocorr filter, disabling strategies, supertrend enable — all degrade results.
+21 experiments total including DMA filters, regime reclassification, strategy disabling,
+VolumeBreakoutConfirm + GapAndHold strategies, bb_squeeze parameter tuning, window changes.
 
 **Reproducible gate run:** `python cli.py walk-forward --years 3 --end-date 2026-05-29`
 
@@ -227,21 +230,21 @@ rally (trending character) enters the walk-forward period.
 
 ### 3. Recently completed (last 15 commits)
 
+- `339cc40` feat(dashboard): Angel One tab Save to .env + Test Connection buttons
+- `7d58644` feat(dashboard): add Recent Activity event log to Live tab
+- `6fadf29` feat(dashboard): add Refresh Gate button to BacktestTab
+- `f649e72` docs: update CLAUDE.md -- 1219 tests, v3 status, claude-opus-4-8 model
 - `f66571b` fix(frontend): handle paginated API responses and prevent blank screens
 - `2f55724` fix(frontend): proper title, meta tags, favicon for React dashboard
-- `b99174f` fix(config): restore clean baseline config — signal_cooldown 30min, vix_spike_bounce enabled
+- `b99174f` fix(config): restore clean baseline config -- signal_cooldown 30min, vix_spike_bounce enabled
 - `905dc30` feat(strategies): add VolumeBreakoutConfirm + GapAndHold (disabled after gate regression)
 - `4893086` experiment(gate): bb_squeeze target_r_multiple 2.0->3.0 improves Sharpe 0.036->0.124
-- `db1518d` chore: 10-hour session final state — 1202 tests, gate 0.105 Sharpe, React dashboard at :8502
+- `db1518d` chore: 10-hour session final state -- 1202 tests, gate 0.105 Sharpe, React dashboard at :8502
 - `83361d0` feat(api): Prometheus /api/metrics endpoint, /api/ready readiness probe, structured JSON request logging
 - `7f05978` feat(analytics): correlation matrix, scatter plot, waterfall chart in dashboard
 - `18a667f` feat(ai): POST /api/ai/commentary + Live Commentary UI in AiReviewTab
 - `e51ed85` feat(auth): optional TOTP 2FA for dashboard login
 - `0913803` feat(api): server-side TTL cache on expensive FastAPI endpoints
-- `802d41e` feat(dashboard): System health page and API docs page in React frontend
-- `a78186f` feat(frontend): search/filter UI on Positions and Replay tabs
-- `99056a2` feat(api): cursor-based pagination + /api/trades/stats
-- `7cbf547` test: coverage boost from 85% to 92% (+266 tests, total 1202)
 
 ### 4. EC2 environment
 
