@@ -47,9 +47,11 @@ from core.strategies.nr_pattern import NRPatternBreakout
 from core.strategies.obv_trend import ObvTrend
 from core.strategies.rsi_bounce import RsiBounce
 from core.strategies.rsi_momentum import RsiMomentum
+from core.strategies.gap_and_hold import GapAndHold
 from core.strategies.supertrend import Supertrend
 from core.strategies.supertrend_short import SupertrendShort
 from core.strategies.trend_breakout import TrendBreakout
+from core.strategies.volume_breakout_confirm import VolumeBreakoutConfirm
 from core.strategies.volatility_compression import VolatilityCompression
 from core.strategies.indicators import adx_value, hurst_exponent as _hurst_exp
 from core.types import OrderType, Position, Regime, Side, Signal
@@ -552,6 +554,28 @@ class BacktestEngine:
                 nr_lookback=cfg.get("nr_lookback", 7),
                 bullish_close_pct=cfg.get("bullish_close_pct", 0.30),
                 atr_period=cfg.get("atr_period", 14),
+                target_r_multiple=cfg.get("target_r_multiple", 2.0),
+            ))
+        if scfg.get("volume_breakout_confirm", {}).get("enabled", False):
+            cfg = scfg["volume_breakout_confirm"]
+            out.append(VolumeBreakoutConfirm(
+                donchian_period=cfg.get("donchian_period", 10),
+                volume_avg_period=cfg.get("volume_avg_period", 20),
+                volume_spike_min=cfg.get("volume_spike_min", 2.5),
+                close_quality_pct=cfg.get("close_quality_pct", 0.80),
+                dma_period=cfg.get("dma_period", 50),
+                atr_period=cfg.get("atr_period", 14),
+                atr_stop_multiplier=cfg.get("atr_stop_multiplier", 1.5),
+                target_r_multiple=cfg.get("target_r_multiple", 2.0),
+            ))
+        if scfg.get("gap_and_hold", {}).get("enabled", False):
+            cfg = scfg["gap_and_hold"]
+            out.append(GapAndHold(
+                gap_pct_min=cfg.get("gap_pct_min", 0.005),
+                volume_avg_period=cfg.get("volume_avg_period", 20),
+                volume_ratio_min=cfg.get("volume_ratio_min", 1.5),
+                atr_period=cfg.get("atr_period", 14),
+                atr_stop_buffer=cfg.get("atr_stop_buffer", 0.5),
                 target_r_multiple=cfg.get("target_r_multiple", 2.0),
             ))
         return out
