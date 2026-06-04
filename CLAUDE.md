@@ -29,7 +29,9 @@ All workflow launches from this repo are pre-approved. Use the `Workflow` tool f
 
 An automated, regime-aware **paper-trading agent for NSE Nifty 50** that consumes live Angel One SmartAPI tick data, classifies the market into TREND/RANGE/VOLATILE regimes, runs strategy logic appropriate to the regime, and sends every order through a hard guardrails layer with stop-loss, daily-loss circuit, drawdown circuit, and black-swan halts.
 
-**Status:** v2 — Phases 3/4/5/5b/6b/7/7b complete. 1202 tests passing. Gate at 0.105 Sharpe (failing — see Open issues). No live broker active. React+FastAPI dashboard at :8502 (auth: admin/pypoc2024).
+**Status:** v3 — React+FastAPI deployed. Phases 3/4/5/5b/6b/7/7b/7c complete. 1219 tests passing. Gate at 0.11 Sharpe (failing due to data drift — stable baseline was 0.32; see Open issues). No live broker active. React+FastAPI dashboard at :8502 (11 tabs, auth: admin/pypoc2024).
+
+**Model:** claude-opus-4-8 (default for all sessions). effortLevel: max.
 
 **Repo:** https://github.com/noah124098-ux/pypoc
 
@@ -40,7 +42,7 @@ An automated, regime-aware **paper-trading agent for NSE Nifty 50** that consume
 | Trading style | Multi-style, regime-aware (TREND / RANGE / VOLATILE) |
 | Universe | Nifty 50 only |
 | Risk model | Conservative — 1-2% per trade, max 5 positions, daily-loss circuit -3%, drawdown circuit -10% |
-| Decision engine | Hybrid — rules trade autonomously intraday; Claude Opus 4.7 reviews trades EOD and proposes parameter tweaks |
+| Decision engine | Hybrid — rules trade autonomously intraday; Claude Opus 4-8 reviews trades EOD and proposes parameter tweaks |
 | Mode | Paper-trade only for v1. No live broker active. |
 | Deployment | Portable: local Windows for dev, EC2 Windows Server for 24/7 |
 | Broker abstraction | `IBroker` interface; `PaperBroker` impl + `AngelOneLiveBroker` stub |
@@ -81,7 +83,7 @@ core/
 api/             FastAPI backend — REST + WebSocket, HTTP Basic Auth, request logging
   main.py        All /api/* endpoints + /ws WebSocket broadcast loop + SPA static serving
   run.py         Uvicorn entrypoint for :8502
-frontend/        React dashboard (primary) — 10 tabs, mobile-responsive, dark theme
+frontend/        React dashboard (primary) — 11 tabs, mobile-responsive, dark theme
   src/           TypeScript source (App.tsx, pages/, hooks/)
   dist/          Production build served by FastAPI at :8502
 mcp_server/      MCP server (read-only) — tools for inspecting the live agent
@@ -90,7 +92,7 @@ dashboard.py     Streamlit entry point — DECOMMISSIONED
 deploy/          nginx SSL/TLS config + self-signed cert generator + EC2 setup scripts
 docker-compose.yml  Docker Compose service definitions
 Dockerfile       Multi-stage build: venv + React build + FastAPI
-tests/           1202 passing tests (includes Vitest frontend unit tests via pytest adapter)
+tests/           1219 passing tests (includes Vitest frontend unit tests via pytest adapter)
 config/
   default.yaml   Default config (TREND strategies currently disabled for gate baseline)
   environments/  dev.yaml, staging.yaml, prod.yaml overrides
@@ -112,7 +114,7 @@ docs/            ARCHITECTURE.md, LIVE_BROKER_SETUP.md
 # Activate venv (Windows)
 .\.venv\Scripts\Activate.ps1
 
-# Run the full test suite (must always be 1202/1202)
+# Run the full test suite (must always be 1219/1219)
 pytest -q
 
 # Pre-flight check before paper trading
@@ -208,7 +210,7 @@ rally (trending character) enters the walk-forward period.
 | 3 | Live NSE data feeds (VIX, PCR), economic calendar blackouts, EOD Claude reviewer | **DONE** |
 | 4 | EOD reviewer (Claude Opus 4.7) producing parameter-adjustment proposals | **DONE** |
 | 5 | Streamlit dashboard + Telegram alerts + email EOD report + dark mode | **DONE** |
-| 5b | React dashboard (10 tabs, mobile, FastAPI backend, HTTP Basic Auth, WebSocket) — Streamlit decommissioned | **DONE** |
+| 5b | React dashboard (11 tabs incl. Angel One connect, mobile, FastAPI backend, HTTP Basic Auth, WebSocket) — Streamlit decommissioned | **DONE** |
 | 6b | MCP mutating tools via file-based command-queue (halt_agent, place_paper_order) | **DONE** |
 | 7 | AngelOneLiveBroker + Upstox V3 feed + hot-reload risk params + SQLite migrations | **DONE** |
 | 7b | FastAPI production hardening: WebSocket manager, SSL/TLS nginx, auth, status endpoint | **DONE** |
@@ -225,6 +227,12 @@ rally (trending character) enters the walk-forward period.
 
 ### 3. Recently completed (last 15 commits)
 
+- `f66571b` fix(frontend): handle paginated API responses and prevent blank screens
+- `2f55724` fix(frontend): proper title, meta tags, favicon for React dashboard
+- `b99174f` fix(config): restore clean baseline config — signal_cooldown 30min, vix_spike_bounce enabled
+- `905dc30` feat(strategies): add VolumeBreakoutConfirm + GapAndHold (disabled after gate regression)
+- `4893086` experiment(gate): bb_squeeze target_r_multiple 2.0->3.0 improves Sharpe 0.036->0.124
+- `db1518d` chore: 10-hour session final state — 1202 tests, gate 0.105 Sharpe, React dashboard at :8502
 - `83361d0` feat(api): Prometheus /api/metrics endpoint, /api/ready readiness probe, structured JSON request logging
 - `7f05978` feat(analytics): correlation matrix, scatter plot, waterfall chart in dashboard
 - `18a667f` feat(ai): POST /api/ai/commentary + Live Commentary UI in AiReviewTab
@@ -234,12 +242,6 @@ rally (trending character) enters the walk-forward period.
 - `a78186f` feat(frontend): search/filter UI on Positions and Replay tabs
 - `99056a2` feat(api): cursor-based pagination + /api/trades/stats
 - `7cbf547` test: coverage boost from 85% to 92% (+266 tests, total 1202)
-- `e67c69e` feat(scripts): daily backup/log-rotation scheduled tasks + backup freshness check
-- `30d2046` feat(strategies): 20-DMA W3-protection filter on MomentumStrength (disabled — degrades gate)
-- `8770e48` feat(frontend): Notifications/Alerts center
-- `88d00ca` config: disable TREND strategies test — Sharpe degraded, reverted strategy set
-- `31a9931` test(api): exception-branch coverage for costs and list-trades
-- `e089e7b` feat(api): /api/status endpoint, global exception handler, request logging middleware
 
 ### 4. EC2 environment
 
