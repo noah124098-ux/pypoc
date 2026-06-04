@@ -91,41 +91,156 @@ class TradingAgentTools:
             "drawdown_from_peak_pct": ((peak - equity) / peak * 100.0) if peak else 0.0,
         }
 
-    def get_recent_signals(self, limit: int = 50, accepted_only: bool = False) -> list[dict[str, Any]]:
-        """Most recent strategy signals, including rejection reasons."""
-        with self._connect() as c:
-            q = "SELECT * FROM signals"
-            params: tuple = ()
-            if accepted_only:
-                q += " WHERE accepted = 1"
-            q += " ORDER BY id DESC LIMIT ?"
-            params = (*params, int(limit))
-            cur = c.execute(q, params)
-            return self._rows(cur)
+    def get_recent_signals(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        accepted_only: bool = False,
+    ) -> dict[str, Any]:
+        """Most recent strategy signals with pagination metadata.
 
-    def get_recent_trades(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Most recent closed trades."""
+        Returns ``{data, total, limit, offset, has_more}``.
+        """
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
         with self._connect() as c:
-            cur = c.execute(
-                "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (int(limit),)
-            )
-            return self._rows(cur)
+            where = "WHERE accepted = 1" if accepted_only else ""
+            total = c.execute(f"SELECT COUNT(*) FROM signals {where}").fetchone()[0]
+            q = f"SELECT * FROM signals {where} ORDER BY id DESC LIMIT ? OFFSET ?"
+            cur = c.execute(q, (limit, offset))
+            data = self._rows(cur)
+        return {
+            "data": data,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(data) < total,
+        }
 
-    def get_guardrail_rejections(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Recent guardrail-rejected events — useful to see which rules are firing."""
-        with self._connect() as c:
-            cur = c.execute(
-                "SELECT * FROM guardrail_events ORDER BY id DESC LIMIT ?", (int(limit),)
-            )
-            return self._rows(cur)
+    def get_recent_trades(self, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        """Most recent closed trades with pagination metadata.
 
-    def get_equity_curve(self, limit: int = 500) -> list[dict[str, Any]]:
-        """Time series of equity snapshots."""
+        Returns ``{data, total, limit, offset, has_more}``.
+        """
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
         with self._connect() as c:
+            total = c.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
             cur = c.execute(
-                "SELECT * FROM equity_snapshots ORDER BY ts DESC LIMIT ?", (int(limit),)
+                "SELECT * FROM trades ORDER BY id DESC LIMIT ? OFFSET ?",
+                (limit, offset),
             )
-            return self._rows(cur)
+            data = self._rows(cur)
+        return {
+            "data": data,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(data) < total,
+        }
+
+    def get_guardrail_rejections(self, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        """Recent guardrail-rejected events with pagination metadata.
+
+        Returns ``{data, total, limit, offset, has_more}``.
+        """
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        with self._connect() as c:
+            total = c.execute("SELECT COUNT(*) FROM guardrail_events").fetchone()[0]
+            cur = c.execute(
+                "SELECT * FROM guardrail_events ORDER BY id DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            )
+            data = self._rows(cur)
+        return {
+            "data": data,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(data) < total,
+        }
+
+    def get_equity_curve(self, limit: int = 200, offset: int = 0) -> dict[str, Any]:
+        """Time series of equity snapshots with pagination metadata.
+
+        Returns ``{data, total, limit, offset, has_more}``.
+        """
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        with self._connect() as c:
+            total = c.execute("SELECT COUNT(*) FROM equity_snapshots").fetchone()[0]
+            cur = c.execute(
+                "SELECT * FROM equity_snapshots ORDER BY ts DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            )
+            data = self._rows(cur)
+        return {
+            "data": data,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(data) < total,
+        }
+
+    def get_trade_stats(self) -> dict[str, Any]:
+        """Aggregate trade statistics using SQL aggregation.
+
+        Returns ``{total_trades, total_pnl, win_rate, profit_factor, sharpe, max_dd}``.
+        The main aggregates (total_trades, total_pnl, win_rate, profit_factor, sharpe)
+        are computed in a single SQL GROUP query.  Max drawdown requires an ordered
+        running-sum scan that SQLite can only express with correlated sub-queries
+        (O(n²)); the ordered pnl series is fetched as a flat list of scalars and the
+        scan runs in O(n) Python — still far faster than loading full ORM objects.
+        """
+        with self._connect() as c:
+            row = c.execute(
+                """
+                SELECT
+                    COUNT(*)                                                   AS total_trades,
+                    COALESCE(SUM(pnl), 0)                                      AS total_pnl,
+                    COALESCE(
+                        100.0 * SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END)
+                        / NULLIF(COUNT(*), 0),
+                        0)                                                     AS win_rate,
+                    COALESCE(
+                        SUM(CASE WHEN pnl > 0 THEN pnl ELSE 0 END)
+                        / NULLIF(
+                            ABS(SUM(CASE WHEN pnl < 0 THEN pnl ELSE 0 END)),
+                            0),
+                        0)                                                     AS profit_factor,
+                    COALESCE(
+                        (AVG(pnl) / NULLIF(
+                            SQRT(AVG(pnl * pnl) - AVG(pnl) * AVG(pnl)),
+                            0)) * SQRT(252),
+                        0)                                                     AS sharpe
+                FROM trades
+                """
+            ).fetchone()
+            pnl_rows = c.execute(
+                "SELECT pnl FROM trades ORDER BY closed_at"
+            ).fetchall()
+
+        # O(n) max-drawdown scan on a flat list of scalars
+        running = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        for (p,) in pnl_rows:
+            running += p
+            if running > peak:
+                peak = running
+            dd = peak - running
+            if dd > max_dd:
+                max_dd = dd
+
+        return {
+            "total_trades": int(row[0]),
+            "total_pnl": round(float(row[1]), 2),
+            "win_rate": round(float(row[2]), 2),
+            "profit_factor": round(float(row[3]), 2),
+            "sharpe": round(float(row[4]), 4),
+            "max_dd": round(max_dd, 2),
+        }
 
     def get_regime_history(self, limit: int = 50) -> list[dict[str, Any]]:
         """History of regime classifications (TREND / RANGE / VOLATILE / UNKNOWN)."""

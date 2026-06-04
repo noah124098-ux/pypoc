@@ -122,11 +122,36 @@ def test_get_recent_signals(tools, store):
         regime="TREND", entry_price=1500, stop_loss=1480, target=1560,
         confidence=0.6, rationale="r2", accepted=False, rejection_reason="liquidity: ...",
     )
-    sigs = tools.get_recent_signals(limit=10)
-    assert len(sigs) == 2
+    result = tools.get_recent_signals(limit=10)
+    assert isinstance(result, dict)
+    assert result["total"] == 2
+    assert len(result["data"]) == 2
+    assert result["limit"] == 10
+    assert result["offset"] == 0
+    assert result["has_more"] is False
+
     accepted = tools.get_recent_signals(accepted_only=True)
-    assert len(accepted) == 1
-    assert accepted[0]["symbol"] == "TCS"
+    assert accepted["total"] == 1
+    assert accepted["data"][0]["symbol"] == "TCS"
+
+
+def test_get_recent_signals_pagination(tools, store):
+    """Signals pagination: offset + has_more are correct."""
+    for i in range(5):
+        store.record_signal(
+            ts=f"2026-05-13T10:0{i}:00", symbol="TCS", side="BUY",
+            strategy="trend_breakout", regime="TREND",
+            entry_price=4000, stop_loss=3950, target=4150,
+            confidence=0.6, rationale=f"r{i}", accepted=True,
+        )
+    page1 = tools.get_recent_signals(limit=3, offset=0)
+    assert page1["total"] == 5
+    assert len(page1["data"]) == 3
+    assert page1["has_more"] is True
+
+    page2 = tools.get_recent_signals(limit=3, offset=3)
+    assert len(page2["data"]) == 2
+    assert page2["has_more"] is False
 
 
 def test_get_recent_trades(tools, store):
@@ -135,23 +160,100 @@ def test_get_recent_trades(tools, store):
         pnl=350, charges=50, strategy="trend_breakout", exit_reason="target",
         opened_at="2026-05-13T09:30:00", closed_at="2026-05-13T11:00:00",
     )
-    trades = tools.get_recent_trades()
-    assert len(trades) == 1
-    assert trades[0]["pnl"] == 350
+    result = tools.get_recent_trades()
+    assert isinstance(result, dict)
+    assert result["total"] == 1
+    assert len(result["data"]) == 1
+    assert result["data"][0]["pnl"] == 350
+    assert result["has_more"] is False
+
+
+def test_get_recent_trades_pagination(tools, store):
+    """Trades pagination: offset + has_more are correct."""
+    for i in range(4):
+        store.record_trade(
+            symbol=f"SYM{i}", side="BUY", qty=1,
+            entry_price=100, exit_price=110,
+            pnl=10 * (i + 1), charges=2, strategy="trend_breakout",
+            exit_reason="target",
+            opened_at=f"2026-05-13T09:3{i}:00",
+            closed_at=f"2026-05-13T10:3{i}:00",
+        )
+    page = tools.get_recent_trades(limit=2, offset=0)
+    assert page["total"] == 4
+    assert len(page["data"]) == 2
+    assert page["has_more"] is True
+
+    last = tools.get_recent_trades(limit=2, offset=2)
+    assert len(last["data"]) == 2
+    assert last["has_more"] is False
 
 
 def test_get_guardrail_rejections(tools, store):
     store.record_guardrail(rule="liquidity", symbol="ABC", detail="qty > 1% ADV")
-    rejs = tools.get_guardrail_rejections()
-    assert len(rejs) == 1
-    assert rejs[0]["rule"] == "liquidity"
+    result = tools.get_guardrail_rejections()
+    assert isinstance(result, dict)
+    assert result["total"] == 1
+    assert len(result["data"]) == 1
+    assert result["data"][0]["rule"] == "liquidity"
+    assert result["has_more"] is False
 
 
 def test_get_equity_curve(tools, store):
     store.record_equity(cash=99_000, equity=100_000, realized_pnl=0, open_positions=0)
-    curve = tools.get_equity_curve()
-    assert len(curve) == 1
-    assert curve[0]["equity"] == 100_000
+    result = tools.get_equity_curve()
+    assert isinstance(result, dict)
+    assert result["total"] == 1
+    assert len(result["data"]) == 1
+    assert result["data"][0]["equity"] == 100_000
+    assert result["has_more"] is False
+
+
+def test_get_trade_stats_empty(tools):
+    """get_trade_stats on an empty DB returns zero values."""
+    stats = tools.get_trade_stats()
+    assert stats["total_trades"] == 0
+    assert stats["total_pnl"] == 0.0
+    assert stats["win_rate"] == 0.0
+    assert stats["profit_factor"] == 0.0
+    assert stats["max_dd"] == 0.0
+
+
+def test_get_trade_stats_with_trades(tools, store):
+    """get_trade_stats returns correct aggregates for known trades."""
+    trades = [
+        # (pnl, charges)
+        (200.0, 10.0),
+        (-50.0, 5.0),
+        (150.0, 8.0),
+        (-30.0, 4.0),
+        (100.0, 6.0),
+    ]
+    for i, (pnl, charges) in enumerate(trades):
+        store.record_trade(
+            symbol="RELIANCE", side="BUY", qty=1,
+            entry_price=100, exit_price=100 + pnl,
+            pnl=pnl, charges=charges, strategy="trend_breakout",
+            exit_reason="target",
+            opened_at=f"2026-05-01T09:3{i}:00",
+            closed_at=f"2026-05-01T10:3{i}:00",
+        )
+    stats = tools.get_trade_stats()
+    assert stats["total_trades"] == 5
+    assert stats["total_pnl"] == pytest.approx(370.0, abs=0.1)
+    assert stats["win_rate"] == pytest.approx(60.0, abs=0.1)   # 3 winners / 5 trades
+    # profit_factor = gross_profit / |gross_loss| = 450 / 80 = 5.625
+    assert stats["profit_factor"] == pytest.approx(5.625, abs=0.01)
+    # max_dd: running cumulative pnl series = 200, 150, 300, 270, 370
+    # after trade 1: running=200, peak=200
+    # after trade 2: running=150, dd=200-150=50 (new max)
+    # after trade 3: running=300, peak=300, dd=0
+    # after trade 4: running=270, dd=300-270=30
+    # after trade 5: running=370, peak=370, dd=0
+    # → max_dd = 50
+    assert stats["max_dd"] == pytest.approx(50.0, abs=0.1)
+    # sharpe is a real number (could be any value)
+    assert isinstance(stats["sharpe"], float)
 
 
 def test_get_universe(tools):

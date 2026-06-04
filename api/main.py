@@ -140,18 +140,53 @@ def get_positions(_: str = Depends(verify)):
 
 @app.get("/api/equity")
 @limiter.limit("20/minute")
-def get_equity(request: Request, limit: int = 200, _: str = Depends(verify)):
-    return TradingAgentTools().get_equity_curve(limit=limit)
+def get_equity(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    _: str = Depends(verify),
+):
+    """Equity snapshots with cursor-based pagination.
+
+    Query params: ``limit`` (1–200, default 50), ``offset`` (default 0).
+    Returns ``{data, total, limit, offset, has_more}``.
+    """
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    return TradingAgentTools().get_equity_curve(limit=limit, offset=offset)
+
+
+@app.get("/api/trades/stats")
+def get_trade_stats(_: str = Depends(verify)):
+    """Aggregate trade statistics — fast SQL, no full-scan of trade objects.
+
+    Returns ``{total_trades, total_pnl, win_rate, profit_factor, sharpe, max_dd}``.
+    """
+    return TradingAgentTools().get_trade_stats()
 
 
 @app.get("/api/trades")
-def get_trades(limit: int = 50, _: str = Depends(verify)):
-    return TradingAgentTools().get_recent_trades(limit=limit)
+def get_trades(limit: int = 50, offset: int = 0, _: str = Depends(verify)):
+    """Recent closed trades with cursor-based pagination.
+
+    Query params: ``limit`` (1–200, default 50), ``offset`` (default 0).
+    Returns ``{data, total, limit, offset, has_more}``.
+    """
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    return TradingAgentTools().get_recent_trades(limit=limit, offset=offset)
 
 
 @app.get("/api/signals")
-def get_signals(limit: int = 50, _: str = Depends(verify)):
-    return TradingAgentTools().get_recent_signals(limit=limit)
+def get_signals(limit: int = 50, offset: int = 0, _: str = Depends(verify)):
+    """Recent strategy signals with cursor-based pagination.
+
+    Query params: ``limit`` (1–200, default 50), ``offset`` (default 0).
+    Returns ``{data, total, limit, offset, has_more}``.
+    """
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    return TradingAgentTools().get_recent_signals(limit=limit, offset=offset)
 
 
 @app.get("/api/gate")
@@ -232,8 +267,15 @@ def get_pnl(_: str = Depends(verify)):
 
 
 @app.get("/api/guardrails")
-def get_guardrails(limit: int = 50, _: str = Depends(verify)):
-    return TradingAgentTools().get_guardrail_rejections(limit=limit)
+def get_guardrails(limit: int = 50, offset: int = 0, _: str = Depends(verify)):
+    """Recent guardrail-rejected events with cursor-based pagination.
+
+    Query params: ``limit`` (1–200, default 50), ``offset`` (default 0).
+    Returns ``{data, total, limit, offset, has_more}``.
+    """
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    return TradingAgentTools().get_guardrail_rejections(limit=limit, offset=offset)
 
 
 @app.get("/api/atm-iv")

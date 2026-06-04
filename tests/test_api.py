@@ -139,29 +139,67 @@ def test_positions_with_mock(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# /api/equity
+# /api/equity  — paginated
 # ---------------------------------------------------------------------------
+
+def _paginated(data: list, total: int | None = None, limit: int = 50, offset: int = 0) -> dict:
+    """Helper: build a paginated response dict matching what the API now returns."""
+    if total is None:
+        total = len(data)
+    return {
+        "data": data,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(data) < total,
+    }
+
 
 def test_equity_with_mock(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
     (tmp_path / "data").mkdir()
     mock_instance = MagicMock()
-    mock_instance.get_equity_curve.return_value = [
-        {"ts": "2026-06-03T09:15:00", "equity": 100000.0}
-    ]
+    page = _paginated([{"ts": "2026-06-03T09:15:00", "equity": 100000.0}], total=1, limit=100)
+    mock_instance.get_equity_curve.return_value = page
     with patch("api.main.TradingAgentTools", return_value=mock_instance):
         from api.main import app
         c = TestClient(app)
         resp = c.get("/api/equity?limit=100", auth=AUTH)
     assert resp.status_code == 200
-    data = resp.json()
-    assert data[0]["equity"] == 100000.0
-    mock_instance.get_equity_curve.assert_called_once_with(limit=100)
+    body = resp.json()
+    assert body["data"][0]["equity"] == 100000.0
+    assert "total" in body
+    assert "has_more" in body
+    mock_instance.get_equity_curve.assert_called_once_with(limit=100, offset=0)
+
+
+def test_equity_pagination_metadata(tmp_path, monkeypatch):
+    """Equity endpoint exposes total, limit, offset, has_more."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+    mock_instance = MagicMock()
+    page = _paginated(
+        [{"ts": "2026-06-03T09:15:00", "equity": 99000.0}],
+        total=150, limit=50, offset=50,
+    )
+    mock_instance.get_equity_curve.return_value = page
+    with patch("api.main.TradingAgentTools", return_value=mock_instance):
+        from api.main import app
+        c = TestClient(app)
+        resp = c.get("/api/equity?limit=50&offset=50", auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 150
+    assert body["limit"] == 50
+    assert body["offset"] == 50
+    assert body["has_more"] is True
+    mock_instance.get_equity_curve.assert_called_once_with(limit=50, offset=50)
 
 
 # ---------------------------------------------------------------------------
-# /api/trades
+# /api/trades  — paginated
 # ---------------------------------------------------------------------------
 
 def test_trades_with_mock(tmp_path, monkeypatch):
@@ -169,21 +207,110 @@ def test_trades_with_mock(tmp_path, monkeypatch):
     monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
     (tmp_path / "data").mkdir()
     mock_instance = MagicMock()
-    mock_instance.get_recent_trades.return_value = [
-        {"id": 1, "symbol": "TCS", "side": "BUY", "pnl": 200.0}
-    ]
+    page = _paginated([{"id": 1, "symbol": "TCS", "side": "BUY", "pnl": 200.0}], total=1, limit=10)
+    mock_instance.get_recent_trades.return_value = page
     with patch("api.main.TradingAgentTools", return_value=mock_instance):
         from api.main import app
         c = TestClient(app)
         resp = c.get("/api/trades?limit=10", auth=AUTH)
     assert resp.status_code == 200
-    data = resp.json()
-    assert data[0]["symbol"] == "TCS"
-    mock_instance.get_recent_trades.assert_called_once_with(limit=10)
+    body = resp.json()
+    assert body["data"][0]["symbol"] == "TCS"
+    assert "total" in body
+    assert "has_more" in body
+    mock_instance.get_recent_trades.assert_called_once_with(limit=10, offset=0)
+
+
+def test_trades_pagination_metadata(tmp_path, monkeypatch):
+    """Trades endpoint exposes pagination metadata."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+    mock_instance = MagicMock()
+    page = _paginated([], total=100, limit=50, offset=100)
+    page["has_more"] = False
+    mock_instance.get_recent_trades.return_value = page
+    with patch("api.main.TradingAgentTools", return_value=mock_instance):
+        from api.main import app
+        c = TestClient(app)
+        resp = c.get("/api/trades?limit=50&offset=100", auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 100
+    assert body["offset"] == 100
+    assert body["has_more"] is False
+    mock_instance.get_recent_trades.assert_called_once_with(limit=50, offset=100)
 
 
 # ---------------------------------------------------------------------------
-# /api/signals
+# /api/trades/stats
+# ---------------------------------------------------------------------------
+
+def test_trade_stats_with_mock(tmp_path, monkeypatch):
+    """GET /api/trades/stats returns aggregate statistics."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+    mock_instance = MagicMock()
+    mock_instance.get_trade_stats.return_value = {
+        "total_trades": 120,
+        "total_pnl": 5400.50,
+        "win_rate": 52.5,
+        "profit_factor": 1.8,
+        "sharpe": 1.42,
+        "max_dd": 3200.0,
+    }
+    with patch("api.main.TradingAgentTools", return_value=mock_instance):
+        from api.main import app
+        c = TestClient(app)
+        resp = c.get("/api/trades/stats", auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_trades"] == 120
+    assert body["win_rate"] == 52.5
+    assert body["profit_factor"] == 1.8
+    assert body["sharpe"] == 1.42
+    assert body["max_dd"] == 3200.0
+    mock_instance.get_trade_stats.assert_called_once()
+
+
+def test_trade_stats_requires_auth(tmp_path, monkeypatch):
+    """GET /api/trades/stats returns 401 without credentials."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+    from api.main import app
+    c = TestClient(app)
+    resp = c.get("/api/trades/stats")
+    assert resp.status_code == 401
+
+
+def test_trade_stats_keys_present(tmp_path, monkeypatch):
+    """Trade stats response contains all required keys."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+    mock_instance = MagicMock()
+    mock_instance.get_trade_stats.return_value = {
+        "total_trades": 0,
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "sharpe": 0.0,
+        "max_dd": 0.0,
+    }
+    with patch("api.main.TradingAgentTools", return_value=mock_instance):
+        from api.main import app
+        c = TestClient(app)
+        resp = c.get("/api/trades/stats", auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    for key in ("total_trades", "total_pnl", "win_rate", "profit_factor", "sharpe", "max_dd"):
+        assert key in body, f"missing key: {key}"
+
+
+# ---------------------------------------------------------------------------
+# /api/signals  — paginated
 # ---------------------------------------------------------------------------
 
 def test_signals_with_mock(tmp_path, monkeypatch):
@@ -191,17 +318,41 @@ def test_signals_with_mock(tmp_path, monkeypatch):
     monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
     (tmp_path / "data").mkdir()
     mock_instance = MagicMock()
-    mock_instance.get_recent_signals.return_value = [
-        {"id": 1, "symbol": "INFY", "strategy": "trend_breakout", "accepted": 1}
-    ]
+    page = _paginated([{"id": 1, "symbol": "INFY", "strategy": "trend_breakout", "accepted": 1}], total=1, limit=20)
+    mock_instance.get_recent_signals.return_value = page
     with patch("api.main.TradingAgentTools", return_value=mock_instance):
         from api.main import app
         c = TestClient(app)
         resp = c.get("/api/signals?limit=20", auth=AUTH)
     assert resp.status_code == 200
-    data = resp.json()
-    assert data[0]["symbol"] == "INFY"
-    mock_instance.get_recent_signals.assert_called_once_with(limit=20)
+    body = resp.json()
+    assert body["data"][0]["symbol"] == "INFY"
+    assert "total" in body
+    assert "has_more" in body
+    mock_instance.get_recent_signals.assert_called_once_with(limit=20, offset=0)
+
+
+def test_signals_pagination_metadata(tmp_path, monkeypatch):
+    """Signals endpoint exposes pagination metadata."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+    mock_instance = MagicMock()
+    page = _paginated(
+        [{"id": 5, "symbol": "HDFC", "strategy": "rsi_momentum", "accepted": 0}],
+        total=200, limit=50, offset=150,
+    )
+    mock_instance.get_recent_signals.return_value = page
+    with patch("api.main.TradingAgentTools", return_value=mock_instance):
+        from api.main import app
+        c = TestClient(app)
+        resp = c.get("/api/signals?limit=50&offset=150", auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 200
+    assert body["limit"] == 50
+    assert body["offset"] == 150
+    mock_instance.get_recent_signals.assert_called_once_with(limit=50, offset=150)
 
 
 # ---------------------------------------------------------------------------
