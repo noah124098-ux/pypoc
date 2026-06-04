@@ -44,6 +44,20 @@ export async function apiGet(path: string) {
   return r.json()
 }
 
+export async function apiPost(path: string, body?: any) {
+  const r = await fetch(API + path, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'Authorization': BASIC_AUTH,
+    },
+    body: body != null ? JSON.stringify(body) : undefined,
+  })
+  if (!r.ok) throw new Error(r.statusText)
+  return r.json()
+}
+
 export function useApi<T>(path: string, interval = 30000) {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)

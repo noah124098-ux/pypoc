@@ -896,6 +896,25 @@ def get_system(_: str = Depends(verify)):
     }
 
 
+@app.post("/api/gate/refresh")
+def refresh_gate(_: str = Depends(verify)):
+    """Trigger a walk-forward backtest gate refresh from the dashboard."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            [".venv/Scripts/python.exe", "cli.py", "walk-forward", "--years", "3", "--end-date", "2026-05-29"],
+            capture_output=True, text=True, timeout=600, cwd="C:/Users/Administrator/pypoc"
+        )
+        _cache_invalidate("gate")
+        return {
+            "returncode": result.returncode,
+            "output": result.stdout[-500:] if result.stdout else "",
+            "error": result.stderr[-200:] if result.stderr else "",
+        }
+    except subprocess.TimeoutExpired:
+        return {"returncode": -1, "output": "", "error": "Walk-forward timed out after 600s"}
+
+
 @app.post("/api/command/halt")
 def halt_agent(reason: str = "manual halt via API", _: str = Depends(verify)):
     from core.command_queue import enqueue

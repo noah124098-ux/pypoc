@@ -1,16 +1,42 @@
-import { useApi } from '../hooks/useSnapshot'
+import { useState, useCallback } from 'react'
+import { useApi, apiGet, apiPost } from '../hooks/useSnapshot'
 
 export function BacktestTab() {
   const { data: gate, loading } = useApi<any>('/api/gate', 60000)
-  const passed = gate?.passed ?? false
-  const metrics = gate?.metrics ?? {}
-  const failures = gate?.failures ?? []
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshResult, setRefreshResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [gateOverride, setGateOverride] = useState<any>(null)
+
+  const activeGate = gateOverride ?? gate
+  const passed = activeGate?.passed ?? false
+  const metrics = activeGate?.metrics ?? {}
+  const failures = activeGate?.failures ?? []
+
+  const handleRefreshGate = useCallback(async () => {
+    setRefreshing(true)
+    setRefreshResult(null)
+    try {
+      const res = await apiPost('/api/gate/refresh')
+      if (res.returncode === 0) {
+        setRefreshResult({ ok: true, msg: 'Gate refreshed successfully.' })
+        // Refetch gate data
+        const updated = await apiGet('/api/gate')
+        setGateOverride(updated)
+      } else {
+        setRefreshResult({ ok: false, msg: res.error || res.output || 'Walk-forward failed.' })
+      }
+    } catch (e: any) {
+      setRefreshResult({ ok: false, msg: e.message || 'Request failed.' })
+    } finally {
+      setRefreshing(false)
+    }
+  }, [])
 
   return (
     <div className="tab-content">
       <h1 className="tab-title">Backtest Gate</h1>
 
-      {loading && !gate ? (
+      {loading && !activeGate ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '20px 0' }}>
           <div className="spinner" />
           <span style={{ color: 'var(--text2)', fontSize: 13 }}>Loading gate data…</span>
@@ -25,25 +51,25 @@ export function BacktestTab() {
           </div>
 
           {/* Period dates */}
-          {(gate?.period_start || gate?.period_end) && (
+          {(activeGate?.period_start || activeGate?.period_end) && (
             <div className="gate-meta" style={{ marginBottom: 16 }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
                 Period:&nbsp;
                 <span style={{ color: 'var(--blue)' }}>
-                  {gate.period_start?.split('T')[0] ?? '—'} → {gate.period_end?.split('T')[0] ?? '—'}
+                  {activeGate.period_start?.split('T')[0] ?? '—'} → {activeGate.period_end?.split('T')[0] ?? '—'}
                 </span>
               </span>
               <span>Trades: <strong>{metrics.n_trades ?? '—'}</strong></span>
-              {gate.file_age_days != null && (
-                <span style={{ color: gate.file_age_days > 30 ? 'var(--red)' : 'var(--text2)' }}>
-                  File age: {gate.file_age_days}d
+              {activeGate.file_age_days != null && (
+                <span style={{ color: activeGate.file_age_days > 30 ? 'var(--red)' : 'var(--text2)' }}>
+                  File age: {activeGate.file_age_days}d
                 </span>
               )}
             </div>
           )}
 
           {/* Gate checks table */}
-          {gate && (gate.checks ?? []).length > 0 && (
+          {activeGate && (activeGate.checks ?? []).length > 0 && (
             <section className="section">
               <h2>Gate Checks</h2>
               <table className="trade-table">
@@ -56,7 +82,7 @@ export function BacktestTab() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(gate.checks ?? []).map((c: any, i: number) => (
+                  {(activeGate.checks ?? []).map((c: any, i: number) => (
                     <tr key={i} className={c.pass_ ? 'win' : 'loss'}>
                       <td>{c.name}</td>
                       <td>{typeof c.actual === 'number' ? c.actual.toFixed(3) : c.actual ?? '—'}</td>
@@ -74,7 +100,7 @@ export function BacktestTab() {
           )}
 
           {/* Detailed metrics */}
-          {gate && Object.keys(metrics).length > 0 && (
+          {activeGate && Object.keys(metrics).length > 0 && (
             <section className="section">
               <h2>Detailed Metrics</h2>
               <div className="kpi-row">
@@ -166,7 +192,7 @@ export function BacktestTab() {
           )}
 
           {/* No data state */}
-          {!gate && !loading && (
+          {!activeGate && !loading && (
             <div className="empty-state" style={{ marginBottom: 20 }}>
               No gate data available. Run a walk-forward first.
             </div>
@@ -182,6 +208,22 @@ export function BacktestTab() {
           <p style={{ marginTop: 8 }}>
             Thresholds: Sharpe ≥ 1.2 · MaxDD ≤ 15% · Win Rate ≥ 45% · Profit Factor ≥ 1.5 · Trades ≥ 100 · 3+ year walk-forward · file ≤ 30 days old
           </p>
+          <div style={{ marginTop: 12 }}>
+            <button
+              className="btn"
+              onClick={handleRefreshGate}
+              disabled={refreshing}
+              style={{ minWidth: 160, display: 'inline-flex', alignItems: 'center', gap: 8 }}
+            >
+              {refreshing && <span className="spinner" style={{ width: 14, height: 14 }} />}
+              {refreshing ? 'Running Gate...' : 'Refresh Gate'}
+            </button>
+            {refreshResult && (
+              <span style={{ marginLeft: 12, fontSize: 13, color: refreshResult.ok ? 'var(--green)' : 'var(--red)' }}>
+                {refreshResult.msg}
+              </span>
+            )}
+          </div>
         </div>
       </section>
     </div>
