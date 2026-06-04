@@ -1,7 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.exceptions import RequestValidationError
 import asyncio
@@ -200,20 +200,113 @@ async def global_handler(req: Request, exc: Exception):
 
 
 # ---------------------------------------------------------------------------
-# Request logging middleware
+# Request logging middleware — structured JSON
 # ---------------------------------------------------------------------------
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = time.time()
     response = await call_next(request)
-    logger.debug("%s %s %.0fms", request.method, request.url.path, (time.time() - start) * 1000)
+    elapsed_ms = round((time.time() - start) * 1000, 1)
+    # Derive user from Basic-Auth header when present (username only, no password).
+    user: str | None = None
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("basic "):
+        try:
+            import base64
+            decoded = base64.b64decode(auth_header[6:]).decode("utf-8", errors="replace")
+            user = decoded.split(":", 1)[0]
+        except Exception:
+            pass
+    log_record = {
+        "method": request.method,
+        "path": request.url.path,
+        "status": response.status_code,
+        "ms": elapsed_ms,
+        "user": user,
+    }
+    logger.info(json.dumps(log_record))
     return response
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/ready")
+def readiness():
+    """Startup readiness probe — used by NSSM / health monitors.
+
+    Returns 200 when the SQLite database is initialised (the ``trades`` table
+    exists), and 503 with a JSON body when it is not.
+    """
+    db_path = Path("data/agent.db")
+    if not db_path.exists():
+        return JSONResponse(
+            {"ready": False, "reason": "database file not found"},
+            status_code=503,
+        )
+    try:
+        conn = sqlite3.connect(str(db_path))
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        conn.close()
+    except Exception as exc:
+        return JSONResponse(
+            {"ready": False, "reason": f"database error: {exc}"},
+            status_code=503,
+        )
+    if "trades" not in tables:
+        return JSONResponse(
+            {"ready": False, "reason": "trades table missing — DB not initialised"},
+            status_code=503,
+        )
+    return {"ready": True}
+
+
+@app.get("/api/metrics")
+def prometheus_metrics():
+    """Prometheus-compatible plain-text metrics endpoint.
+
+    Exposes:
+      pypoc_equity      — current portfolio equity (gauge)
+      pypoc_positions   — open position count (gauge)
+      pypoc_gate_sharpe — backtest gate Sharpe ratio (gauge)
+    """
+    snap = read_snapshot("data/snapshot.json") or {}
+    equity = snap.get("equity", 0.0)
+    mode = snap.get("mode", "paper")
+    positions = len(snap.get("open_positions", []))
+
+    gate_sharpe = 0.0
+    gate_path = Path("data/backtest_gate.json")
+    if gate_path.exists():
+        try:
+            gate_data = json.loads(gate_path.read_text())
+            gate_sharpe = float(gate_data.get("sharpe", 0.0))
+        except Exception:
+            pass
+
+    lines = [
+        "# HELP pypoc_equity Current portfolio equity",
+        "# TYPE pypoc_equity gauge",
+        f'pypoc_equity{{mode="{mode}"}} {equity}',
+        "",
+        "# HELP pypoc_positions Open position count",
+        "# TYPE pypoc_positions gauge",
+        f"pypoc_positions {positions}",
+        "",
+        "# HELP pypoc_gate_sharpe Backtest gate Sharpe ratio",
+        "# TYPE pypoc_gate_sharpe gauge",
+        f"pypoc_gate_sharpe {gate_sharpe}",
+        "",
+    ]
+    return PlainTextResponse("\n".join(lines))
 
 
 @app.get("/api/snapshot")

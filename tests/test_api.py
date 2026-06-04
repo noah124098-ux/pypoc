@@ -876,3 +876,242 @@ def test_2fa_wrong_username_returns_401(tmp_path, monkeypatch):
     otp = pyotp.TOTP(secret).now()
     resp = c.get("/api/snapshot", auth=("notadmin", f"{otp}:pypoc2024"))
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /api/metrics — Prometheus-compatible plain-text endpoint
+# ---------------------------------------------------------------------------
+
+def test_metrics_returns_plain_text(client):
+    """GET /api/metrics returns 200 with text/plain content."""
+    resp = client.get("/api/metrics")
+    assert resp.status_code == 200
+    assert "text/plain" in resp.headers.get("content-type", "")
+
+
+def test_metrics_no_auth_required(client):
+    """Metrics endpoint must be accessible without credentials."""
+    resp = client.get("/api/metrics")
+    assert resp.status_code == 200
+
+
+def test_metrics_contains_required_metrics(client):
+    """Metrics output contains all three required metric families."""
+    resp = client.get("/api/metrics")
+    body = resp.text
+    assert "pypoc_equity" in body
+    assert "pypoc_positions" in body
+    assert "pypoc_gate_sharpe" in body
+
+
+def test_metrics_equity_reflects_snapshot(client):
+    """pypoc_equity line contains the equity value from snapshot.json."""
+    resp = client.get("/api/metrics")
+    body = resp.text
+    # snapshot has equity=100000.0
+    assert "100000.0" in body
+
+
+def test_metrics_gate_sharpe_reflects_gate_file(client):
+    """pypoc_gate_sharpe line contains the Sharpe from backtest_gate.json."""
+    resp = client.get("/api/metrics")
+    body = resp.text
+    # gate file has sharpe=1.35
+    assert "1.35" in body
+
+
+def test_metrics_has_help_and_type_lines(client):
+    """Prometheus format requires # HELP and # TYPE lines for each metric."""
+    resp = client.get("/api/metrics")
+    body = resp.text
+    assert "# HELP pypoc_equity" in body
+    assert "# TYPE pypoc_equity gauge" in body
+    assert "# HELP pypoc_positions" in body
+    assert "# TYPE pypoc_positions gauge" in body
+    assert "# HELP pypoc_gate_sharpe" in body
+    assert "# TYPE pypoc_gate_sharpe gauge" in body
+
+
+def test_metrics_mode_label_present(client):
+    """pypoc_equity metric includes the mode label."""
+    resp = client.get("/api/metrics")
+    body = resp.text
+    # snapshot has mode="paper"
+    assert 'mode="paper"' in body
+
+
+def test_metrics_no_snapshot_returns_defaults(tmp_path, monkeypatch):
+    """When snapshot is missing metrics endpoint defaults to 0 values."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+    from api.main import app
+    c = TestClient(app)
+    resp = c.get("/api/metrics")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "pypoc_equity" in body
+    # equity should default to 0 (or 0.0)
+    assert "pypoc_positions 0" in body
+
+
+# ---------------------------------------------------------------------------
+# /api/ready — startup readiness probe
+# ---------------------------------------------------------------------------
+
+def test_ready_returns_200_when_db_initialised(tmp_path, monkeypatch):
+    """GET /api/ready returns 200 when SQLite DB has the trades table."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    # Create a minimal SQLite DB with a trades table.
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(str(data_dir / "agent.db"))
+    conn.execute(
+        "CREATE TABLE trades (id INTEGER PRIMARY KEY, symbol TEXT, pnl REAL)"
+    )
+    conn.commit()
+    conn.close()
+    from api.main import app
+    c = TestClient(app)
+    resp = c.get("/api/ready")
+    assert resp.status_code == 200
+    assert resp.json()["ready"] is True
+
+
+def test_ready_returns_503_when_db_missing(tmp_path, monkeypatch):
+    """GET /api/ready returns 503 when agent.db does not exist."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+    from api.main import app
+    c = TestClient(app)
+    resp = c.get("/api/ready")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["ready"] is False
+    assert "reason" in body
+
+
+def test_ready_returns_503_when_trades_table_missing(tmp_path, monkeypatch):
+    """GET /api/ready returns 503 when DB exists but trades table is absent."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    import sqlite3 as _sqlite3
+    # Create a DB without the trades table.
+    conn = _sqlite3.connect(str(data_dir / "agent.db"))
+    conn.execute("CREATE TABLE other_table (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+    from api.main import app
+    c = TestClient(app)
+    resp = c.get("/api/ready")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["ready"] is False
+
+
+def test_ready_no_auth_required(tmp_path, monkeypatch):
+    """Readiness probe must be accessible without authentication."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(str(data_dir / "agent.db"))
+    conn.execute("CREATE TABLE trades (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+    from api.main import app
+    c = TestClient(app)
+    # No auth supplied — should still return 200.
+    resp = c.get("/api/ready")
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Structured JSON request logging middleware
+# ---------------------------------------------------------------------------
+
+def test_request_logging_emits_json(client, caplog):
+    """Each request must emit a structured JSON log line with required keys."""
+    import logging as _logging
+    with caplog.at_level(_logging.INFO, logger="api.main"):
+        client.get("/health")
+    # Find the JSON log entry
+    json_lines = []
+    for record in caplog.records:
+        if record.name == "api.main":
+            try:
+                obj = json.loads(record.getMessage())
+                json_lines.append(obj)
+            except json.JSONDecodeError:
+                pass
+    assert json_lines, "Expected at least one structured JSON log entry"
+    entry = json_lines[-1]
+    assert "method" in entry
+    assert "path" in entry
+    assert "status" in entry
+    assert "ms" in entry
+    assert "user" in entry
+
+
+def test_request_logging_correct_method_and_path(client, caplog):
+    """Log entry method and path match the actual request."""
+    import logging as _logging
+    with caplog.at_level(_logging.INFO, logger="api.main"):
+        client.get("/health")
+    for record in caplog.records:
+        if record.name == "api.main":
+            try:
+                obj = json.loads(record.getMessage())
+                if obj.get("path") == "/health":
+                    assert obj["method"] == "GET"
+                    assert obj["status"] == 200
+                    assert isinstance(obj["ms"], (int, float))
+                    break
+            except json.JSONDecodeError:
+                pass
+
+
+def test_request_logging_user_extracted_from_auth(tmp_path, monkeypatch, caplog):
+    """Log entry user field contains the Basic-Auth username."""
+    import logging as _logging
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    snapshot = {"running": False}
+    (data_dir / "snapshot.json").write_text(json.dumps(snapshot))
+    from api.main import app
+    c = TestClient(app)
+    with caplog.at_level(_logging.INFO, logger="api.main"):
+        c.get("/api/snapshot", auth=("admin", "pypoc2024"))
+    for record in caplog.records:
+        if record.name == "api.main":
+            try:
+                obj = json.loads(record.getMessage())
+                if obj.get("path") == "/api/snapshot":
+                    assert obj["user"] == "admin"
+                    break
+            except json.JSONDecodeError:
+                pass
+
+
+def test_request_logging_user_none_without_auth(client, caplog):
+    """Log entry user field is None when no auth header is present."""
+    import logging as _logging
+    with caplog.at_level(_logging.INFO, logger="api.main"):
+        client.get("/health")
+    for record in caplog.records:
+        if record.name == "api.main":
+            try:
+                obj = json.loads(record.getMessage())
+                if obj.get("path") == "/health":
+                    assert obj["user"] is None
+                    break
+            except json.JSONDecodeError:
+                pass
