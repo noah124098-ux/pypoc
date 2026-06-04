@@ -1,4 +1,5 @@
 import { useApi } from '../hooks/useSnapshot'
+import { useNavigate } from 'react-router-dom'
 
 function KpiCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
   return (
@@ -6,6 +7,35 @@ function KpiCard({ label, value, sub, color }: { label: string; value: string; s
       <div className="kpi-label">{label}</div>
       <div className={`kpi-value ${color ?? ''}`}>{value}</div>
       {sub && <div className="kpi-sub">{sub}</div>}
+    </div>
+  )
+}
+
+function formatSignalTime(ts: any): string {
+  if (!ts) return ''
+  const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts)
+  if (isNaN(d.getTime())) return ''
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function ActivityCard({ signal }: { signal: any }) {
+  const accepted = signal.accepted ?? false
+  return (
+    <div className={`activity-card ${accepted ? 'activity-accepted' : 'activity-rejected'}`}>
+      <div className="activity-card-header">
+        <span className="activity-time">{formatSignalTime(signal.ts ?? signal.timestamp)}</span>
+        <span className={accepted ? 'badge green' : 'badge red'}>
+          {accepted ? 'Accepted' : 'Rejected'}
+        </span>
+      </div>
+      <div className="activity-card-body">
+        <strong>{signal.symbol}</strong>
+        <span className="badge">{signal.strategy}</span>
+        <span className="activity-side">{signal.side}</span>
+      </div>
+      {!accepted && signal.rejection_reason && (
+        <div className="activity-reason">{signal.rejection_reason}</div>
+      )}
     </div>
   )
 }
@@ -39,9 +69,14 @@ function PositionCard({ p }: { p: any }) {
 }
 
 export function LiveTab({ snap, connected }: { snap: any; connected: boolean }) {
+  const navigate = useNavigate()
   const { data: tradesRaw } = useApi<any>('/api/trades?limit=5', 15000)
   const trades: any[] | null = tradesRaw
     ? (Array.isArray(tradesRaw) ? tradesRaw : tradesRaw.data ?? null)
+    : null
+  const { data: signalsRaw } = useApi<any>('/api/signals?limit=10', 15000)
+  const signals: any[] | null = signalsRaw
+    ? (Array.isArray(signalsRaw) ? signalsRaw : signalsRaw.data ?? null)
     : null
   const equity = snap?.equity ?? 0
   const dayPnl = equity - (snap?.starting_equity_today ?? equity)
@@ -86,6 +121,24 @@ export function LiveTab({ snap, connected }: { snap: any; connected: boolean }) 
             ))}</tbody>
           </table>
         ) : <div className="empty-state">No trades yet</div>}
+      </section>
+
+      <section className="section">
+        <div className="section-header-row">
+          <h2>Recent Activity</h2>
+          <button className="view-all-link" onClick={() => navigate('/positions')}>
+            View all &rarr;
+          </button>
+        </div>
+        {signals && signals.length > 0 ? (
+          <div className="activity-feed">
+            {signals.map((s: any, i: number) => (
+              <ActivityCard key={i} signal={s} />
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state">No recent signals — activity will appear here as strategies fire</div>
+        )}
       </section>
     </div>
   )
