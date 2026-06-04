@@ -1016,6 +1016,9 @@ class TestApiExceptionHandlers:
 
     def test_analytics_exception_branch_extended_metrics(self, tmp_path, monkeypatch):
         """When compute_extended_metrics raises, endpoint returns error dict."""
+        import importlib
+        import api.main as api_main
+
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
         (tmp_path / "data").mkdir()
@@ -1027,11 +1030,12 @@ class TestApiExceptionHandlers:
             strategy="s", exit_reason="target",
             opened_at="2026-01-01T09:00:00", closed_at="2026-01-01T10:00:00",
         )
+        # Clear the cache so a previously-cached success doesn't mask the error.
+        importlib.reload(api_main)
         with patch("core.analytics.metrics.compute_extended_metrics",
                    side_effect=RuntimeError("mock error")):
             from fastapi.testclient import TestClient
-            from api.main import app
-            c = TestClient(app)
+            c = TestClient(api_main.app)
             resp = c.get("/api/analytics/extended-metrics?days=365", auth=AUTH)
         assert resp.status_code == 200
         assert "error" in resp.json()

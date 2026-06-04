@@ -11,7 +11,7 @@ import logging
 import secrets
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
@@ -28,18 +28,108 @@ logger = logging.getLogger(__name__)
 
 API_VERSION = "2.0"
 
+# ---------------------------------------------------------------------------
+# Simple in-memory TTL cache (no external dependencies)
+# ---------------------------------------------------------------------------
+
+_cache: dict = {}
+
+
+def _cached(key: str, ttl_seconds: int, fn):
+    """Return cached value for *key* if still fresh, otherwise call *fn()* and store."""
+    entry = _cache.get(key)
+    if entry is not None and datetime.now() - entry["ts"] < timedelta(seconds=ttl_seconds):
+        return entry["data"]
+    result = fn()
+    _cache[key] = {"data": result, "ts": datetime.now()}
+    return result
+
+
+def _cache_invalidate(key: str) -> None:
+    """Remove a single key from the cache (used in tests or on explicit refresh)."""
+    _cache.pop(key, None)
+
 security = HTTPBasic()
 
 
 def verify(creds: HTTPBasicCredentials = Depends(security)):
-    user_ok = secrets.compare_digest(creds.username.encode(), b"admin")
+    """Verify HTTP Basic credentials, with optional TOTP 2FA.
+
+    When ``DASHBOARD_OTP_SECRET`` is set in the environment, clients must
+    include a six-digit TOTP code.  HTTP Basic Auth encodes credentials as
+    ``base64(username + ':' + password)`` and Starlette splits on the first
+    colon only, so the OTP is embedded using one of two conventions:
+
+    **Convention A — OTP in password field prefix (recommended for curl / scripts):**
+    Send ``Authorization: Basic base64("admin:otp_code:real_password")``, i.e.:
+
+        curl -u "admin:123456:pypoc2024" ...
+
+    Starlette parses this as ``username="admin"``, ``password="123456:pypoc2024"``.
+    The verify function splits the password on the first colon to extract
+    ``otp_code="123456"`` and ``real_password="pypoc2024"``.
+
+    **Convention B — OTP in username field suffix (legacy / some REST clients):**
+    Send ``username="admin:123456"`` with the real password in the password field.
+    Starlette parses ``username="admin:123456"``, ``password="pypoc2024"``.
+    The verify function splits the username on the first colon.
+
+    Both conventions are accepted.  See docs/2FA_SETUP.md for full examples.
+    """
+    otp_secret = os.getenv("DASHBOARD_OTP_SECRET", "").strip()
+    expected_password = os.getenv("DASHBOARD_PASSWORD", "pypoc2024")
+
+    raw_username = creds.username
+    raw_password = creds.password
+    otp_code: str | None = None
+
+    if otp_secret:
+        # Convention A: password field contains "otp_code:real_password"
+        if ":" in raw_password:
+            pw_parts = raw_password.split(":", 1)
+            otp_code = pw_parts[0]
+            raw_password = pw_parts[1]
+        # Convention B: username field contains "admin:otp_code"
+        elif ":" in raw_username:
+            u_parts = raw_username.split(":", 1)
+            raw_username = u_parts[0]
+            otp_code = u_parts[1]
+
+    user_ok = secrets.compare_digest(raw_username.encode(), b"admin")
     pass_ok = secrets.compare_digest(
-        creds.password.encode(),
-        os.getenv("DASHBOARD_PASSWORD", "pypoc2024").encode(),
+        raw_password.encode(),
+        expected_password.encode(),
     )
+
     if not (user_ok and pass_ok):
         raise HTTPException(status_code=401, headers={"WWW-Authenticate": "Basic"})
-    return creds.username
+
+    # If 2FA is configured, require a valid TOTP code.
+    if otp_secret:
+        if not otp_code:
+            raise HTTPException(
+                status_code=401,
+                detail="2FA required: supply credentials as 'admin:otp_code:password'",
+                headers={"WWW-Authenticate": "Basic"},
+            )
+        try:
+            import pyotp
+
+            totp = pyotp.TOTP(otp_secret)
+            if not totp.verify(otp_code, valid_window=1):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid or expired OTP code",
+                    headers={"WWW-Authenticate": "Basic"},
+                )
+        except ImportError:
+            logger.error("pyotp is not installed — cannot enforce 2FA; denying request")
+            raise HTTPException(
+                status_code=503,
+                detail="Server 2FA misconfigured: pyotp not installed",
+            )
+
+    return raw_username
 
 
 class ConnectionManager:
@@ -191,10 +281,13 @@ def get_signals(limit: int = 50, offset: int = 0, _: str = Depends(verify)):
 
 @app.get("/api/gate")
 def get_gate(_: str = Depends(verify)):
-    gate_path = Path("data/backtest_gate.json")
-    if gate_path.exists():
-        return json.loads(gate_path.read_text())
-    return {"passed": False, "error": "no gate file"}
+    def _load():
+        gate_path = Path("data/backtest_gate.json")
+        if gate_path.exists():
+            return json.loads(gate_path.read_text())
+        return {"passed": False, "error": "no gate file"}
+
+    return _cached("gate", 300, _load)
 
 
 @app.get("/api/status")
@@ -308,12 +401,12 @@ def get_atm_iv(_: str = Depends(verify)):
 
 @app.get("/api/config")
 def get_config(_: str = Depends(verify)):
-    return TradingAgentTools().get_config_summary()
+    return _cached("config", 60, lambda: TradingAgentTools().get_config_summary())
 
 
 @app.get("/api/universe")
 def get_universe(_: str = Depends(verify)):
-    return TradingAgentTools().get_universe()
+    return _cached("universe", 3600, lambda: TradingAgentTools().get_universe())
 
 
 # ---------------------------------------------------------------------------
@@ -364,13 +457,16 @@ def get_monthly_pnl(days: int = 365, _: str = Depends(verify)):
 @app.get("/api/analytics/extended-metrics")
 def get_extended_metrics(days: int = 365, _: str = Depends(verify)):
     """Full ExtendedMetrics for all trades in the given window."""
-    try:
-        from core.analytics.metrics import compute_extended_metrics
-        trades = _load_trades_filtered(days=days)
-        m = compute_extended_metrics(trades)
-        return m.to_dict()
-    except Exception as exc:
-        return {"error": str(exc)}
+    def _compute():
+        try:
+            from core.analytics.metrics import compute_extended_metrics
+            trades = _load_trades_filtered(days=days)
+            m = compute_extended_metrics(trades)
+            return m.to_dict()
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    return _cached(f"extended_metrics:{days}", 30, _compute)
 
 
 @app.get("/api/analytics/sector-performance")

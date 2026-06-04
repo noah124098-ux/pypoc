@@ -371,8 +371,10 @@ def test_gate_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
     (tmp_path / "data").mkdir()
-    from api.main import app
-    c = TestClient(app)
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)
+    c = TestClient(api_main.app)
     resp = c.get("/api/gate", auth=AUTH)
     assert resp.status_code == 200
     body = resp.json()
@@ -617,3 +619,260 @@ def test_equity_rate_limit_returns_429_after_20_requests(tmp_path, monkeypatch):
 
     assert ok_count >= 20, f"Expected at least 20 successful requests, got {ok_count}"
     assert rate_limited_count >= 1, f"Expected at least one 429 response, got none (statuses: {set(statuses)})"
+
+
+# ---------------------------------------------------------------------------
+# TTL cache tests
+# ---------------------------------------------------------------------------
+
+def test_gate_cache_is_used_on_second_request(tmp_path, monkeypatch):
+    """Second call to /api/gate within TTL must not re-read the file."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    gate = {"passed": True, "sharpe": 1.5}
+    (data_dir / "backtest_gate.json").write_text(json.dumps(gate))
+
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)
+
+    c = TestClient(api_main.app)
+    resp1 = c.get("/api/gate", auth=AUTH)
+    assert resp1.status_code == 200
+    assert resp1.json()["sharpe"] == 1.5
+
+    # Overwrite the file — a cached second call must still return the old value.
+    (data_dir / "backtest_gate.json").write_text(json.dumps({"passed": False, "sharpe": 0.1}))
+    resp2 = c.get("/api/gate", auth=AUTH)
+    assert resp2.status_code == 200
+    # Cache still hot — should return original value.
+    assert resp2.json()["sharpe"] == 1.5, "Expected cached value on second request"
+
+
+def test_gate_cache_refreshes_after_ttl(tmp_path, monkeypatch):
+    """After the TTL expires the endpoint re-reads the gate file."""
+    from datetime import datetime, timedelta
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    gate = {"passed": True, "sharpe": 1.5}
+    (data_dir / "backtest_gate.json").write_text(json.dumps(gate))
+
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)
+
+    c = TestClient(api_main.app)
+    c.get("/api/gate", auth=AUTH)  # prime the cache
+
+    # Manually expire the cache entry.
+    api_main._cache["gate"]["ts"] = datetime.now() - timedelta(seconds=400)
+
+    # Overwrite the file.
+    (data_dir / "backtest_gate.json").write_text(json.dumps({"passed": False, "sharpe": 0.1}))
+    resp = c.get("/api/gate", auth=AUTH)
+    assert resp.json()["sharpe"] == 0.1, "Expected fresh value after TTL expiry"
+
+
+def test_universe_cache_is_used(tmp_path, monkeypatch):
+    """Second call to /api/universe within 1-hour TTL must use the cached value."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)
+
+    call_count = {"n": 0}
+    original_universe = ["RELIANCE", "TCS", "INFY"]
+
+    mock_instance = MagicMock()
+
+    def _universe_side_effect():
+        call_count["n"] += 1
+        return original_universe
+
+    mock_instance.get_universe.side_effect = _universe_side_effect
+
+    with patch.object(api_main, "TradingAgentTools", return_value=mock_instance):
+        c = TestClient(api_main.app)
+        c.get("/api/universe", auth=AUTH)
+        c.get("/api/universe", auth=AUTH)
+
+    # TradingAgentTools().get_universe() should only have been called once.
+    assert call_count["n"] == 1, f"Expected 1 backend call, got {call_count['n']}"
+
+
+def test_config_cache_ttl_is_60s(tmp_path, monkeypatch):
+    """config cache key is stored with 60s TTL — entry absent before first call."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)
+
+    mock_instance = MagicMock()
+    mock_instance.get_config_summary.return_value = {"universe_size": 50}
+
+    with patch.object(api_main, "TradingAgentTools", return_value=mock_instance):
+        c = TestClient(api_main.app)
+        assert "config" not in api_main._cache
+        resp = c.get("/api/config", auth=AUTH)
+        assert resp.status_code == 200
+        assert "config" in api_main._cache
+
+        # Second call — backend must not be called again.
+        mock_instance.get_config_summary.reset_mock()
+        c.get("/api/config", auth=AUTH)
+        mock_instance.get_config_summary.assert_not_called()
+
+
+def test_extended_metrics_cache_key_includes_days(tmp_path, monkeypatch):
+    """extended-metrics cache keys are scoped per `days` parameter."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)
+
+    mock_metrics = MagicMock()
+    mock_metrics.to_dict.return_value = {"sharpe": 1.1}
+
+    with patch("core.analytics.metrics.compute_extended_metrics", return_value=mock_metrics), \
+         patch("core.analytics.metrics.load_trades_from_db", return_value=[]):
+        c = TestClient(api_main.app)
+        c.get("/api/analytics/extended-metrics?days=90", auth=AUTH)
+        c.get("/api/analytics/extended-metrics?days=365", auth=AUTH)
+
+    # Both cache keys must exist separately.
+    assert "extended_metrics:90" in api_main._cache
+    assert "extended_metrics:365" in api_main._cache
+
+
+def test_cache_invalidate_helper():
+    """_cache_invalidate removes the specified key and ignores missing keys."""
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)
+
+    from datetime import datetime
+    api_main._cache["test_key"] = {"data": 42, "ts": datetime.now()}
+    api_main._cache_invalidate("test_key")
+    assert "test_key" not in api_main._cache
+
+    # Calling on a missing key must not raise.
+    api_main._cache_invalidate("nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# TOTP 2FA — verify() function
+# ---------------------------------------------------------------------------
+
+def _make_2fa_client(tmp_path, monkeypatch, otp_secret: str):
+    """Helper: build a TestClient with DASHBOARD_OTP_SECRET set."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    monkeypatch.setenv("DASHBOARD_OTP_SECRET", otp_secret)
+    (tmp_path / "data").mkdir(exist_ok=True)
+    import json as _json
+    (tmp_path / "data" / "snapshot.json").write_text(_json.dumps({"running": False}))
+    from api.main import app
+    return TestClient(app)
+
+
+def test_2fa_disabled_normal_auth_works(tmp_path, monkeypatch):
+    """When DASHBOARD_OTP_SECRET is unset, plain admin:password auth succeeds."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    monkeypatch.delenv("DASHBOARD_OTP_SECRET", raising=False)
+    (tmp_path / "data").mkdir(exist_ok=True)
+    import json as _json
+    (tmp_path / "data" / "snapshot.json").write_text(_json.dumps({"running": False}))
+    from api.main import app
+    c = TestClient(app)
+    resp = c.get("/api/snapshot", auth=("admin", "pypoc2024"))
+    assert resp.status_code == 200
+
+
+def test_2fa_required_missing_otp_returns_401(tmp_path, monkeypatch):
+    """When 2FA is enabled, a request without an OTP is rejected."""
+    import pyotp
+    secret = pyotp.random_base32()
+    c = _make_2fa_client(tmp_path, monkeypatch, secret)
+    # username has no colon — no OTP supplied
+    resp = c.get("/api/snapshot", auth=("admin", "pypoc2024"))
+    assert resp.status_code == 401
+
+
+def test_2fa_valid_otp_grants_access(tmp_path, monkeypatch):
+    """Convention A: correct TOTP in password-prefix position grants access.
+
+    HTTP Basic encodes ``admin:otp:password`` as base64; Starlette parses
+    ``username='admin'``, ``password='otp:password'``.  Pass via requests as
+    ``auth=('admin', f'{otp}:pypoc2024')``.
+    """
+    import pyotp
+
+    secret = pyotp.random_base32()
+    c = _make_2fa_client(tmp_path, monkeypatch, secret)
+    otp = pyotp.TOTP(secret).now()
+    # Convention A: otp embedded at the start of the password field
+    resp = c.get("/api/snapshot", auth=("admin", f"{otp}:pypoc2024"))
+    assert resp.status_code == 200
+
+
+def test_2fa_valid_otp_convention_b(tmp_path, monkeypatch):
+    """Convention B: correct TOTP in username-suffix position also grants access.
+
+    Some REST clients send ``username='admin:otp'``, ``password='pypoc2024'``.
+    Starlette parses that as ``username='admin:otp'``, ``password='pypoc2024'``.
+    """
+    import pyotp
+
+    secret = pyotp.random_base32()
+    c = _make_2fa_client(tmp_path, monkeypatch, secret)
+    otp = pyotp.TOTP(secret).now()
+    # Convention B: otp embedded in username field
+    resp = c.get("/api/snapshot", auth=(f"admin:{otp}", "pypoc2024"))
+    assert resp.status_code == 200
+
+
+def test_2fa_wrong_otp_returns_401(tmp_path, monkeypatch):
+    """A wrong TOTP code is rejected even with the correct password."""
+    import pyotp
+
+    secret = pyotp.random_base32()
+    c = _make_2fa_client(tmp_path, monkeypatch, secret)
+    # Convention A with a bad OTP
+    resp = c.get("/api/snapshot", auth=("admin", "000000:pypoc2024"))
+    assert resp.status_code == 401
+
+
+def test_2fa_wrong_password_returns_401_regardless_of_otp(tmp_path, monkeypatch):
+    """Wrong password is rejected even when OTP is correct."""
+    import pyotp
+
+    secret = pyotp.random_base32()
+    c = _make_2fa_client(tmp_path, monkeypatch, secret)
+    otp = pyotp.TOTP(secret).now()
+    resp = c.get("/api/snapshot", auth=("admin", f"{otp}:wrongpassword"))
+    assert resp.status_code == 401
+
+
+def test_2fa_wrong_username_returns_401(tmp_path, monkeypatch):
+    """Wrong base username (not 'admin') is rejected even with correct OTP."""
+    import pyotp
+
+    secret = pyotp.random_base32()
+    c = _make_2fa_client(tmp_path, monkeypatch, secret)
+    otp = pyotp.TOTP(secret).now()
+    resp = c.get("/api/snapshot", auth=("notadmin", f"{otp}:pypoc2024"))
+    assert resp.status_code == 401
