@@ -163,7 +163,7 @@ execution:
   stt_pct: 0.025              # securities transaction tax on sell
   exchange_txn_pct: 0.00345
   gst_pct: 18.0               # 18% on (brokerage + exchange txn charges)
-  signal_cooldown_minutes: 30 # same symbol cannot be re-entered for 30 min after exit
+  signal_cooldown_minutes: 60 # same symbol cannot be re-entered for 60 min after exit
 
 backtest_gate:
   min_sharpe: 1.2

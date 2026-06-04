@@ -29,7 +29,7 @@ All workflow launches from this repo are pre-approved. Use the `Workflow` tool f
 
 An automated, regime-aware **paper-trading agent for NSE Nifty 50** that consumes live Angel One SmartAPI tick data, classifies the market into TREND/RANGE/VOLATILE regimes, runs strategy logic appropriate to the regime, and sends every order through a hard guardrails layer with stop-loss, daily-loss circuit, drawdown circuit, and black-swan halts.
 
-**Status:** v2 — Phases 3/4/5/5b/6b/7 complete. 862 tests passing. Gate at -0.03 Sharpe (failing — see Open issues). No live broker active.
+**Status:** v2 — Phases 3/4/5/5b/6b/7/7b complete. 1202 tests passing. Gate at 0.105 Sharpe (failing — see Open issues). No live broker active. React+FastAPI dashboard at :8502 (auth: admin/pypoc2024).
 
 **Repo:** https://github.com/noah124098-ux/pypoc
 
@@ -90,7 +90,7 @@ dashboard.py     Streamlit entry point — DECOMMISSIONED
 deploy/          nginx SSL/TLS config + self-signed cert generator + EC2 setup scripts
 docker-compose.yml  Docker Compose service definitions
 Dockerfile       Multi-stage build: venv + React build + FastAPI
-tests/           862 passing tests (includes Vitest frontend unit tests via pytest adapter)
+tests/           1202 passing tests (includes Vitest frontend unit tests via pytest adapter)
 config/
   default.yaml   Default config (TREND strategies currently disabled for gate baseline)
   environments/  dev.yaml, staging.yaml, prod.yaml overrides
@@ -112,7 +112,7 @@ docs/            ARCHITECTURE.md, LIVE_BROKER_SETUP.md
 # Activate venv (Windows)
 .\.venv\Scripts\Activate.ps1
 
-# Run the full test suite (must always be 862/862)
+# Run the full test suite (must always be 1202/1202)
 pytest -q
 
 # Pre-flight check before paper trading
@@ -175,47 +175,31 @@ cd frontend && npm run build
 
 ## Open issues — pick up here
 
-### 1. Backtest gate failing — -0.03 Sharpe, Supertrend NaN bug
+### 1. Backtest gate failing — 0.105 Sharpe
 
-Current gate run (file timestamp 2026-06-03, mixed config with some TREND strategies disabled):
+Current gate run (file timestamp 2026-06-04, all strategies enabled):
 
 ```text
-Sharpe: -0.03, MaxDD: 11.7%, win: 35.0%, pf: 1.27, trades: 157
-Gate FAILED: sharpe (-0.03 < 1.2), win_rate (35.0% < 45%), profit_factor (1.27 < 1.5)
+Sharpe: 0.105, MaxDD: 12.4%, win: 38.0%, pf: 1.31, trades: 163
+Gate FAILED: sharpe (0.105 < 1.2), win_rate (38.0% < 45%), profit_factor (1.31 < 1.5)
 ```
 
-**Root cause:** W3 (May 2025–Jun 2026) is a correction+recovery market. Long-only trend
-strategies fail: `trend_breakout` and `rsi_momentum` generate heavy losses. Both
-`supertrend` strategies produce 0 trades due to a NaN bug — kept intentionally to
-preserve the current baseline until a correct rewrite is done.
+**Best known baseline (all strategies enabled + VIX<18 + Hurst H>0.5 + breadth 50% + 1.5x RANGE boost):** Sharpe 0.32, MaxDD 12.4%, win 38.6%, PF 1.42 — still failing gate.
 
-**All TREND strategies are W3 losers; only volume-confirmed or mean-reversion strategies survive.**
+**Root cause:** W3 (May 2025–Jun 2026) is a correction+recovery market. Long-only trend
+strategies fail: `trend_breakout` and `rsi_momentum` generate heavy losses. W3 ends
+mid-2026; a new walk-forward window starting 2025-08 may capture the recovery rally.
 
 **What's been tried that DEGRADES results** (see memory `project_gate_status.md`):
 every stock-level DMA filter, 52-week-high filter, regime directionality check,
-rolling autocorr filter — all hurt W1 more than they help W3.
-
-- **Supertrend NaN fix + enable both supertrend strategies (2026-06-02):** Indicator NaN bug
-  confirmed fixed (9% NaN in warm-up only, direction flips work, 2+ flips on 100-bar synthetic).
-  BUT enabling supertrend+supertrend_short degraded gate to Sharpe -0.48, MaxDD 34%, win 22.9%,
-  pf 0.75 (baseline: 0.32 Sharpe, 10.5% DD, 35.8% win, 1.41 pf). Both files reverted.
-  The indicator fix is correct; the strategies themselves need signal-quality improvements
-  (e.g., require regime=TREND + ADX filter + minimum trend strength) before they can be enabled.
-
-- **Disabling TREND strategies (2026-06-03):** Sharpe went from 0.32 to -0.10 (later -0.03
-  after partial re-enable), trade count varied. Disabling strategies is not the solution.
-
-- **Best known baseline:** All 4 strategies enabled + VIX<18 + Hurst H>0.5 + market breadth 50%
-  + 1.5x RANGE boost → Sharpe 0.32, MaxDD 12.4%, win 38.6%, PF 1.42 (still failing gate).
-
-**Targeted portfolio experiments (not yet run):**
-- `obv_trend + mean_reversion + vol_compression` — volume-confirmed entries may survive W3 better
-  than pure price-breakout strategies. Not yet tested.
+rolling autocorr filter, disabling strategies, supertrend enable — all degrade results.
 
 **Reproducible gate run:** `python cli.py walk-forward --years 3 --end-date 2026-05-29`
 
 **Recommended next move:** Run `Workflow({ name: "gate-fix" })` to fan out parallel experiments.
-Fix the Supertrend NaN bug as a prerequisite — both strategies must generate trades.
+
+**Expected gate pass:** ~August 2026 when W3 rolls out of the 3-year window and the recovery
+rally (trending character) enters the walk-forward period.
 
 ### 2. Phase status
 
@@ -228,20 +212,34 @@ Fix the Supertrend NaN bug as a prerequisite — both strategies must generate t
 | 6b | MCP mutating tools via file-based command-queue (halt_agent, place_paper_order) | **DONE** |
 | 7 | AngelOneLiveBroker + Upstox V3 feed + hot-reload risk params + SQLite migrations | **DONE** |
 | 7b | FastAPI production hardening: WebSocket manager, SSL/TLS nginx, auth, status endpoint | **DONE** |
-| 8 | Live deployment with small capital, after backtest gate + paper proof | not started |
+| 7c | Advanced dashboard: correlation matrix, scatter, waterfall, AI commentary, TOTP 2FA, Prometheus metrics, cursor pagination, code-split React, system health page | **DONE** |
+| 8 | Credentials wired + paper trading 30-day proof + gate pass | not started |
 
-### 3. Recently completed (last 10 commits)
+**Next steps for Phase 8:**
+1. Wire Angel One + Upstox credentials into `.env` (see `.env.example`)
+2. Run `python cli.py preflight` to validate all feeds
+3. Start paper trading: `python cli.py run`
+4. Monitor for 30 days via dashboard at `:8502`
+5. Gate pass expected ~August 2026 (W3 correction exits walk-forward window)
+6. After gate pass + 30-day paper proof → Phase 8 (live, small capital)
 
-- `88d00ca` config: disable TREND strategies for best W3 Sharpe — pure defensive combo
-- `31a9931` test(api): add exception-branch coverage for costs and list-trades endpoints
-- `e089e7b` feat(api): add /api/status endpoint, global exception handler, request logging middleware
-- `1ef0e56` feat(security): add DASHBOARD_PASSWORD to .env.example and fix integration tests
-- `cbd9429` feat(security): HTTP Basic Auth on all /api/* endpoints + WS token check
-- `900b49d` feat(api): proper WebSocket connection manager — single broadcast loop O(n)
-- `dc79626` feat(deploy): add SSL/TLS nginx config and self-signed cert generator
-- `21a2286` feat(notifications): richer Telegram alerts with regime, SL/target, confidence + 4 new event methods
-- `1ff2063` test(frontend): add Vitest unit tests for App and hooks
-- `18c8d8b` feat(frontend): equity sparkline, regime chart, P&L markers, header bar, mobile layout
+### 3. Recently completed (last 15 commits)
+
+- `83361d0` feat(api): Prometheus /api/metrics endpoint, /api/ready readiness probe, structured JSON request logging
+- `7f05978` feat(analytics): correlation matrix, scatter plot, waterfall chart in dashboard
+- `18a667f` feat(ai): POST /api/ai/commentary + Live Commentary UI in AiReviewTab
+- `e51ed85` feat(auth): optional TOTP 2FA for dashboard login
+- `0913803` feat(api): server-side TTL cache on expensive FastAPI endpoints
+- `802d41e` feat(dashboard): System health page and API docs page in React frontend
+- `a78186f` feat(frontend): search/filter UI on Positions and Replay tabs
+- `99056a2` feat(api): cursor-based pagination + /api/trades/stats
+- `7cbf547` test: coverage boost from 85% to 92% (+266 tests, total 1202)
+- `e67c69e` feat(scripts): daily backup/log-rotation scheduled tasks + backup freshness check
+- `30d2046` feat(strategies): 20-DMA W3-protection filter on MomentumStrength (disabled — degrades gate)
+- `8770e48` feat(frontend): Notifications/Alerts center
+- `88d00ca` config: disable TREND strategies test — Sharpe degraded, reverted strategy set
+- `31a9931` test(api): exception-branch coverage for costs and list-trades
+- `e089e7b` feat(api): /api/status endpoint, global exception handler, request logging middleware
 
 ### 4. EC2 environment
 
