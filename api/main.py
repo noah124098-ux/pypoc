@@ -15,6 +15,22 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
+# Load .env on startup and re-expose a helper for endpoints that read creds at request time
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(dotenv_path=_ENV_FILE, override=True)
+except ImportError:
+    pass
+
+def _reload_env():
+    """Re-read .env so credentials saved after process start are visible."""
+    try:
+        from dotenv import load_dotenv as _ld
+        _ld(dotenv_path=_ENV_FILE, override=True)
+    except ImportError:
+        pass
+
 import psutil
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -922,6 +938,7 @@ def save_angel_one_creds(body: dict, _: str = Depends(verify)):
 @app.get("/api/portfolio/angel-one")
 def get_angel_one_portfolio(_: str = Depends(verify)):
     """Angel One live portfolio. Returns disconnected stub if credentials absent."""
+    _reload_env()
     api_key = os.getenv("ANGEL_ONE_API_KEY", "")
     client_code = os.getenv("ANGEL_ONE_CLIENT_CODE", "")
     password = os.getenv("ANGEL_ONE_PASSWORD", "")
@@ -1021,7 +1038,7 @@ def get_preflight(_: str = Depends(verify)):
 
     # 2. Angel One credentials present
     from dotenv import load_dotenv
-    load_dotenv(override=False)
+    load_dotenv(override=True)
     creds_required = {
         "ANGEL_ONE_API_KEY": _os.getenv("ANGEL_ONE_API_KEY", ""),
         "ANGEL_ONE_CLIENT_CODE": _os.getenv("ANGEL_ONE_CLIENT_CODE", ""),

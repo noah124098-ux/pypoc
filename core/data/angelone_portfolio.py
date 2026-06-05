@@ -45,7 +45,7 @@ def fetch_live_portfolio(
     """Fetch live portfolio from Angel One. Returns None on any failure. Never raises.
 
     Read-only endpoints used:
-      - getPosition()  — open positions with LTP and unrealised P&L
+      - position()     — open positions with LTP and unrealised P&L
       - getRMS()       — account risk-management / margin summary
 
     Order-placing SDK methods (placeOrder, modifyOrder, cancelOrder,
@@ -71,7 +71,7 @@ def fetch_live_portfolio(
         log.info("ao_portfolio: logged in (%s) — DATA-ONLY mode", client_code)
 
         # ---- positions (read-only) ----
-        pos_data = obj.getPosition()
+        pos_data = obj.position()
         positions: list[LivePosition] = []
         if pos_data and pos_data.get("status") and pos_data.get("data"):
             for p in (pos_data["data"] or []):
@@ -90,7 +90,7 @@ def fetch_live_portfolio(
 
         # ---- account / margin summary (read-only) ----
         net_val = available = used = 0.0
-        rms_data = obj.getRMS()
+        rms_data = obj.rmsLimit()
         if rms_data and rms_data.get("status") and rms_data.get("data"):
             d = rms_data["data"]
             net_val = float(d.get("net", 0))
