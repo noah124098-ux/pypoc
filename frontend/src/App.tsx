@@ -215,11 +215,9 @@ function CopyApiButton() {
   )
 }
 
-function TopBar({ snap, connected, darkMode, onToggleDark, onHamburger }: {
+function TopBar({ snap, connected, onHamburger }: {
   snap: any
   connected: boolean
-  darkMode: boolean
-  onToggleDark: () => void
   onHamburger: () => void
 }) {
   const navigate = useNavigate()
@@ -269,19 +267,12 @@ function TopBar({ snap, connected, darkMode, onToggleDark, onHamburger }: {
       <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
         <CopyApiButton />
         <NotificationCenter />
-        <button
-          className="top-bar-btn"
-          onClick={onToggleDark}
-          title={darkMode ? 'Switch to light mode (current: dark)' : 'Switch to dark mode (current: light)'}
-        >
-          {darkMode ? '☀ Light' : '🌙 Dark'}
-        </button>
       </span>
     </div>
   )
 }
 
-function Sidebar({ snap, connected, onClose }: { snap: any, connected: boolean, onClose?: () => void }) {
+function Sidebar({ snap, connected, darkMode, onToggleDark, onClose }: { snap: any, connected: boolean, darkMode: boolean, onToggleDark: () => void, onClose?: () => void }) {
   const equity = snap?.equity ?? 0
   const dayPnl = equity - (snap?.starting_equity_today ?? equity)
   const regime = snap?.current_regime ?? '—'
@@ -311,10 +302,16 @@ function Sidebar({ snap, connected, onClose }: { snap: any, connected: boolean, 
 
       <div className="equity-box">
         <div className="eq-label">Equity</div>
-        <div className="eq-value">₹{equity.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
-        <div className={dayPnl >= 0 ? 'eq-pnl green' : 'eq-pnl red'}>
-          {dayPnl >= 0 ? '+' : ''}₹{Math.abs(dayPnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })} today
-        </div>
+        {snap === null ? (
+          <div className="eq-value" style={{ color: 'var(--text2)', fontSize: 13, fontWeight: 400 }}>— not running —</div>
+        ) : (
+          <>
+            <div className="eq-value">₹{equity.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
+            <div className={dayPnl >= 0 ? 'eq-pnl green' : 'eq-pnl red'}>
+              {dayPnl >= 0 ? '+' : ''}₹{Math.abs(dayPnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })} today
+            </div>
+          </>
+        )}
         {sparkData.length >= 2 && (
           <div style={{ width: '100%', height: 40, marginTop: 6 }}>
             <ResponsiveContainer width="100%" height={40}>
@@ -356,17 +353,27 @@ function Sidebar({ snap, connected, onClose }: { snap: any, connected: boolean, 
       </nav>
 
       <div className="sidebar-footer">
-        <a href="http://localhost:8501" target="_blank" rel="noopener noreferrer" className="legacy-link">
-          Open Streamlit ↗
-        </a>
-        <a href="/docs" target="_blank" rel="noopener noreferrer" className="legacy-link">
+        <CopyApiButton />
+        <button
+          className="top-bar-btn"
+          onClick={onToggleDark}
+          style={{ width: '100%', textAlign: 'left', marginTop: 2 }}
+          title={darkMode ? 'Switch to light mode (current: dark)' : 'Switch to dark mode (current: light)'}
+        >
+          {darkMode ? '☀ Light mode' : '🌙 Dark mode'}
+        </button>
+        <a href="/api/docs" target="_blank" rel="noopener noreferrer" className="legacy-link">
           API Docs ↗
+        </a>
+        <a href="https://github.com/noah124098-ux/pypoc" target="_blank" rel="noopener noreferrer" className="legacy-link">
+          GitHub ↗
         </a>
         <div className="kbd-hints">
           <span title="R = Refresh page">R</span>
           <span title="H = Home / Live tab">H</span>
           <span title="B = Backtest tab">B</span>
         </div>
+        <div style={{ fontSize: 10, color: 'var(--text2)', marginTop: 6 }}>v3.0 · NSE Agent</div>
       </div>
     </aside>
   )
@@ -441,11 +448,11 @@ function Layout({ darkMode, onToggleDark }: { darkMode: boolean; onToggleDark: (
 
   return (
     <div className="app-wrapper">
-      <TopBar snap={snap} connected={connected} darkMode={darkMode} onToggleDark={onToggleDark} onHamburger={toggleSidebar} />
+      <TopBar snap={snap} connected={connected} onHamburger={toggleSidebar} />
       <div className={`app${sidebarOpen ? ' sidebar-visible' : ''}`}>
         {/* Backdrop: clicking it closes the sidebar on mobile */}
         <div className="sidebar-backdrop" onClick={closeSidebar} />
-        <Sidebar snap={snap} connected={connected} onClose={closeSidebar} />
+        <Sidebar snap={snap} connected={connected} darkMode={darkMode} onToggleDark={onToggleDark} onClose={closeSidebar} />
         <main className="main-content" onClick={sidebarOpen ? closeSidebar : undefined}>
           <Suspense fallback={<div className="loading-tab">Loading...</div>}>
             <Routes>
