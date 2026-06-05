@@ -1465,6 +1465,113 @@ def cmd_preflight(args):
     raise SystemExit(0 if n_fail == 0 else 1)
 
 
+def cmd_test_live_broker(args):
+    """Test live broker connection using ANGEL_ONE_LIVE_* credentials from .env.
+
+    Steps:
+      1. Read ANGEL_ONE_LIVE_* from .env.
+      2. Attempt AngelOneLiveBroker.from_env().connect().
+      3. On success: call getRMS() and print available cash and net value.
+      4. On failure: print a clear error message with fix instructions.
+      5. Always disconnect cleanly.
+    """
+    import os
+
+    from dotenv import load_dotenv
+
+    load_dotenv(override=False)
+
+    # --- 1. Check credentials present ----------------------------------------
+    live_creds = {
+        "ANGEL_ONE_LIVE_API_KEY": os.getenv("ANGEL_ONE_LIVE_API_KEY", ""),
+        "ANGEL_ONE_LIVE_CLIENT_CODE": os.getenv("ANGEL_ONE_LIVE_CLIENT_CODE", ""),
+        "ANGEL_ONE_LIVE_PASSWORD": os.getenv("ANGEL_ONE_LIVE_PASSWORD", ""),
+        "ANGEL_ONE_LIVE_TOTP_SECRET": os.getenv("ANGEL_ONE_LIVE_TOTP_SECRET", ""),
+    }
+    missing = [k for k, v in live_creds.items() if not v]
+    if missing:
+        print("FAIL — Missing ANGEL_ONE_LIVE_* credentials in .env:")
+        for k in missing:
+            print(f"  {k}")
+        print()
+        print("Fix: copy .env.example to .env, then fill in ANGEL_ONE_LIVE_* with")
+        print("  credentials from a SEPARATE Angel One app that has order permissions.")
+        print("  Do NOT reuse the ANGEL_ONE_API_KEY data-feed credentials here.")
+        raise SystemExit(1)
+
+    # --- 2. Cross-contamination check ----------------------------------------
+    data_feed_key = os.getenv("ANGEL_ONE_API_KEY", "")
+    if data_feed_key and live_creds["ANGEL_ONE_LIVE_API_KEY"] == data_feed_key:
+        print("FAIL — ANGEL_ONE_LIVE_API_KEY matches ANGEL_ONE_API_KEY.")
+        print()
+        print("Fix: ANGEL_ONE_LIVE_* MUST be credentials for a SEPARATE Angel One API app")
+        print("  created with order permissions. The data-feed app is DATA-ONLY and cannot")
+        print("  place orders. Create a new app in the Angel One developer portal.")
+        raise SystemExit(1)
+
+    # --- 3. Attempt connection ------------------------------------------------
+    print("Connecting to Angel One live broker ...")
+    try:
+        from core.broker.angelone_live import AngelOneLiveBroker
+
+        settings = load_settings(args.config, env=getattr(args, "env", None))
+        broker = AngelOneLiveBroker.from_env(settings.execution)
+        broker.connect()
+    except ValueError as exc:
+        print(f"FAIL — Credential error: {exc}")
+        print()
+        print("Fix: ensure ANGEL_ONE_LIVE_* are set to valid, non-placeholder values in .env")
+        raise SystemExit(1)
+    except RuntimeError as exc:
+        print(f"FAIL — generateSession failed: {exc}")
+        print()
+        print("Fix:")
+        print("  - Verify ANGEL_ONE_LIVE_CLIENT_CODE, ANGEL_ONE_LIVE_PASSWORD, and")
+        print("    ANGEL_ONE_LIVE_TOTP_SECRET are correct.")
+        print("  - The TOTP secret must be the raw base32 seed (not a numeric code).")
+        print("  - Ensure the Angel One app has order permissions (not data-only).")
+        print("  - Check internet connectivity.")
+        raise SystemExit(1)
+    except Exception as exc:
+        print(f"FAIL — Unexpected error: {type(exc).__name__}: {exc}")
+        print()
+        print("Fix: check network, credentials, and that SmartApi is installed (pip install smartapi-python).")
+        raise SystemExit(1)
+
+    # --- 4. getRMS read-only check -------------------------------------------
+    try:
+        rms = broker._smart_api.getRMS()
+        if rms and rms.get("status"):
+            data_rms = rms.get("data") or {}
+            cash_raw = data_rms.get("availablecash", None)
+            net_raw = data_rms.get("net", None)
+            try:
+                cash = float(cash_raw) if cash_raw is not None else None
+                net = float(net_raw) if net_raw is not None else None
+            except (ValueError, TypeError):
+                cash = None
+                net = None
+            cash_str = f"INR {cash:,.2f}" if cash is not None else "unavailable"
+            net_str = f"INR {net:,.2f}" if net is not None else "unavailable"
+            print(f"OK — session established, getRMS() succeeded.")
+            print(f"  Available cash:  {cash_str}")
+            print(f"  Net value:       {net_str}")
+        else:
+            msg = (rms or {}).get("message", "unknown")
+            print(f"WARN — Session established but getRMS() returned non-success: {msg}")
+            print("  The session is live but account data could not be retrieved.")
+            print("  Check that your Angel One app has RMS read permission.")
+    except Exception as rms_exc:
+        print(f"WARN — Session established but getRMS() raised: {rms_exc}")
+    finally:
+        # --- 5. Always disconnect cleanly ------------------------------------
+        try:
+            broker.disconnect()
+            print("Disconnected cleanly.")
+        except Exception as disc_exc:
+            print(f"WARN — disconnect raised: {disc_exc}")
+
+
 def cmd_health_check(args):
     """Lightweight health check for Docker HEALTHCHECK and monitoring.
 
@@ -1735,6 +1842,15 @@ def main():
     )
     sc.add_argument("--reason", default="", help="Optional reason string (for halt/resume)")
     sc.set_defaults(func=cmd_send_command)
+
+    sub.add_parser(
+        "test-live-broker",
+        help=(
+            "Test AngelOneLiveBroker connection: reads ANGEL_ONE_LIVE_* from .env, "
+            "calls connect(), prints available cash and net value from getRMS(), "
+            "then disconnects cleanly."
+        ),
+    ).set_defaults(func=cmd_test_live_broker)
 
     args = parser.parse_args()
     args.func(args)
