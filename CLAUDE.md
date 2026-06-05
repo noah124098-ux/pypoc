@@ -29,7 +29,7 @@ All workflow launches from this repo are pre-approved. Use the `Workflow` tool f
 
 An automated, regime-aware **paper-trading agent for NSE Nifty 50** that consumes live Angel One SmartAPI tick data, classifies the market into TREND/RANGE/VOLATILE regimes, runs strategy logic appropriate to the regime, and sends every order through a hard guardrails layer with stop-loss, daily-loss circuit, drawdown circuit, and black-swan halts.
 
-**Status:** v3 — React+FastAPI deployed. Phases 3/4/5/5b/6b/7/7b/7c complete. 1219 tests passing. Gate at -0.086 Sharpe (failing due to bhavcopy data drift — stable baseline was 0.32 on May 29 data; see Open issues). No live broker active. React+FastAPI dashboard at http://localhost:8502 (11 tabs, auth: admin/pypoc2024, mobile-responsive, code-splitting).
+**Status:** v3 — React+FastAPI deployed. Phases 3/4/5/5b/6b/7/7b/7c complete. 1251 tests passing. Gate at 0.152 Sharpe (failing; thresholds: Sharpe ≥ 1.2, WR ≥ 45%, PF ≥ 1.5 — stable baseline was 0.32 on May 29 data; see Open issues). No live broker active. React+FastAPI dashboard at http://localhost:8502 (11 tabs, auth: admin/pypoc2024, mobile-responsive, code-splitting).
 
 **Model:** claude-opus-4-8 (default for all sessions). effortLevel: max.
 
@@ -92,7 +92,7 @@ dashboard.py     Streamlit entry point — DECOMMISSIONED
 deploy/          nginx SSL/TLS config + self-signed cert generator + EC2 setup scripts
 docker-compose.yml  Docker Compose service definitions
 Dockerfile       Multi-stage build: venv + React build + FastAPI
-tests/           1219 passing tests (includes Vitest frontend unit tests via pytest adapter)
+tests/           1251 passing tests (includes Vitest frontend unit tests via pytest adapter)
 config/
   default.yaml   Default config (TREND strategies currently disabled for gate baseline)
   environments/  dev.yaml, staging.yaml, prod.yaml overrides
@@ -114,7 +114,7 @@ docs/            ARCHITECTURE.md, LIVE_BROKER_SETUP.md
 # Activate venv (Windows)
 .\.venv\Scripts\Activate.ps1
 
-# Run the full test suite (must always be 1219/1219)
+# Run the full test suite (must always be 1251/1251)
 pytest -q
 
 # Pre-flight check before paper trading
@@ -177,19 +177,20 @@ cd frontend && npm run build
 
 ## Open issues — pick up here
 
-### 1. Backtest gate failing — -0.086 Sharpe (data drift from 0.32 baseline)
+### 1. Backtest gate failing — 0.152 Sharpe (data drift from 0.32 baseline)
 
-Current gate run (file timestamp 2026-06-04, all strategies enabled):
+Current gate run (file timestamp 2026-06-05, all strategies enabled):
 
 ```text
-Sharpe: -0.086, MaxDD: ~12%, win: ~36%, pf: 1.14, trades: 184
-Gate FAILED: sharpe (-0.086 < 1.2), profit_factor (1.14 < 1.5)
+Sharpe: 0.152, MaxDD: 13.7%, win: 35.3%, pf: 1.29, trades: 150
+Gate FAILED: sharpe (0.152 < 1.2), win_rate_pct (35.3% < 45%), profit_factor (1.29 < 1.5)
 ```
 
 **Data drift issue:** Bhavcopy data is highly sensitive to end-date. Same code + config:
 - May 29 data: Sharpe 0.32, MaxDD 12.4%, win 38.6%, PF 1.42
 - Early June data: Sharpe 0.105, MaxDD 12.4%, win 38.0%, PF 1.31
 - June 4 data: Sharpe -0.086, PF 1.14, trades 184
+- June 5 data: Sharpe 0.152, MaxDD 13.7%, win 35.3%, PF 1.29, trades 150
 
 **Root cause:** W3 (May 2025-Jun 2026) is a correction+recovery market. Long-only trend
 strategies fail: `trend_breakout` and `rsi_momentum` generate heavy losses. As more correction
@@ -230,21 +231,21 @@ rally (trending character) enters the walk-forward period.
 
 ### 3. Recently completed (last 15 commits)
 
+- `ae2a5bc` feat(api): add SSE /api/events/live as WebSocket auth fallback
+- `ea55428` feat(api): add 3 new endpoints — signals-today, performance/summary, backtest/debug
+- `e238e45` feat(startup): add quickstart.bat + /api/preflight tests
+- `1a959b3` fix(tests): fix 4 skipped tests — correct import paths and API contracts
+- `bd8af41` feat(api): add /api/nifty-breadth and /api/calendar/upcoming endpoints
+- `9782dd0` build: final rebuild with NSE Agent branding and simulator
+- `11888ed` experiment(gate): bb_squeeze target_r_multiple 2.0->3.0 improves Sharpe -0.086->0.151 on fresh Jun-05 data
+- `51677c6` feat: NSE Agent rebrand + Trade Simulator console + UI bug fixes
+- `3fdbcc4` fix(ui): OFFLINE badge styling, nav highlight, sidebar improvements
+- `8a7dbd0` feat: rebrand to NSE Agent + fix duplicate logo UI bug
 - `339cc40` feat(dashboard): Angel One tab Save to .env + Test Connection buttons
 - `7d58644` feat(dashboard): add Recent Activity event log to Live tab
 - `6fadf29` feat(dashboard): add Refresh Gate button to BacktestTab
-- `f649e72` docs: update CLAUDE.md -- 1219 tests, v3 status, claude-opus-4-8 model
+- `f649e72` docs: update CLAUDE.md — 1219 tests, v3 status, claude-opus-4-8 model
 - `f66571b` fix(frontend): handle paginated API responses and prevent blank screens
-- `2f55724` fix(frontend): proper title, meta tags, favicon for React dashboard
-- `b99174f` fix(config): restore clean baseline config -- signal_cooldown 30min, vix_spike_bounce enabled
-- `905dc30` feat(strategies): add VolumeBreakoutConfirm + GapAndHold (disabled after gate regression)
-- `4893086` experiment(gate): bb_squeeze target_r_multiple 2.0->3.0 improves Sharpe 0.036->0.124
-- `db1518d` chore: 10-hour session final state -- 1202 tests, gate 0.105 Sharpe, React dashboard at :8502
-- `83361d0` feat(api): Prometheus /api/metrics endpoint, /api/ready readiness probe, structured JSON request logging
-- `7f05978` feat(analytics): correlation matrix, scatter plot, waterfall chart in dashboard
-- `18a667f` feat(ai): POST /api/ai/commentary + Live Commentary UI in AiReviewTab
-- `e51ed85` feat(auth): optional TOTP 2FA for dashboard login
-- `0913803` feat(api): server-side TTL cache on expensive FastAPI endpoints
 
 ### 4. EC2 environment
 
