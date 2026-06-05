@@ -1309,3 +1309,336 @@ def test_preflight_all_passed_reflects_checks(client):
     body = resp.json()
     computed = all(c["passed"] for c in body["checks"])
     assert body["all_passed"] == computed
+
+
+# ---------------------------------------------------------------------------
+# GET /api/strategy/signals-today
+# ---------------------------------------------------------------------------
+
+def _make_db_with_signals(data_dir: Path) -> None:
+    """Create agent.db with a signals table seeded with today's test rows."""
+    import sqlite3 as _sqlite3
+    from datetime import date as _date
+
+    conn = _sqlite3.connect(str(data_dir / "agent.db"))
+    conn.execute(
+        """
+        CREATE TABLE signals (
+            id       INTEGER PRIMARY KEY,
+            ts       TEXT,
+            strategy TEXT,
+            symbol   TEXT,
+            accepted INTEGER DEFAULT 0
+        )
+        """
+    )
+    today = _date.today().isoformat()
+    conn.executemany(
+        "INSERT INTO signals (ts, strategy, symbol, accepted) VALUES (?, ?, ?, ?)",
+        [
+            (today, "trend_breakout", "RELIANCE", 1),
+            (today, "trend_breakout", "TCS", 0),
+            (today, "trend_breakout", "INFY", 1),
+            (today, "rsi_momentum", "HDFC", 1),
+            (today, "rsi_momentum", "WIPRO", 0),
+            # old signal (yesterday) — must NOT appear in today's count
+            ("2020-01-01", "trend_breakout", "OLD", 1),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_signals_today_requires_auth(client):
+    """Without credentials the endpoint returns 401."""
+    resp = client.get("/api/strategy/signals-today")
+    assert resp.status_code == 401
+
+
+def test_signals_today_returns_list_with_counts(tmp_path, monkeypatch):
+    """Endpoint returns one row per strategy with correct total/accepted/rejected."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    _make_db_with_signals(data_dir)
+
+    from api.main import app
+    c = TestClient(app)
+    resp = c.get("/api/strategy/signals-today", auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body, list)
+
+    by_strat = {row["strategy"]: row for row in body}
+    assert "trend_breakout" in by_strat
+    assert "rsi_momentum" in by_strat
+
+    tb = by_strat["trend_breakout"]
+    assert tb["total"] == 3
+    assert tb["accepted"] == 2
+    assert tb["rejected"] == 1
+
+    rm = by_strat["rsi_momentum"]
+    assert rm["total"] == 2
+    assert rm["accepted"] == 1
+    assert rm["rejected"] == 1
+
+
+def test_signals_today_empty_when_no_db(tmp_path, monkeypatch):
+    """When agent.db does not exist the endpoint returns an empty list."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+
+    from api.main import app
+    c = TestClient(app)
+    resp = c.get("/api/strategy/signals-today", auth=AUTH)
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+# ---------------------------------------------------------------------------
+# GET /api/performance/summary
+# ---------------------------------------------------------------------------
+
+def _make_db_with_trades(data_dir: Path) -> None:
+    """Create agent.db with a trades table containing recent and old rows."""
+    import sqlite3 as _sqlite3
+    from datetime import date as _date, timedelta
+
+    conn = _sqlite3.connect(str(data_dir / "agent.db"))
+    conn.execute(
+        """
+        CREATE TABLE trades (
+            id         INTEGER PRIMARY KEY,
+            closed_at  TEXT,
+            symbol     TEXT,
+            strategy   TEXT,
+            pnl        REAL,
+            charges    REAL DEFAULT 0
+        )
+        """
+    )
+    today = _date.today().isoformat()
+    two_days_ago = (_date.today() - timedelta(days=2)).isoformat()
+    ten_days_ago = (_date.today() - timedelta(days=10)).isoformat()
+    forty_days_ago = (_date.today() - timedelta(days=40)).isoformat()
+
+    conn.executemany(
+        "INSERT INTO trades (closed_at, symbol, strategy, pnl, charges) VALUES (?, ?, ?, ?, ?)",
+        [
+            # today: 2 trades, both winners
+            (today, "TCS",      "trend_breakout", 500.0,  10.0),
+            (today, "INFY",     "trend_breakout", 300.0,  10.0),
+            # 2 days ago (within last 7 days): 1 winner
+            (two_days_ago, "HDFC",  "rsi_momentum",   200.0,  10.0),
+            # 10 days ago (within month, not week): 1 loser
+            (ten_days_ago, "WIPRO", "rsi_momentum",  -100.0,  10.0),
+            # 40 days ago (all-time only): 1 winner
+            (forty_days_ago, "RELIANCE", "trend_breakout", 400.0, 10.0),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_performance_summary_requires_auth(client):
+    """Without credentials the endpoint returns 401."""
+    resp = client.get("/api/performance/summary")
+    assert resp.status_code == 401
+
+
+def test_performance_summary_has_expected_periods(tmp_path, monkeypatch):
+    """Response contains today, week, month, all_time keys."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    _make_db_with_trades(data_dir)
+
+    from api.main import app
+    c = TestClient(app)
+    resp = c.get("/api/performance/summary", auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    for key in ("today", "week", "month", "all_time"):
+        assert key in body, f"missing key: {key}"
+    for key in ("today", "week", "month", "all_time"):
+        period = body[key]
+        assert "trades" in period
+        assert "pnl" in period
+        assert "win_rate" in period
+
+
+def test_performance_summary_correct_counts(tmp_path, monkeypatch):
+    """Trade counts and PnL aggregate correctly per period."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    _make_db_with_trades(data_dir)
+
+    from api.main import app
+    c = TestClient(app)
+    resp = c.get("/api/performance/summary", auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # Today: 2 trades, total pnl = 800, win_rate = 100%
+    assert body["today"]["trades"] == 2
+    assert body["today"]["pnl"] == 800.0
+    assert body["today"]["win_rate"] == 100.0
+
+    # Week (includes today + 2 days ago): 3 trades
+    assert body["week"]["trades"] == 3
+
+    # Month (includes today + 2 days ago + 10 days ago): 4 trades
+    assert body["month"]["trades"] == 4
+
+    # All time: 5 trades
+    assert body["all_time"]["trades"] == 5
+
+
+# ---------------------------------------------------------------------------
+# GET /api/backtest/debug
+# ---------------------------------------------------------------------------
+
+def _make_fake_backtest_result():
+    """Return a minimal mock BacktestResult-like namespace for patching."""
+    from types import SimpleNamespace
+    from datetime import datetime
+
+    r = SimpleNamespace()
+    r.period_start = datetime(2025, 1, 1)
+    r.period_end = datetime(2025, 12, 31)
+    r.trades = []
+    r.equity_curve = []
+    r.regime_distribution = {"TREND": 100, "RANGE": 80, "VOLATILE": 30, "UNKNOWN": 10}
+    r.signal_count = 50
+    r.accepted_count = 20
+    r.rejected_count = 30
+    r.qty_zero_count = 5
+    r.signal_count_by_strategy = {"trend_breakout": 30, "rsi_momentum": 20}
+    r.accepted_count_by_strategy = {"trend_breakout": 12, "rsi_momentum": 8}
+    r.rejection_breakdown = {"max_positions": 15, "daily_loss_circuit": 10, "regime_mismatch": 5}
+    r.signal_count_by_symbol = {f"SYM{i}": 10 - i for i in range(20)}
+    return r
+
+
+def _make_fake_metrics():
+    """Return a mock metrics object."""
+    from types import SimpleNamespace
+    m = SimpleNamespace()
+    m.n_trades = 20
+    m.win_rate_pct = 55.0
+    m.profit_factor = 1.8
+    m.sharpe = 1.25
+    m.max_drawdown_pct = 8.5
+    m.cagr_pct = 22.3
+    return m
+
+
+def test_backtest_debug_requires_auth(client):
+    """Without credentials the endpoint returns 401."""
+    resp = client.get("/api/backtest/debug")
+    assert resp.status_code == 401
+
+
+def test_backtest_debug_returns_expected_keys(tmp_path, monkeypatch):
+    """Endpoint returns all required top-level keys."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)
+
+    fake_r = _make_fake_backtest_result()
+    fake_m = _make_fake_metrics()
+
+    with patch("backtest.data_loader.HistoricalLoader") as MockLoader, \
+         patch("backtest.engine.BacktestEngine") as MockEngine, \
+         patch("backtest.metrics.compute_metrics", return_value=fake_m), \
+         patch("core.config.load_settings") as mock_cfg, \
+         patch("core.data.universe.resolve_universe", return_value=["RELIANCE", "TCS"]):
+
+        # Stub settings
+        from types import SimpleNamespace
+        settings = SimpleNamespace()
+        settings.capital = SimpleNamespace(initial_inr=100_000)
+        settings.universe = SimpleNamespace(source="nifty50", symbols=[])
+        mock_cfg.return_value = settings
+
+        # Stub loader: load_nifty returns a non-empty mock df
+        import pandas as pd
+        fake_nifty = pd.DataFrame({"close": [22000.0]}, index=pd.to_datetime(["2025-12-31"]))
+        instance_loader = MagicMock()
+        instance_loader.load_nifty.return_value = fake_nifty
+        instance_loader.load_universe.return_value = {}
+        MockLoader.return_value = instance_loader
+
+        # Stub engine
+        instance_engine = MagicMock()
+        instance_engine.run.return_value = fake_r
+        MockEngine.return_value = instance_engine
+
+        c = TestClient(api_main.app)
+        resp = c.get("/api/backtest/debug?days=90", auth=AUTH)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    for key in ("period_start", "period_end", "capital", "regime_distribution",
+                "rejection_breakdown", "signal_funnel", "strategy_signals",
+                "top_symbols", "metrics"):
+        assert key in body, f"missing key: {key}"
+
+
+def test_backtest_debug_metrics_shape(tmp_path, monkeypatch):
+    """The metrics sub-dict contains trades, win_rate_pct, profit_factor, sharpe, etc."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)
+
+    fake_r = _make_fake_backtest_result()
+    fake_m = _make_fake_metrics()
+
+    with patch("backtest.data_loader.HistoricalLoader") as MockLoader, \
+         patch("backtest.engine.BacktestEngine") as MockEngine, \
+         patch("backtest.metrics.compute_metrics", return_value=fake_m), \
+         patch("core.config.load_settings") as mock_cfg, \
+         patch("core.data.universe.resolve_universe", return_value=["RELIANCE"]):
+
+        from types import SimpleNamespace
+        settings = SimpleNamespace()
+        settings.capital = SimpleNamespace(initial_inr=100_000)
+        settings.universe = SimpleNamespace(source="nifty50", symbols=[])
+        mock_cfg.return_value = settings
+
+        import pandas as pd
+        fake_nifty = pd.DataFrame({"close": [22000.0]}, index=pd.to_datetime(["2025-12-31"]))
+        instance_loader = MagicMock()
+        instance_loader.load_nifty.return_value = fake_nifty
+        instance_loader.load_universe.return_value = {}
+        MockLoader.return_value = instance_loader
+
+        instance_engine = MagicMock()
+        instance_engine.run.return_value = fake_r
+        MockEngine.return_value = instance_engine
+
+        c = TestClient(api_main.app)
+        resp = c.get("/api/backtest/debug?days=90", auth=AUTH)
+
+    assert resp.status_code == 200
+    metrics = resp.json()["metrics"]
+    assert metrics["trades"] == 20
+    assert metrics["win_rate_pct"] == 55.0
+    assert metrics["profit_factor"] == 1.8
+    assert metrics["sharpe"] == 1.25
+    assert metrics["max_drawdown_pct"] == 8.5
+    assert metrics["cagr_pct"] == 22.3

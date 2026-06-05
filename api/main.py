@@ -1396,6 +1396,332 @@ def get_calendar_upcoming(_: str = Depends(verify)):
     ]
 
 
+# ---------------------------------------------------------------------------
+# Live broker connection test
+# ---------------------------------------------------------------------------
+
+@app.post("/api/live-broker/test")
+def test_live_broker_connection(_: str = Depends(verify)):
+    """Attempt a read-only connection to AngelOneLiveBroker and return account info.
+
+    Uses ANGEL_ONE_LIVE_* credentials from the environment (.env).
+    Calls getRMS() to retrieve available cash and net value.
+    Always disconnects cleanly regardless of outcome.
+
+    Response
+    --------
+    ``{connected: bool, cash: float, net: float, error: str|null}``
+    """
+    import os as _os
+
+    from dotenv import load_dotenv as _load_dotenv
+
+    _load_dotenv(override=False)
+
+    # Check credentials are present
+    live_creds = {
+        "ANGEL_ONE_LIVE_API_KEY": _os.getenv("ANGEL_ONE_LIVE_API_KEY", ""),
+        "ANGEL_ONE_LIVE_CLIENT_CODE": _os.getenv("ANGEL_ONE_LIVE_CLIENT_CODE", ""),
+        "ANGEL_ONE_LIVE_PASSWORD": _os.getenv("ANGEL_ONE_LIVE_PASSWORD", ""),
+        "ANGEL_ONE_LIVE_TOTP_SECRET": _os.getenv("ANGEL_ONE_LIVE_TOTP_SECRET", ""),
+    }
+    missing = [k for k, v in live_creds.items() if not v]
+    if missing:
+        return {
+            "connected": False,
+            "cash": 0.0,
+            "net": 0.0,
+            "error": (
+                f"Missing ANGEL_ONE_LIVE_* credentials: {', '.join(missing)}. "
+                "Set them in .env using a SEPARATE Angel One app with order permissions."
+            ),
+        }
+
+    # Cross-contamination guard
+    data_feed_key = _os.getenv("ANGEL_ONE_API_KEY", "")
+    if data_feed_key and live_creds["ANGEL_ONE_LIVE_API_KEY"] == data_feed_key:
+        return {
+            "connected": False,
+            "cash": 0.0,
+            "net": 0.0,
+            "error": (
+                "ANGEL_ONE_LIVE_API_KEY matches ANGEL_ONE_API_KEY. "
+                "You MUST use a SEPARATE Angel One app for order execution. "
+                "The data-feed credentials are DATA-ONLY."
+            ),
+        }
+
+    broker = None
+    try:
+        from core.broker.angelone_live import AngelOneLiveBroker
+        from core.config import load_settings as _load_settings
+
+        _settings = _load_settings()
+        broker = AngelOneLiveBroker.from_env(_settings.execution)
+        broker.connect()
+    except ValueError as exc:
+        return {
+            "connected": False,
+            "cash": 0.0,
+            "net": 0.0,
+            "error": f"Credential error: {exc}",
+        }
+    except RuntimeError as exc:
+        return {
+            "connected": False,
+            "cash": 0.0,
+            "net": 0.0,
+            "error": (
+                f"generateSession failed: {exc}. "
+                "Check ANGEL_ONE_LIVE_CLIENT_CODE, ANGEL_ONE_LIVE_PASSWORD, "
+                "and ANGEL_ONE_LIVE_TOTP_SECRET."
+            ),
+        }
+    except Exception as exc:
+        return {
+            "connected": False,
+            "cash": 0.0,
+            "net": 0.0,
+            "error": f"Unexpected error during connect: {type(exc).__name__}: {exc}",
+        }
+
+    # Connected — attempt getRMS
+    cash: float = 0.0
+    net: float = 0.0
+    rms_error: str | None = None
+    try:
+        rms = broker._smart_api.getRMS()
+        if rms and rms.get("status"):
+            data_rms = rms.get("data") or {}
+            try:
+                cash = float(data_rms.get("availablecash", 0.0) or 0.0)
+                net = float(data_rms.get("net", cash) or cash)
+            except (ValueError, TypeError):
+                rms_error = "getRMS() returned unparseable account data"
+        else:
+            rms_error = (
+                f"getRMS() returned non-success: {(rms or {}).get('message', 'unknown')}"
+            )
+    except Exception as exc:
+        rms_error = f"getRMS() raised: {type(exc).__name__}: {exc}"
+    finally:
+        try:
+            if broker is not None:
+                broker.disconnect()
+        except Exception:
+            pass
+
+    return {
+        "connected": True,
+        "cash": cash,
+        "net": net,
+        "error": rms_error,
+    }
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 1: GET /api/strategy/signals-today
+# ---------------------------------------------------------------------------
+
+@app.get("/api/strategy/signals-today")
+def get_signals_today(_: str = Depends(verify)):
+    """Count of signals today by strategy and acceptance status.
+
+    SQL: SELECT strategy, COUNT(*) as total, SUM(accepted) as accepted
+         FROM signals WHERE ts >= date('now') GROUP BY strategy
+
+    Returns: list of {strategy, total, accepted, rejected}
+    """
+    db_path = Path("data/agent.db")
+    if not db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT strategy,
+                   COUNT(*)       AS total,
+                   SUM(accepted)  AS accepted
+            FROM signals
+            WHERE ts >= date('now')
+            GROUP BY strategy
+            ORDER BY total DESC
+            """
+        ).fetchall()
+        conn.close()
+        result = []
+        for r in rows:
+            total = int(r["total"] or 0)
+            accepted = int(r["accepted"] or 0)
+            result.append({
+                "strategy": r["strategy"],
+                "total": total,
+                "accepted": accepted,
+                "rejected": total - accepted,
+            })
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 2: GET /api/performance/summary
+# ---------------------------------------------------------------------------
+
+@app.get("/api/performance/summary")
+def get_performance_summary(_: str = Depends(verify)):
+    """Quick performance summary from the trades table.
+
+    Returns: {today: {trades, pnl, win_rate}, week: {...}, month: {...}, all_time: {...}}
+    """
+    db_path = Path("data/agent.db")
+
+    def _period_stats(conn, cutoff_expr: str) -> dict:
+        """Compute trades, pnl, win_rate for trades since *cutoff_expr* (SQL expression)."""
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*)              AS n_trades,
+                   COALESCE(SUM(pnl), 0) AS pnl,
+                   COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
+            FROM trades
+            WHERE closed_at >= {cutoff_expr}
+            """
+        ).fetchone()
+        n = int(row["n_trades"] or 0)
+        pnl = float(row["pnl"] or 0)
+        wins = int(row["wins"] or 0)
+        win_rate = round(wins / n * 100, 1) if n > 0 else 0.0
+        return {"trades": n, "pnl": round(pnl, 2), "win_rate": win_rate}
+
+    empty = {"trades": 0, "pnl": 0.0, "win_rate": 0.0}
+
+    if not db_path.exists():
+        return {"today": empty, "week": empty, "month": empty, "all_time": empty}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        today = _period_stats(conn, "date('now')")
+        week = _period_stats(conn, "date('now', '-7 days')")
+        month = _period_stats(conn, "date('now', '-30 days')")
+        all_time = _period_stats(conn, "'1970-01-01'")
+        conn.close()
+        return {"today": today, "week": week, "month": month, "all_time": all_time}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 3: GET /api/backtest/debug
+# ---------------------------------------------------------------------------
+
+@app.get("/api/backtest/debug")
+def get_backtest_debug(days: int = 90, _: str = Depends(verify)):
+    """Return the same data as cli.py debug-rejections but as JSON.
+
+    Query param: ``days`` — look-back window in calendar days (default 90).
+
+    Returns:
+    {regime_distribution, rejection_breakdown, strategy_signals,
+     top_symbols, metrics, period_start, period_end, capital}
+    """
+    from datetime import timedelta
+    from backtest.data_loader import HistoricalLoader
+    from backtest.engine import BacktestEngine
+    from backtest.metrics import compute_metrics as _compute_backtest_metrics
+    from core.config import load_settings
+    from core.data.universe import resolve_universe
+
+    try:
+        settings = load_settings("config/default.yaml")
+        debug_capital = 500_000.0
+        settings.capital.initial_inr = debug_capital
+
+        loader = HistoricalLoader()
+        nifty = loader.load_nifty(days=days + 30)
+        if nifty is None or nifty.empty:
+            return {"error": "Failed to load Nifty history"}
+
+        symbols = resolve_universe(settings.universe.source, settings.universe.symbols)
+        history = loader.load_universe(symbols, days=days + 30)
+
+        end = nifty.index[-1].to_pydatetime()
+        start = end - timedelta(days=days)
+        engine = BacktestEngine(settings)
+        r = engine.run(
+            symbol_history=history,
+            nifty_history=nifty,
+            starting_equity=debug_capital,
+            start_date=start,
+            end_date=end,
+        )
+        m = _compute_backtest_metrics(
+            trades=r.trades,
+            equity_curve=r.equity_curve,
+            starting_equity=debug_capital,
+            period_days=(r.period_end - r.period_start).days,
+        )
+
+        # Strategy signals breakdown
+        strategy_signals = []
+        for strat, total in sorted(
+            r.signal_count_by_strategy.items(), key=lambda kv: -kv[1]
+        ):
+            accepted = r.accepted_count_by_strategy.get(strat, 0)
+            strategy_signals.append({
+                "strategy": strat,
+                "generated": total,
+                "accepted": accepted,
+                "rejected": total - accepted,
+            })
+
+        # Top 15 symbols by signal count
+        top_symbols = [
+            {"symbol": sym, "signals": cnt}
+            for sym, cnt in sorted(
+                r.signal_count_by_symbol.items(), key=lambda kv: -kv[1]
+            )[:15]
+        ]
+
+        # Regime distribution with percentages
+        total_days = sum(r.regime_distribution.values())
+        regime_distribution = {}
+        for regime in ["TREND", "RANGE", "VOLATILE", "UNKNOWN"]:
+            count = r.regime_distribution.get(regime, 0)
+            pct = round(count / total_days * 100, 1) if total_days else 0.0
+            regime_distribution[regime] = {"days": count, "pct": pct}
+
+        return {
+            "period_start": r.period_start.date().isoformat(),
+            "period_end": r.period_end.date().isoformat(),
+            "capital": debug_capital,
+            "regime_distribution": regime_distribution,
+            "rejection_breakdown": dict(
+                sorted(r.rejection_breakdown.items(), key=lambda kv: -kv[1])
+            ),
+            "signal_funnel": {
+                "signals_generated": r.signal_count,
+                "signals_accepted": r.accepted_count,
+                "signals_rejected": r.rejected_count,
+                "qty_zero_count": r.qty_zero_count,
+            },
+            "strategy_signals": strategy_signals,
+            "top_symbols": top_symbols,
+            "metrics": {
+                "trades": m.n_trades,
+                "win_rate_pct": round(m.win_rate_pct, 1),
+                "profit_factor": round(m.profit_factor, 2),
+                "sharpe": round(m.sharpe, 3),
+                "max_drawdown_pct": round(m.max_drawdown_pct, 2),
+                "cagr_pct": round(m.cagr_pct, 2),
+            },
+        }
+    except Exception as exc:
+        logger.exception("backtest/debug error")
+        return {"error": str(exc)}
+
+
 async def _broadcast_loop() -> None:
     """Single background task: read snapshot once per second and push to ALL clients."""
     while True:
