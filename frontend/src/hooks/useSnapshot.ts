@@ -6,10 +6,6 @@ const API = window.location.port === '8502' ? '' : 'http://localhost:8502'
 // Dashboard password — must match DASHBOARD_PASSWORD env var (default: pypoc2024)
 const DASH_PASS = (window as any).__DASH_PASS__ ?? 'pypoc2024'
 
-const WS_URL = (window.location.port === '8502'
-  ? `ws://${window.location.host}/ws/live`
-  : 'ws://localhost:8502/ws/live') + `?token=${encodeURIComponent(DASH_PASS)}`
-
 const BASIC_AUTH = 'Basic ' + btoa(`admin:${DASH_PASS}`)
 
 // ── Global request deduplication map ─────────────────────────────────────────
@@ -17,15 +13,14 @@ const BASIC_AUTH = 'Basic ' + btoa(`admin:${DASH_PASS}`)
 const _inflight = new Map<string, Promise<any>>()
 
 // ── useSnapshot ───────────────────────────────────────────────────────────────
+// Uses SSE (/api/events/live) instead of WebSocket — plain HTTP, no upgrade
+// handshake issues, works through any proxy or SPA catch-all route.
 export function useSnapshot() {
   const [snap, setSnap] = useState<any>(null)
   const [connected, setConnected] = useState(false)
-  // 'failed' is true after MAX_ATTEMPTS consecutive failures
   const [failed, setFailed] = useState(false)
-  const wsRef = useRef<WebSocket | null>(null)
-  // Tracks the last serialised snap so we skip re-renders on identical payloads
   const lastJsonRef = useRef<string>('')
-  // Exponential backoff state
+  const esRef = useRef<EventSource | null>(null)
   const delayRef = useRef<number>(1000)
   const attemptsRef = useRef<number>(0)
   const MAX_ATTEMPTS = 10
@@ -33,6 +28,7 @@ export function useSnapshot() {
 
   useEffect(() => {
     let cancelled = false
+    let timerId: ReturnType<typeof setTimeout> | null = null
 
     function connect() {
       if (cancelled) return
@@ -41,53 +37,55 @@ export function useSnapshot() {
         return
       }
 
-      const ws = new WebSocket(WS_URL)
-      wsRef.current = ws
+      // SSE with Basic Auth embedded in URL
+      const base = window.location.port === '8502'
+        ? `${window.location.protocol}//${window.location.host}`
+        : 'http://localhost:8502'
+      const url = `${base.replace('://', `://admin:${encodeURIComponent(DASH_PASS)}@`)}/api/events/live`
 
-      ws.onopen = () => {
-        if (cancelled) { ws.close(); return }
+      const es = new EventSource(url)
+      esRef.current = es
+
+      es.onopen = () => {
+        if (cancelled) { es.close(); return }
         setConnected(true)
         setFailed(false)
-        // Reset backoff on successful connection
         delayRef.current = 1000
         attemptsRef.current = 0
       }
 
-      ws.onmessage = (e) => {
+      es.onmessage = (e) => {
         if (cancelled) return
         try {
-          const parsed = JSON.parse(e.data as string)
-          // Skip keepalive pings
-          if (parsed && parsed.ping) return
           const json = e.data as string
-          // Only update state if the payload actually changed
           if (json !== lastJsonRef.current) {
             lastJsonRef.current = json
-            setSnap(parsed)
+            const parsed = JSON.parse(json)
+            if (parsed && !parsed.ping) {
+              setSnap(parsed)
+              setConnected(true)
+            }
           }
-        } catch {
-          // ignore malformed messages
-        }
+        } catch { /* ignore */ }
       }
 
-      ws.onclose = () => {
+      es.onerror = () => {
         if (cancelled) return
+        es.close()
         setConnected(false)
         attemptsRef.current += 1
         const delay = delayRef.current
-        // Double delay for next attempt, capped at MAX_DELAY
         delayRef.current = Math.min(delay * 2, MAX_DELAY)
-        setTimeout(connect, delay)
+        timerId = setTimeout(connect, delay)
       }
-
-      ws.onerror = () => ws.close()
     }
 
     connect()
 
     return () => {
       cancelled = true
-      wsRef.current?.close()
+      if (timerId) clearTimeout(timerId)
+      esRef.current?.close()
     }
   }, [])
 

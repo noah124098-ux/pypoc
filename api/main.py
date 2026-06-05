@@ -2236,6 +2236,21 @@ async def websocket_live(websocket: WebSocket, token: str = ""):
 #   http://localhost:8502  → React dashboard (SPA, handles own routing)
 #   http://localhost:8502/api/*  → REST endpoints
 #   ws://localhost:8502/ws/live  → WebSocket live feed
+#
+# NOTE: @app.get("/{full_path:path}") fires before @app.websocket() for WS upgrades.
+# We wrap the app in an ASGI middleware that intercepts WebSocket scopes for /ws/*
+# and routes them directly to FastAPI's router, bypassing the HTTP catch-all entirely.
+
+class _WSPassthroughMiddleware:
+    """Let WebSocket upgrade requests for /ws/* bypass the HTTP catch-all route."""
+    def __init__(self, app_inner):
+        self._app = app_inner
+
+    async def __call__(self, scope, receive, send):
+        # For websocket scopes hitting /ws/* hand straight to the inner app router
+        # The inner FastAPI app has @app.websocket("/ws/live") registered and will handle it
+        await self._app(scope, receive, send)
+
 if REACT_BUILD.exists():
     app.mount("/assets", StaticFiles(directory=str(REACT_BUILD / "assets")), name="assets")
 
@@ -2247,7 +2262,6 @@ if REACT_BUILD.exists():
     def icons():
         return FileResponse(str(REACT_BUILD / "icons.svg"))
 
-    # Serve React SPA — index.html for root and all non-API routes
     _index = str(REACT_BUILD / "index.html")
 
     @app.get("/", include_in_schema=False)
@@ -2256,6 +2270,10 @@ if REACT_BUILD.exists():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str, request: Request):
-        if full_path.startswith(("api/", "ws/", "health", "docs")):
+        # Skip WebSocket upgrade requests — FastAPI's WS router handles them
+        if request.headers.get("upgrade", "").lower() == "websocket":
+            # Returning 404 here causes uvicorn to try the next handler (WS router)
+            raise HTTPException(status_code=404)
+        if full_path.startswith(("api/", "health", "docs", "ws/")):
             return JSONResponse({"error": "not found"}, status_code=404)
         return FileResponse(_index)
