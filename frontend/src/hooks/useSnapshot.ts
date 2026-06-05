@@ -58,6 +58,44 @@ export async function apiPost(path: string, body?: any) {
   return r.json()
 }
 
+/**
+ * useSSE — subscribe to a Server-Sent Events endpoint.
+ *
+ * A simpler alternative to the WebSocket-based useSnapshot() for browsers
+ * that have issues authenticating WebSocket upgrades.  The SSE endpoint uses
+ * standard HTTP Basic Auth (Authorization header), which browsers handle
+ * transparently.
+ *
+ * @param path  API path relative to the base URL, e.g. "/api/events/live"
+ * @returns     The last parsed JSON event payload, or null before the first event.
+ */
+export function useSSE(path: string) {
+  const [data, setData] = useState<any>(null)
+
+  useEffect(() => {
+    // EventSource does not support custom headers natively, so we embed
+    // credentials in the URL using basic-auth syntax (supported by our
+    // FastAPI HTTPBasic dependency via the Authorization header injected by
+    // the browser when credentials are supplied in the URL).
+    // Format: http://user:pass@host/path
+    const baseUrl = window.location.port === '8502'
+      ? `${window.location.protocol}//${window.location.host}`
+      : 'http://localhost:8502'
+    const url = `${baseUrl.replace('://', `://admin:${encodeURIComponent(DASH_PASS)}@`)}${path}`
+
+    const es = new EventSource(url)
+    es.onmessage = (e) => {
+      try { setData(JSON.parse(e.data)) } catch {}
+    }
+    es.onerror = () => {
+      // EventSource auto-reconnects on transient errors; nothing to do here.
+    }
+    return () => es.close()
+  }, [path])
+
+  return data
+}
+
 export function useApi<T>(path: string, interval = 30000) {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)

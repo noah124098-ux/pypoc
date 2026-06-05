@@ -1,7 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.exceptions import RequestValidationError
 import asyncio
@@ -1732,6 +1732,39 @@ async def _broadcast_loop() -> None:
         except Exception as exc:
             logger.warning("broadcast_loop error: %s", exc)
         await asyncio.sleep(1)
+
+
+@app.get("/api/events/live")
+async def sse_live(request: Request, _: str = Depends(verify)):
+    """Server-Sent Events feed — simpler alternative to WebSocket for status updates.
+
+    Streams the current snapshot as a JSON ``data:`` event every 2 seconds.
+    Clients that have browser issues with WebSocket auth can use this endpoint
+    with standard HTTP Basic Auth headers.
+
+    Each event is formatted per the SSE spec::
+
+        data: <json>\\n\\n
+
+    The connection closes automatically when the client disconnects.
+    """
+
+    async def event_stream():
+        while True:
+            if await request.is_disconnected():
+                break
+            snap = read_snapshot("data/snapshot.json") or {"running": False}
+            yield f"data: {json.dumps(snap)}\n\n"
+            await asyncio.sleep(2)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.websocket("/ws/live")

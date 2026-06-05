@@ -1642,3 +1642,111 @@ def test_backtest_debug_metrics_shape(tmp_path, monkeypatch):
     assert metrics["sharpe"] == 1.25
     assert metrics["max_drawdown_pct"] == 8.5
     assert metrics["cagr_pct"] == 22.3
+
+
+# ---------------------------------------------------------------------------
+# /api/events/live  — Server-Sent Events endpoint
+# ---------------------------------------------------------------------------
+
+def test_sse_requires_auth(client):
+    """SSE endpoint returns 401 when no credentials are supplied."""
+    resp = client.get("/api/events/live")
+    assert resp.status_code == 401
+
+
+def test_sse_returns_event_stream_content_type(tmp_path, monkeypatch):
+    """SSE endpoint responds with text/event-stream content-type.
+
+    Tests the generator directly to avoid blocking on the infinite stream.
+    """
+    import asyncio
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    snapshot = {"running": True, "mode": "paper", "equity": 100000.0}
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "snapshot.json").write_text(json.dumps(snapshot))
+
+    # Call the endpoint directly via TestClient to verify content-type header.
+    # We mock asyncio.sleep to prevent the 2-second delay in the generator so
+    # the test completes immediately after producing one event.
+    from unittest.mock import AsyncMock, patch as _patch
+
+    async def _run():
+        with _patch("asyncio.sleep", new=AsyncMock(side_effect=Exception("stop"))):
+            from api.main import app
+            from starlette.testclient import TestClient as TC
+            c = TC(app, raise_server_exceptions=False)
+            with c.stream("GET", "/api/events/live", auth=AUTH) as resp:
+                assert resp.status_code == 200
+                assert "text/event-stream" in resp.headers.get("content-type", "")
+                first_chunk = b""
+                for chunk in resp.iter_bytes():
+                    first_chunk = chunk
+                    break
+            return first_chunk
+
+    first_chunk = asyncio.run(_run())
+    assert first_chunk.startswith(b"data:"), (
+        f"expected SSE 'data:' prefix, got: {first_chunk!r}"
+    )
+
+
+def test_sse_event_contains_snapshot_fields(tmp_path, monkeypatch):
+    """The first SSE event payload deserialises to the seeded snapshot.
+
+    Uses the async generator directly to avoid blocking on the infinite stream.
+    """
+    import asyncio
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    snapshot = {"running": True, "mode": "paper", "equity": 50000.0}
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "snapshot.json").write_text(json.dumps(snapshot))
+
+    # Drive the async generator directly — get the first yielded value.
+    async def _first_event():
+        from unittest.mock import AsyncMock as AM, MagicMock as MM
+        # Fake request that reports not-disconnected on first call.
+        fake_request = MM()
+        fake_request.is_disconnected = AM(return_value=False)
+        from api.main import sse_live
+        resp = await sse_live(fake_request, _="admin")
+        # resp.body_iterator is the async generator; pull the first value.
+        return await resp.body_iterator.__anext__()
+
+    raw = asyncio.run(_first_event())
+
+    # Strip the "data: " prefix and trailing newlines, then parse JSON.
+    line = raw.strip()
+    assert line.startswith("data: ")
+    payload = json.loads(line[len("data: "):])
+    assert payload["running"] is True
+    assert payload["mode"] == "paper"
+    assert payload["equity"] == 50000.0
+
+
+def test_sse_fallback_when_snapshot_missing(tmp_path, monkeypatch):
+    """SSE returns {running: False} when snapshot.json does not exist.
+
+    Uses the async generator directly to avoid blocking on the infinite stream.
+    """
+    import asyncio
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()  # no snapshot.json
+
+    async def _first_event():
+        from unittest.mock import AsyncMock as AM, MagicMock as MM
+        fake_request = MM()
+        fake_request.is_disconnected = AM(return_value=False)
+        from api.main import sse_live
+        resp = await sse_live(fake_request, _="admin")
+        return await resp.body_iterator.__anext__()
+
+    raw = asyncio.run(_first_event())
+    line = raw.strip()
+    assert line.startswith("data: ")
+    payload = json.loads(line[len("data: "):])
+    assert payload == {"running": False}
