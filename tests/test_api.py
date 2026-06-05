@@ -707,6 +707,145 @@ def test_universe_cache_is_used(tmp_path, monkeypatch):
     assert call_count["n"] == 1, f"Expected 1 backend call, got {call_count['n']}"
 
 
+# ---------------------------------------------------------------------------
+# Autonomous simulator endpoints — /api/simulator/*
+# ---------------------------------------------------------------------------
+
+def _fresh_sim_client(tmp_path, monkeypatch):
+    """Helper: return a TestClient with a freshly-reset simulator state."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(exist_ok=True)
+    (data_dir / "snapshot.json").write_text(json.dumps({"running": False}))
+    (data_dir / "backtest_gate.json").write_text(json.dumps({"passed": False}))
+
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)  # resets _sim_states to {}
+
+    return TestClient(api_main.app), api_main
+
+
+# 1. POST /api/simulator/start returns {started: true} with valid params
+def test_simulator_start_returns_started(tmp_path, monkeypatch):
+    c, _ = _fresh_sim_client(tmp_path, monkeypatch)
+    resp = c.post("/api/simulator/start", json={"capital": 200000, "risk_pct": 1.5, "max_positions": 3}, auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["started"] is True
+    assert body["running"] is True
+
+
+# 2. POST /api/simulator/start with no auth → 401
+def test_simulator_start_no_auth(tmp_path, monkeypatch):
+    c, _ = _fresh_sim_client(tmp_path, monkeypatch)
+    resp = c.post("/api/simulator/start", json={})
+    assert resp.status_code == 401
+
+
+# 3. POST /api/simulator/start when already running → returns message
+def test_simulator_start_already_running(tmp_path, monkeypatch):
+    c, _ = _fresh_sim_client(tmp_path, monkeypatch)
+    c.post("/api/simulator/start", json={}, auth=AUTH)
+    resp = c.post("/api/simulator/start", json={}, auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["started"] is False
+    assert body["running"] is True
+    assert "Already running" in body["message"]
+
+
+# 4. POST /api/simulator/stop returns required fields
+def test_simulator_stop_returns_expected_fields(tmp_path, monkeypatch):
+    c, _ = _fresh_sim_client(tmp_path, monkeypatch)
+    c.post("/api/simulator/start", json={}, auth=AUTH)
+    resp = c.post("/api/simulator/stop", auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "stopped" in body
+    assert "elapsed_seconds" in body
+    assert "total_trades" in body
+    assert "final_pnl" in body
+    assert body["stopped"] is True
+
+
+# 5. POST /api/simulator/stop with no auth → 401
+def test_simulator_stop_no_auth(tmp_path, monkeypatch):
+    c, _ = _fresh_sim_client(tmp_path, monkeypatch)
+    resp = c.post("/api/simulator/stop")
+    assert resp.status_code == 401
+
+
+# 6. GET /api/simulator/status returns required fields
+def test_simulator_status_required_fields(tmp_path, monkeypatch):
+    c, _ = _fresh_sim_client(tmp_path, monkeypatch)
+    resp = c.get("/api/simulator/status", auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    required = {
+        "running", "elapsed_seconds", "total_trades", "win_trades",
+        "loss_trades", "pnl_inr", "equity_curve", "recent_trades", "current_positions",
+    }
+    assert required.issubset(body.keys()), f"Missing fields: {required - body.keys()}"
+
+
+# 7. GET /api/simulator/status with no auth → 401
+def test_simulator_status_no_auth(tmp_path, monkeypatch):
+    c, _ = _fresh_sim_client(tmp_path, monkeypatch)
+    resp = c.get("/api/simulator/status")
+    assert resp.status_code == 401
+
+
+# 8. GET /api/simulator/equity-curve returns a list
+def test_simulator_equity_curve_returns_list(tmp_path, monkeypatch):
+    c, _ = _fresh_sim_client(tmp_path, monkeypatch)
+    resp = c.get("/api/simulator/equity-curve", auth=AUTH)
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+# 9. GET /api/simulator/equity-curve with no auth → 401
+def test_simulator_equity_curve_no_auth(tmp_path, monkeypatch):
+    c, _ = _fresh_sim_client(tmp_path, monkeypatch)
+    resp = c.get("/api/simulator/equity-curve")
+    assert resp.status_code == 401
+
+
+# 10. Equity curve entries have 't' (int) and 'v' (float) fields when non-empty
+def test_simulator_equity_curve_entry_schema(tmp_path, monkeypatch):
+    c, _ = _fresh_sim_client(tmp_path, monkeypatch)
+    c.post("/api/simulator/start", json={"capital": 100000}, auth=AUTH)
+    resp = c.get("/api/simulator/equity-curve", auth=AUTH)
+    assert resp.status_code == 200
+    curve = resp.json()
+    assert len(curve) >= 1, "Expected at least one equity curve entry after start"
+    entry = curve[0]
+    assert "t" in entry and isinstance(entry["t"], int)
+    assert "v" in entry and isinstance(entry["v"], float)
+
+
+# 11. POST /api/simulator/start with capital=100000 → status shows correct starting equity
+def test_simulator_start_capital_reflected_in_equity_curve(tmp_path, monkeypatch):
+    c, _ = _fresh_sim_client(tmp_path, monkeypatch)
+    c.post("/api/simulator/start", json={"capital": 100000}, auth=AUTH)
+    resp = c.get("/api/simulator/equity-curve", auth=AUTH)
+    assert resp.status_code == 200
+    curve = resp.json()
+    assert len(curve) >= 1
+    assert curve[0]["v"] == 100000.0
+
+
+# 12. After start+stop cycle, status shows running=False
+def test_simulator_start_stop_cycle_shows_not_running(tmp_path, monkeypatch):
+    c, _ = _fresh_sim_client(tmp_path, monkeypatch)
+    c.post("/api/simulator/start", json={}, auth=AUTH)
+    c.post("/api/simulator/stop", auth=AUTH)
+    resp = c.get("/api/simulator/status", auth=AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["running"] is False
+
+
 def test_config_cache_ttl_is_60s(tmp_path, monkeypatch):
     """config cache key is stored with 60s TTL — entry absent before first call."""
     monkeypatch.chdir(tmp_path)

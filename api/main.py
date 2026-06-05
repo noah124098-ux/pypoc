@@ -1307,6 +1307,419 @@ def simulator_set_params(body: dict, _: str = Depends(verify)):
 
 
 # ---------------------------------------------------------------------------
+# Autonomous simulator — start/stop/status/equity-curve
+# ---------------------------------------------------------------------------
+
+import random
+import uuid as _uuid
+from dataclasses import dataclass, field as _dc_field
+
+
+@dataclass
+class _SimulatorState:
+    running: bool = False
+    start_time: float = 0.0
+    capital: float = 500_000.0
+    risk_pct: float = 1.0
+    max_positions: int = 5
+    use_live_data: bool = False
+    equity_curve: list = _dc_field(default_factory=list)
+    trade_log: list = _dc_field(default_factory=list)
+    # background task handle
+    _task: object = None
+
+
+# Single shared simulator instance (keyed by "default")
+_sim_states: dict[str, _SimulatorState] = {}
+
+# Synthetic base prices for Nifty 50 symbols — updated each tick in the loop
+_sim_prices: dict[str, float] = {}
+
+# Tick count per open trade for auto-close logic
+_sim_open_ticks: dict[str, int] = {}
+
+
+def _get_or_create_sim() -> _SimulatorState:
+    if "default" not in _sim_states:
+        _sim_states["default"] = _SimulatorState()
+    return _sim_states["default"]
+
+
+async def _simulator_loop(state: _SimulatorState) -> None:
+    """Background asyncio task: runs strategy evaluations on synthetic prices."""
+    import math
+    import pandas as pd
+    from core.config import load_settings, RiskCfg, ExecutionCfg
+    from core.broker.paper import PaperBroker
+    from core.risk.guardrails import Guardrails, MarketContext, PortfolioState
+    from core.risk.sizing import position_size
+    from core.types import Regime, Side, Signal, OrderType
+    from core.data.universe import resolve_universe
+    from core.strategies.mean_reversion import MeanReversion
+    from core.strategies.trend_breakout import TrendBreakout
+    from core.strategies.volatility_compression import VolatilityCompression
+    from core.strategies.rsi_bounce import RsiBounce
+
+    # Build a minimal settings object for the simulator
+    settings = load_settings()
+    # Override risk params from user-supplied values
+    settings.risk.per_trade_risk_pct = state.risk_pct
+    settings.risk.max_open_positions = state.max_positions
+
+    exec_cfg = settings.execution
+    broker = PaperBroker(starting_cash=state.capital, exec_cfg=exec_cfg)
+    guardrails = Guardrails(settings.risk, settings.market, settings.execution)
+
+    symbols = resolve_universe("nifty50", [])
+
+    # Initialise synthetic prices (realistic NSE mid-caps: 500–3000 range)
+    _price_seeds = {
+        "RELIANCE": 2900, "TCS": 3600, "HDFCBANK": 1700, "INFY": 1500, "ICICIBANK": 1200,
+        "HINDUNILVR": 2400, "ITC": 450, "SBIN": 800, "BHARTIARTL": 1600, "KOTAKBANK": 1800,
+        "LT": 3500, "AXISBANK": 1100, "ASIANPAINT": 2800, "MARUTI": 12000, "TITAN": 3300,
+        "BAJFINANCE": 7000, "HCLTECH": 1600, "WIPRO": 550, "ONGC": 250, "POWERGRID": 330,
+        "NTPC": 380, "ULTRACEMCO": 10000, "BAJAJFINSV": 1700, "INDUSINDBK": 900, "NESTLEIND": 2200,
+        "TATAMOTORS": 920, "JSWSTEEL": 900, "TATASTEEL": 150, "CIPLA": 1500, "DIVISLAB": 5000,
+        "DRREDDY": 5500, "EICHERMOT": 4500, "BPCL": 380, "COALINDIA": 430, "ADANIPORTS": 1300,
+        "ADANIENT": 2600, "APOLLOHOSP": 7000, "BRITANNIA": 5000, "GRASIM": 2700, "HEROMOTOCO": 4800,
+        "HINDALCO": 660, "M&M": 2900, "SUNPHARMA": 1700, "TATACONSUM": 1000, "TECHM": 1400,
+        "TRENT": 5500, "ULTRACEMCO": 10000, "UPL": 550, "VEDL": 450, "ZOMATO": 250,
+    }
+    global _sim_prices, _sim_open_ticks
+    _sim_prices = {}
+    for sym in symbols:
+        _sim_prices[sym] = float(_price_seeds.get(sym, 1000))
+    _sim_open_ticks = {}
+
+    # Build minimal OHLCV history for each symbol (60 bars of synthetic candles)
+    _price_history: dict[str, list] = {}
+    for sym in symbols:
+        base = _sim_prices[sym]
+        hist = []
+        p = base * 0.9
+        for _ in range(60):
+            o = p
+            c = o * (1 + random.gauss(0.0002, 0.005))
+            h = max(o, c) * (1 + abs(random.gauss(0, 0.002)))
+            l = min(o, c) * (1 - abs(random.gauss(0, 0.002)))
+            v = random.randint(100_000, 2_000_000)
+            hist.append({"open": o, "high": h, "low": l, "close": c, "volume": v})
+            p = c
+        _price_history[sym] = hist
+
+    strategies = [
+        MeanReversion(),
+        TrendBreakout(),
+        VolatilityCompression(),
+        RsiBounce(),
+    ]
+
+    # Determine tick interval: 5s outside market hours (replay), 30s during market hours
+    def _interval() -> float:
+        now_ist = datetime.now()
+        h, m = now_ist.hour, now_ist.minute
+        in_market = (h == 9 and m >= 15) or (10 <= h <= 14) or (h == 15 and m <= 30)
+        return 30.0 if (in_market and state.use_live_data) else 5.0
+
+    def _current_regime() -> Regime:
+        """Read regime from live snapshot if available, else default to RANGE."""
+        try:
+            snap = read_snapshot("data/snapshot.json")
+            if snap and snap.current_regime:
+                return Regime(snap.current_regime)
+        except Exception:
+            pass
+        return Regime.RANGE
+
+    tick_count = 0
+    while state.running:
+        interval = _interval()
+        await asyncio.sleep(interval)
+        if not state.running:
+            break
+
+        tick_count += 1
+        regime = _current_regime()
+
+        # Advance synthetic prices for all symbols
+        for sym in symbols:
+            drift = 0.0001 if regime == Regime.TREND else (-0.00005 if regime == Regime.VOLATILE else 0.0)
+            _sim_prices[sym] *= (1 + drift + random.gauss(0, 0.001))
+            _sim_prices[sym] = max(_sim_prices[sym], 1.0)
+            # Append a new synthetic candle to history
+            base = _sim_prices[sym]
+            o = base
+            c = base * (1 + random.gauss(drift, 0.003))
+            h = max(o, c) * (1 + abs(random.gauss(0, 0.001)))
+            l = min(o, c) * (1 - abs(random.gauss(0, 0.001)))
+            v = random.randint(80_000, 1_500_000)
+            _price_history[sym].append({"open": o, "high": h, "low": l, "close": c, "volume": v})
+            # Keep history window at 120 candles max
+            if len(_price_history[sym]) > 120:
+                _price_history[sym] = _price_history[sym][-120:]
+
+        # Update broker with latest prices so SL/target auto-exits fire
+        broker.update_market_prices(_sim_prices)
+
+        # Increment open-position tick counters and auto-close after 30 ticks
+        for sym in list(_sim_open_ticks.keys()):
+            _sim_open_ticks[sym] = _sim_open_ticks.get(sym, 0) + 1
+            if _sim_open_ticks[sym] >= 30:
+                pos = broker.get_position(sym)
+                if pos is not None:
+                    exit_px = _sim_prices.get(sym, pos.last_price)
+                    # Place a closing SELL/BUY order
+                    close_side = Side.SELL if sym in broker._positions else Side.BUY
+                    broker.place_order(
+                        symbol=sym,
+                        side=close_side,
+                        qty=pos.qty,
+                        order_type=OrderType.MARKET,
+                        stop_loss=exit_px * 0.99,
+                        target=None,
+                        strategy=pos.strategy,
+                    )
+                    # Record closed trade in our log
+                    for tr in state.trade_log:
+                        if tr["symbol"] == sym and tr["status"] == "OPEN":
+                            pnl = (exit_px - tr["entry_price"]) * tr["qty"] if tr["side"] == "BUY" else (tr["entry_price"] - exit_px) * tr["qty"]
+                            tr["exit_price"] = round(exit_px, 2)
+                            tr["pnl"] = round(pnl, 2)
+                            tr["status"] = "CLOSED"
+                            tr["reason"] = "time_exit"
+                            break
+                del _sim_open_ticks[sym]
+
+        # Check if any auto-exits happened via SL/target (broker.trade_log is the source of truth)
+        # Sync status for open trades that broker has since closed
+        open_symbols_in_log = {tr["symbol"] for tr in state.trade_log if tr["status"] == "OPEN"}
+        broker_position_symbols = {p.symbol for p in broker.get_positions()}
+        for sym in open_symbols_in_log - broker_position_symbols:
+            # Broker closed the position (SL or target hit)
+            exit_px = _sim_prices.get(sym, 0.0)
+            for tr in state.trade_log:
+                if tr["symbol"] == sym and tr["status"] == "OPEN":
+                    pnl = (exit_px - tr["entry_price"]) * tr["qty"] if tr["side"] == "BUY" else (tr["entry_price"] - exit_px) * tr["qty"]
+                    tr["exit_price"] = round(exit_px, 2)
+                    tr["pnl"] = round(pnl, 2)
+                    tr["status"] = "CLOSED"
+                    tr["reason"] = "sl_or_target"
+                    break
+            _sim_open_ticks.pop(sym, None)
+
+        # Evaluate strategies and generate signals
+        equity = broker.equity()
+        portfolio = PortfolioState(
+            equity=equity,
+            starting_equity_today=state.capital,
+            peak_equity=max((pt["v"] for pt in state.equity_curve), default=equity),
+            open_positions=broker.get_positions(),
+            realized_pnl_today=broker.realized_pnl,
+            last_exit_by_symbol={},
+            halted=False,
+            halt_reason="",
+        )
+        market_ctx = MarketContext(
+            now=datetime.now(),
+            nifty_ltp=_sim_prices.get("RELIANCE", 0.0),
+            nifty_change_pct_15m=0.0,
+            vix=15.0,
+            vix_change_pct_15m=0.0,
+            last_tick_age_seconds=2.0,
+            avg_daily_volumes={sym: 1_000_000 for sym in symbols},
+            spread_pct_by_symbol={sym: 0.05 for sym in symbols},
+        )
+
+        signals_this_tick = 0
+        for sym in symbols:
+            if sym in broker._positions or sym in broker._short_positions:
+                continue  # already have a position
+            hist = _price_history.get(sym, [])
+            if len(hist) < 55:
+                continue
+            df = pd.DataFrame(hist[-80:])
+            for strat in strategies:
+                if not strat.supports(regime):
+                    continue
+                try:
+                    sig = strat.evaluate(sym, df, regime)
+                except Exception:
+                    sig = None
+                if sig is None:
+                    continue
+
+                qty = max(1, int(
+                    equity * (state.risk_pct / 100.0) / abs(sig.entry_price - sig.stop_loss)
+                )) if abs(sig.entry_price - sig.stop_loss) > 0 else 1
+
+                decision = guardrails.check(sig, qty, portfolio, market_ctx)
+                if not decision.allow:
+                    continue
+
+                # Place the paper order
+                broker._latest_prices[sym] = _sim_prices[sym]
+                order = broker.place_order(
+                    symbol=sym,
+                    side=sig.side,
+                    qty=qty,
+                    order_type=OrderType.MARKET,
+                    stop_loss=sig.stop_loss,
+                    target=sig.target,
+                    strategy=sig.strategy,
+                )
+                if order.status.value == "FILLED":
+                    trade_entry = {
+                        "id": str(_uuid.uuid4()),
+                        "symbol": sym,
+                        "side": sig.side.value,
+                        "qty": qty,
+                        "entry_price": round(order.filled_price, 2),
+                        "exit_price": None,
+                        "pnl": None,
+                        "strategy": sig.strategy,
+                        "status": "OPEN",
+                        "ts": int(time.time()),
+                        "reason": sig.rationale or "",
+                    }
+                    state.trade_log.append(trade_entry)
+                    _sim_open_ticks[sym] = 0
+                    signals_this_tick += 1
+                    # Update portfolio for subsequent signal checks this tick
+                    portfolio = PortfolioState(
+                        equity=broker.equity(),
+                        starting_equity_today=state.capital,
+                        peak_equity=max((pt["v"] for pt in state.equity_curve), default=broker.equity()),
+                        open_positions=broker.get_positions(),
+                        realized_pnl_today=broker.realized_pnl,
+                        last_exit_by_symbol={},
+                        halted=False,
+                        halt_reason="",
+                    )
+                break  # one signal per symbol per tick
+
+        # Snapshot equity curve
+        state.equity_curve.append({"t": int(time.time()), "v": round(broker.equity(), 2)})
+        # Keep equity curve bounded (max 2000 points)
+        if len(state.equity_curve) > 2000:
+            state.equity_curve = state.equity_curve[-2000:]
+
+
+@app.post("/api/simulator/start")
+async def simulator_start(body: dict, _: str = Depends(verify)):
+    """Start the autonomous simulator loop.
+
+    Body: ``{capital?, risk_pct?, max_positions?, use_live_data?}``
+    Returns: ``{started: bool, running: bool, message: str}``
+    """
+    state = _get_or_create_sim()
+    if state.running:
+        return {"started": False, "running": True, "message": "Already running"}
+
+    state.capital = float(body.get("capital") or 500_000.0)
+    state.risk_pct = float(body.get("risk_pct") or 1.0)
+    state.max_positions = int(body.get("max_positions") or 5)
+    state.use_live_data = bool(body.get("use_live_data", False))
+    state.running = True
+    state.start_time = time.time()
+    state.equity_curve = [{"t": int(time.time()), "v": round(state.capital, 2)}]
+    state.trade_log = []
+
+    task = asyncio.get_event_loop().create_task(_simulator_loop(state))
+    state._task = task
+    logger.info(
+        "Simulator started: capital=%.0f risk_pct=%.2f max_pos=%d",
+        state.capital, state.risk_pct, state.max_positions,
+    )
+    return {"started": True, "running": True, "message": "Simulator started"}
+
+
+@app.post("/api/simulator/stop")
+async def simulator_stop(_: str = Depends(verify)):
+    """Stop the autonomous simulator loop.
+
+    Returns: ``{stopped: bool, elapsed_seconds: int, total_trades: int, final_pnl: float}``
+    """
+    state = _get_or_create_sim()
+    if not state.running:
+        return {"stopped": False, "elapsed_seconds": 0, "total_trades": 0, "final_pnl": 0.0,
+                "message": "Simulator is not running"}
+
+    state.running = False
+    if state._task is not None:
+        try:
+            state._task.cancel()
+        except Exception:
+            pass
+        state._task = None
+
+    elapsed = int(time.time() - state.start_time) if state.start_time else 0
+    total_trades = len(state.trade_log)
+    closed = [t for t in state.trade_log if t["status"] == "CLOSED" and t["pnl"] is not None]
+    final_pnl = sum(t["pnl"] for t in closed)
+
+    logger.info("Simulator stopped: elapsed=%ds trades=%d pnl=%.2f", elapsed, total_trades, final_pnl)
+    return {
+        "stopped": True,
+        "elapsed_seconds": elapsed,
+        "total_trades": total_trades,
+        "final_pnl": round(final_pnl, 2),
+    }
+
+
+@app.get("/api/simulator/status")
+def simulator_status(_: str = Depends(verify)):
+    """Return the current simulator state.
+
+    Returns running flag, trade summary, P&L, recent trades, equity curve, and open positions.
+    """
+    state = _get_or_create_sim()
+    elapsed = int(time.time() - state.start_time) if state.start_time else 0
+    closed = [t for t in state.trade_log if t["status"] == "CLOSED" and t["pnl"] is not None]
+    win_trades = sum(1 for t in closed if t["pnl"] > 0)
+    loss_trades = sum(1 for t in closed if t["pnl"] <= 0)
+    pnl_inr = round(sum(t["pnl"] for t in closed), 2)
+    recent_trades = sorted(state.trade_log, key=lambda t: t["ts"], reverse=True)[:20]
+
+    # Build current positions list from trade_log OPEN entries
+    current_positions = [
+        {
+            "symbol": t["symbol"],
+            "side": t["side"],
+            "qty": t["qty"],
+            "entry_price": t["entry_price"],
+            "strategy": t["strategy"],
+            "ts": t["ts"],
+        }
+        for t in state.trade_log if t["status"] == "OPEN"
+    ]
+
+    # Last 100 equity curve points for status response
+    eq_tail = state.equity_curve[-100:] if state.equity_curve else []
+
+    return {
+        "running": state.running,
+        "elapsed_seconds": elapsed,
+        "total_trades": len(state.trade_log),
+        "win_trades": win_trades,
+        "loss_trades": loss_trades,
+        "pnl_inr": pnl_inr,
+        "equity_curve": eq_tail,
+        "recent_trades": recent_trades,
+        "current_positions": current_positions,
+    }
+
+
+@app.get("/api/simulator/equity-curve")
+def simulator_equity_curve(_: str = Depends(verify)):
+    """Return the full equity curve for charting.
+
+    Returns: ``[{t: unix_timestamp, v: float}, ...]``
+    """
+    state = _get_or_create_sim()
+    return state.equity_curve
+
+
+# ---------------------------------------------------------------------------
 # Nifty breadth endpoint  — % of Nifty 50 stocks above their 50-DMA
 # ---------------------------------------------------------------------------
 
