@@ -1262,3 +1262,50 @@ def test_calendar_upcoming_label_is_recognized_type(client):
         assert event["label"] in valid_labels, (
             f"Unexpected label '{event['label']}' for {event['date']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/preflight
+# ---------------------------------------------------------------------------
+
+def test_preflight_requires_auth(client):
+    resp = client.get("/api/preflight")
+    assert resp.status_code == 401
+
+
+def test_preflight_returns_checks_structure(client, tmp_path):
+    """GET /api/preflight returns {checks: [...], all_passed: bool}."""
+    resp = client.get("/api/preflight", auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "checks" in body
+    assert "all_passed" in body
+    assert isinstance(body["checks"], list)
+    assert isinstance(body["all_passed"], bool)
+
+
+def test_preflight_each_check_has_required_fields(client):
+    """Every check object must have name, passed, and message fields."""
+    resp = client.get("/api/preflight", auth=AUTH)
+    assert resp.status_code == 200
+    for check in resp.json()["checks"]:
+        assert "name" in check, f"missing 'name' in {check}"
+        assert "passed" in check, f"missing 'passed' in {check}"
+        assert "message" in check, f"missing 'message' in {check}"
+        assert isinstance(check["passed"], bool)
+
+
+def test_preflight_returns_10_checks(client):
+    """Preflight should run exactly 10 checks."""
+    resp = client.get("/api/preflight", auth=AUTH)
+    assert resp.status_code == 200
+    assert len(resp.json()["checks"]) == 10
+
+
+def test_preflight_all_passed_reflects_checks(client):
+    """all_passed must be True only when every check passes."""
+    resp = client.get("/api/preflight", auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    computed = all(c["passed"] for c in body["checks"])
+    assert body["all_passed"] == computed
