@@ -2223,9 +2223,10 @@ async def websocket_live(websocket: WebSocket, token: str = ""):
         # Send current snapshot immediately on connect so clients don't wait up to 1 s.
         snap = read_snapshot('data/snapshot.json') or {'running': False}
         await websocket.send_json(snap)
+        # Keep alive: ping every 15s, exit cleanly on disconnect
         while True:
-            # Keep the connection alive; wait for client disconnect or any message.
-            await websocket.receive_text()
+            await asyncio.sleep(15)
+            await websocket.send_json({"ping": True})
     except (WebSocketDisconnect, Exception):
         manager.disconnect(websocket)
 

@@ -56,11 +56,14 @@ export function useSnapshot() {
       ws.onmessage = (e) => {
         if (cancelled) return
         try {
+          const parsed = JSON.parse(e.data as string)
+          // Skip keepalive pings
+          if (parsed && parsed.ping) return
           const json = e.data as string
           // Only update state if the payload actually changed
           if (json !== lastJsonRef.current) {
             lastJsonRef.current = json
-            setSnap(JSON.parse(json))
+            setSnap(parsed)
           }
         } catch {
           // ignore malformed messages
