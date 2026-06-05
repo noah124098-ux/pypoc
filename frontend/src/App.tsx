@@ -16,6 +16,7 @@ const CostsTab = lazy(() => import('./pages/CostsTab').then(m => ({ default: m.C
 const PortfolioTab = lazy(() => import('./pages/PortfolioTab').then(m => ({ default: m.PortfolioTab })))
 const AngelOneTab = lazy(() => import('./pages/AngelOneTab').then(m => ({ default: m.AngelOneTab })))
 const AnalyticsTab = lazy(() => import('./pages/AnalyticsTab').then(m => ({ default: m.AnalyticsTab })))
+const SimulatorTab = lazy(() => import('./pages/SimulatorTab').then(m => ({ default: m.SimulatorTab })))
 const StatusPage = lazy(() => import('./pages/StatusPage').then(m => ({ default: m.StatusPage })))
 const ApiDocsPage = lazy(() => import('./pages/ApiDocsPage').then(m => ({ default: m.ApiDocsPage })))
 
@@ -32,6 +33,7 @@ const NAV = [
   { path: 'portfolio', label: '🏦 Portfolio' },
   { path: 'angel-one', label: '🔌 Angel One' },
   { path: 'analytics', label: '📈 Analytics' },
+  { path: 'simulator', label: '🎮 Simulator' },
   { path: 'status', label: '🔧 System' },
   { path: 'api-docs', label: '📡 API' },
 ]
@@ -469,6 +471,7 @@ function Layout({ darkMode, onToggleDark }: { darkMode: boolean; onToggleDark: (
               <Route path="portfolio" element={<PortfolioTab />} />
               <Route path="angel-one" element={<AngelOneTab />} />
               <Route path="analytics" element={<AnalyticsTab />} />
+              <Route path="simulator" element={<SimulatorTab snap={snap} />} />
               <Route path="status" element={<StatusPage />} />
               <Route path="api-docs" element={<ApiDocsPage />} />
             </Routes>

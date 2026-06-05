@@ -982,6 +982,135 @@ def resume_agent(_: str = Depends(verify)):
     return {"queued": True, "command_id": cmd.id}
 
 
+@app.post("/api/command/place-paper-order")
+def place_paper_order_cmd(body: dict, _: str = Depends(verify)):
+    """Enqueue a place_paper_order command to the command queue.
+
+    Body: ``{symbol, side, qty, price, strategy, stop_loss?, target?}``
+    Returns: ``{queued: bool, command_id: str}``
+    """
+    from core.command_queue import enqueue
+
+    symbol = body.get("symbol", "").strip().upper()
+    side = body.get("side", "BUY").strip().upper()
+    qty = int(body.get("qty", 1))
+    price = float(body.get("price", 0) or 0)
+    strategy = body.get("strategy", "manual").strip()
+    stop_loss = body.get("stop_loss")
+    target = body.get("target")
+
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    if side not in ("BUY", "SELL"):
+        raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+    if qty < 1:
+        raise HTTPException(status_code=400, detail="qty must be >= 1")
+
+    params: dict = {"symbol": symbol, "side": side, "qty": qty,
+                    "price": price, "strategy": strategy}
+    if stop_loss is not None:
+        params["stop_loss"] = float(stop_loss)
+    if target is not None:
+        params["target"] = float(target)
+
+    cmd = enqueue("place_paper_order", params)
+    return {"queued": True, "command_id": cmd.id,
+            "message": f"Order queued: {qty} {symbol} {side} @ {price}"}
+
+
+# ---------------------------------------------------------------------------
+# Simulator endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/api/simulator/trade")
+def simulator_trade(body: dict, _: str = Depends(verify)):
+    """Simulate a manual paper trade by enqueuing a place_paper_order command.
+
+    Body: ``{symbol, side, qty, price, stop_loss?, target?, strategy?}``
+    Returns: ``{queued: bool, command_id: str, message: str}``
+    """
+    from core.command_queue import enqueue
+
+    symbol = (body.get("symbol") or "").strip().upper()
+    side = (body.get("side") or "BUY").strip().upper()
+    qty = int(body.get("qty") or 1)
+    price = float(body.get("price") or 0)
+    stop_loss = body.get("stop_loss")
+    target = body.get("target")
+    strategy = (body.get("strategy") or "manual").strip()
+
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    if side not in ("BUY", "SELL"):
+        raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+    if qty < 1:
+        raise HTTPException(status_code=400, detail="qty must be >= 1")
+    if price <= 0:
+        raise HTTPException(status_code=400, detail="price must be > 0")
+
+    params: dict = {"symbol": symbol, "side": side, "qty": qty,
+                    "price": price, "strategy": strategy}
+    if stop_loss is not None:
+        try:
+            params["stop_loss"] = float(stop_loss)
+        except (TypeError, ValueError):
+            pass
+    if target is not None:
+        try:
+            params["target"] = float(target)
+        except (TypeError, ValueError):
+            pass
+
+    cmd = enqueue("place_paper_order", params)
+    sl_str = f" | SL: ₹{params['stop_loss']:.2f}" if "stop_loss" in params else ""
+    tgt_str = f" | Target: ₹{params['target']:.2f}" if "target" in params else ""
+    message = f"ORDER PLACED — {qty} {symbol} @ ₹{price:.2f}{sl_str}{tgt_str}"
+    return {"queued": True, "command_id": cmd.id, "message": message}
+
+
+@app.post("/api/simulator/set-params")
+def simulator_set_params(body: dict, _: str = Depends(verify)):
+    """Update simulation parameters via update_risk_param commands.
+
+    Body: ``{capital?, risk_pct?, max_positions?}``
+    Returns: ``{applied: bool, message: str}``
+    """
+    from core.command_queue import enqueue
+
+    applied: list[str] = []
+
+    capital = body.get("capital")
+    risk_pct = body.get("risk_pct")
+    max_positions = body.get("max_positions")
+
+    if risk_pct is not None:
+        try:
+            rp = float(risk_pct)
+            if 0 < rp <= 10:
+                enqueue("update_risk_param", {"key": "risk_per_trade_pct", "value": rp})
+                applied.append(f"risk_per_trade_pct={rp}")
+        except (TypeError, ValueError):
+            pass
+
+    if max_positions is not None:
+        try:
+            mp = int(max_positions)
+            if 1 <= mp <= 20:
+                enqueue("update_risk_param", {"key": "max_open_positions", "value": mp})
+                applied.append(f"max_open_positions={mp}")
+        except (TypeError, ValueError):
+            pass
+
+    # capital is informational only (stored in frontend state); no live param for it
+    if capital is not None:
+        applied.append(f"capital={capital} (frontend only)")
+
+    if not applied:
+        return {"applied": False, "message": "No valid parameters to update"}
+
+    return {"applied": True, "message": "Applied: " + ", ".join(applied)}
+
+
 async def _broadcast_loop() -> None:
     """Single background task: read snapshot once per second and push to ALL clients."""
     while True:

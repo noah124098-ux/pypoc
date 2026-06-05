@@ -737,3 +737,21 @@ body.light-mode select:focus {
   height: 24px;
   width: 80%;
 }
+
+/* ── Trade Simulator Console ─────────────────────────────────────────────── */
+.console-panel { background: #0a0e1a; border: 1px solid #2d3748; border-radius: 8px; padding: 16px; font-family: monospace; }
+.console-output { background: #050810; border-radius: 6px; padding: 12px; min-height: 120px; font-size: 12px; color: #4fc3f7; }
+.console-log-line { padding: 2px 0; border-bottom: 1px solid #1a1f2e; display: flex; align-items: baseline; gap: 0; flex-wrap: wrap; }
+.simulator-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.sim-label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px; }
+.sim-input { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; color: var(--text); font-size: 13px; width: 100%; outline: none; transition: border-color .15s; }
+.sim-input:focus { border-color: #4fc3f7; }
+.btn-trade-buy { background: rgba(72,187,120,.2); color: #48bb78; border: 1px solid rgba(72,187,120,.4); padding: 12px 24px; border-radius: 6px; font-size: 14px; font-weight: 700; cursor: pointer; transition: all .15s; }
+.btn-trade-buy:hover { background: rgba(72,187,120,.35); }
+.btn-trade-sell { background: rgba(252,129,129,.2); color: #fc8181; border: 1px solid rgba(252,129,129,.4); padding: 12px 24px; border-radius: 6px; font-size: 14px; font-weight: 700; cursor: pointer; transition: all .15s; }
+.btn-trade-sell:hover { background: rgba(252,129,129,.35); }
+.btn-trade-inactive { background: var(--bg3); color: var(--text2); border: 1px solid var(--border); padding: 12px 24px; border-radius: 6px; font-size: 14px; font-weight: 700; cursor: pointer; transition: all .15s; }
+.btn-trade-inactive:hover { border-color: var(--blue); color: var(--text); }
+@media (max-width: 768px) {
+  .simulator-form { grid-template-columns: 1fr; }
+}

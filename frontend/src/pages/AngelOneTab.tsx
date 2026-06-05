@@ -90,7 +90,13 @@ export function AngelOneTab() {
       if (res?.connected === true) {
         setTestResult({ ok: true, message: 'Connection successful — Angel One API is reachable.' })
       } else {
-        setTestResult({ ok: false, message: res?.message || 'Connection failed — check credentials.' })
+        // Detect "credentials not configured in backend" case
+        const msg: string = res?.message ?? 'Connection failed — check credentials.'
+        const isNotConfigured = /ANGEL_ONE_API_KEY|not configured|not set/i.test(msg)
+        const displayMsg = isNotConfigured
+          ? 'Credentials must be saved to .env first, then restart the API. Use "Save to .env" above, then run: python api/run.py'
+          : msg
+        setTestResult({ ok: false, message: displayMsg })
       }
     } catch (err: any) {
       setTestResult({ ok: false, message: err?.message || 'Connection test failed' })

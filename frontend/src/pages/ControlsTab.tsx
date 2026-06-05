@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useApi } from '../hooks/useSnapshot'
+import { useApi, apiPost } from '../hooks/useSnapshot'
 
 export function ControlsTab({ snap }: { snap: any }) {
   const { data: config } = useApi<any>('/api/config', 300000)
@@ -16,12 +16,7 @@ export function ControlsTab({ snap }: { snap: any }) {
 
   async function sendCommand(endpoint: string, body?: any) {
     try {
-      const r = await fetch('http://localhost:8502' + endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: body ? JSON.stringify(body) : undefined,
-      })
-      const d = await r.json()
+      const d = await apiPost(endpoint, body)
       setMsg(d.queued ? '✅ Command queued — agent will apply within 1 second' : '❌ Failed: ' + JSON.stringify(d))
     } catch {
       setMsg('❌ API not reachable — is the agent running?')

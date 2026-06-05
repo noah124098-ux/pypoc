@@ -11,6 +11,19 @@ function KpiCard({ label, value, sub, color }: { label: string; value: string; s
   )
 }
 
+function KpiSkeleton() {
+  return (
+    <div className="kpi-row kpi-row-skeleton">
+      {[...Array(6)].map((_, i) => (
+        <div key={i} className="kpi-card kpi-card-skeleton">
+          <div className="skeleton-line skeleton-label" />
+          <div className="skeleton-line skeleton-value" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function formatSignalTime(ts: any): string {
   if (!ts) return ''
   const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts)
@@ -90,15 +103,17 @@ export function LiveTab({ snap, connected }: { snap: any; connected: boolean }) 
         {connected ? '🟢 WebSocket connected — live 1s updates' : '⚫ Disconnected — start: service_manager.bat start-agent'}
       </div>
 
-      <div className="kpi-row">
-        <KpiCard label="Equity" value={`₹${equity.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} />
-        <KpiCard label="Day P&L" value={`₹${Math.abs(dayPnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
-          sub={`${dayPct >= 0 ? '+' : ''}${dayPct.toFixed(2)}%`} color={dayPnl >= 0 ? 'green' : 'red'} />
-        <KpiCard label="Regime" value={snap?.current_regime ?? '—'} />
-        <KpiCard label="VIX" value={vix} color={parseFloat(vix) >= 20 ? 'red' : parseFloat(vix) >= 18 ? 'yellow' : 'green'} />
-        <KpiCard label="Positions" value={`${positions.length}/5`} />
-        <KpiCard label="Status" value={snap?.halted ? '⛔ HALTED' : '✅ Running'} color={snap?.halted ? 'red' : 'green'} />
-      </div>
+      {snap === null ? <KpiSkeleton /> : (
+        <div className="kpi-row">
+          <KpiCard label="Equity" value={`₹${equity.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} />
+          <KpiCard label="Day P&L" value={`₹${Math.abs(dayPnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
+            sub={`${dayPct >= 0 ? '+' : ''}${dayPct.toFixed(2)}%`} color={dayPnl >= 0 ? 'green' : 'red'} />
+          <KpiCard label="Regime" value={snap?.current_regime ?? '—'} />
+          <KpiCard label="VIX" value={vix} color={parseFloat(vix) >= 20 ? 'red' : parseFloat(vix) >= 18 ? 'yellow' : 'green'} />
+          <KpiCard label="Positions" value={`${positions.length}/5`} />
+          <KpiCard label="Status" value={snap?.halted ? '⛔ HALTED' : '✅ Running'} color={snap?.halted ? 'red' : 'green'} />
+        </div>
+      )}
 
       <section className="section">
         <h2>Open Positions ({positions.length})</h2>
