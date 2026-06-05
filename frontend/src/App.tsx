@@ -295,6 +295,13 @@ function Sidebar({ snap, connected, darkMode, onToggleDark, onClose }: { snap: a
     ? Math.round((Date.now() / 1000) - snap.ts)
     : null
 
+  // Market breadth: % of Nifty 50 stocks above 50-DMA (refreshed every 30 min)
+  const { data: breadthData } = useApi<any>('/api/nifty-breadth', 1800000)
+  const breadthAbove: number = breadthData?.above_50dma ?? 0
+  const breadthTotal: number = breadthData?.total ?? 50
+  const breadthPct: number = breadthData?.breadth_pct ?? 0
+  const breadthColor = breadthPct >= 60 ? '#48bb78' : breadthPct >= 40 ? '#ecc94b' : '#fc8181'
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -338,6 +345,16 @@ function Sidebar({ snap, connected, darkMode, onToggleDark, onClose }: { snap: a
       </div>
 
       {halted && <div className="halt-banner">⛔ HALTED</div>}
+
+      {breadthData && (
+        <div
+          className="breadth-chip"
+          title={`${breadthAbove} of ${breadthTotal} Nifty 50 stocks above 50-DMA`}
+          style={{ borderColor: breadthColor, color: breadthColor }}
+        >
+          Breadth: {breadthAbove}/{breadthTotal} ({breadthPct}%)
+        </div>
+      )}
 
       <div className="regime-chip">{regime}</div>
 

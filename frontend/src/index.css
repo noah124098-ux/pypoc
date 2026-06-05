@@ -46,6 +46,7 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, Bl
 .eq-pnl.green { color: var(--green); }
 .eq-pnl.red { color: var(--red); }
 .halt-banner { background: rgba(252,129,129,.15); border: 1px solid var(--red); border-radius: 6px; padding: 6px 10px; color: var(--red); font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+.breadth-chip { background: var(--bg3); border-radius: 20px; padding: 4px 12px; font-size: 11px; text-align: center; margin-bottom: 6px; border: 1px solid; font-weight: 600; cursor: default; }
 .regime-chip { background: var(--bg3); border-radius: 20px; padding: 4px 12px; font-size: 12px; text-align: center; margin-bottom: 12px; color: var(--blue); border: 1px solid var(--border); }
 nav { flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .nav-link { display: block; padding: 8px 12px; border-radius: 6px; color: var(--text2); text-decoration: none; font-size: 13px; transition: all .15s; }
@@ -547,8 +548,9 @@ mark.search-highlight {
     pointer-events: auto;
   }
 
-  /* Show equity-box and regime chip in expanded sidebar */
+  /* Show equity-box, breadth chip, and regime chip in expanded sidebar */
   .equity-box { display: block; }
+  .breadth-chip { display: block; }
   .regime-chip { display: block; }
   nav { flex-direction: column; gap: 2px; }
   .nav-link { padding: 8px 12px; font-size: 13px; white-space: normal; }
