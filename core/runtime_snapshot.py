@@ -44,14 +44,26 @@ class RuntimeSnapshot:
 
 
 def write(snapshot: RuntimeSnapshot, path: str | Path) -> None:
-    """Atomic write — produce a temp file then rename so MCP readers never see partial JSON."""
+    """Atomic write — temp file then rename. On Windows falls back to direct overwrite
+    if os.replace fails because the API process has the target file open."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp_fd, tmp_name = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump(asdict(snapshot), f, default=str, indent=2)
-        os.replace(tmp_name, p)
+        try:
+            os.replace(tmp_name, p)
+        except OSError:
+            # Windows: target locked by another process — copy then delete temp
+            import shutil as _shutil
+            try:
+                _shutil.copy2(tmp_name, p)
+            finally:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
     except Exception:
         try:
             os.unlink(tmp_name)
