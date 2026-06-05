@@ -853,6 +853,8 @@ class TestApiStatusEndpoint:
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
         (tmp_path / "data").mkdir()
+        import api.main as api_main
+        api_main._cache_invalidate("status")
         from fastapi.testclient import TestClient
         from api.main import app
         c = TestClient(app)
@@ -878,6 +880,8 @@ class TestApiStatusEndpoint:
             "timestamp": "2026-06-01T00:00:00",
         }
         (data_dir / "backtest_gate.json").write_text(json.dumps(gate))
+        import api.main as api_main
+        api_main._cache_invalidate("status")
         from fastapi.testclient import TestClient
         from api.main import app
         c = TestClient(app)
@@ -898,6 +902,8 @@ class TestApiStatusEndpoint:
         (data_dir / "snapshot.json").write_text(json.dumps({"running": False}))
         gate = {"passed": True, "sharpe": 1.2}  # no timestamp
         (data_dir / "backtest_gate.json").write_text(json.dumps(gate))
+        import api.main as api_main
+        api_main._cache_invalidate("status")
         from fastapi.testclient import TestClient
         from api.main import app
         c = TestClient(app)

@@ -496,6 +496,8 @@ def test_status_missing_snapshot(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
     (tmp_path / "data").mkdir()
+    import api.main as api_main
+    api_main._cache_invalidate("status")
     from api.main import app
     c = TestClient(app)
     resp = c.get("/api/status")
@@ -508,6 +510,8 @@ def test_status_missing_gate(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
     (tmp_path / "data").mkdir()
+    import api.main as api_main
+    api_main._cache_invalidate("status")
     from api.main import app
     c = TestClient(app)
     resp = c.get("/api/status")

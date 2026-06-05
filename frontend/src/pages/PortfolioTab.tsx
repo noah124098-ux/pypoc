@@ -1,13 +1,12 @@
 import { useApi } from "../hooks/useSnapshot"
 
-export function PortfolioTab() {
+export function PortfolioTab({ snap }: { snap?: any }) {
   const { data: portfolio, loading: loadingPortfolio } = useApi("/api/portfolio/angel-one", 60000)
-  const { data: snapshot } = useApi("/api/snapshot", 5000)
 
   const p = portfolio as any
-  const s = snapshot as any
+  // Use the snap prop passed from Layout instead of polling /api/snapshot independently
   const connected = p?.connected ?? false
-  const paperEquity = s?.equity ?? 0
+  const paperEquity = snap?.equity ?? 0
   const liveEquity = p?.net_value ?? 0
   const diff = liveEquity - paperEquity
 

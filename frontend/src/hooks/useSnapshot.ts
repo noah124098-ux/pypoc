@@ -12,36 +12,108 @@ const WS_URL = (window.location.port === '8502'
 
 const BASIC_AUTH = 'Basic ' + btoa(`admin:${DASH_PASS}`)
 
+// ── Global request deduplication map ─────────────────────────────────────────
+// Maps in-flight URL → Promise so concurrent callers share one fetch.
+const _inflight = new Map<string, Promise<any>>()
+
+// ── useSnapshot ───────────────────────────────────────────────────────────────
 export function useSnapshot() {
   const [snap, setSnap] = useState<any>(null)
   const [connected, setConnected] = useState(false)
+  // 'failed' is true after MAX_ATTEMPTS consecutive failures
+  const [failed, setFailed] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
+  // Tracks the last serialised snap so we skip re-renders on identical payloads
+  const lastJsonRef = useRef<string>('')
+  // Exponential backoff state
+  const delayRef = useRef<number>(1000)
+  const attemptsRef = useRef<number>(0)
+  const MAX_ATTEMPTS = 10
+  const MAX_DELAY = 30000
 
   useEffect(() => {
+    let cancelled = false
+
     function connect() {
+      if (cancelled) return
+      if (attemptsRef.current >= MAX_ATTEMPTS) {
+        setFailed(true)
+        return
+      }
+
       const ws = new WebSocket(WS_URL)
       wsRef.current = ws
-      ws.onopen = () => setConnected(true)
-      ws.onmessage = (e) => { try { setSnap(JSON.parse(e.data)) } catch {} }
-      ws.onclose = () => { setConnected(false); setTimeout(connect, 3000) }
+
+      ws.onopen = () => {
+        if (cancelled) { ws.close(); return }
+        setConnected(true)
+        setFailed(false)
+        // Reset backoff on successful connection
+        delayRef.current = 1000
+        attemptsRef.current = 0
+      }
+
+      ws.onmessage = (e) => {
+        if (cancelled) return
+        try {
+          const json = e.data as string
+          // Only update state if the payload actually changed
+          if (json !== lastJsonRef.current) {
+            lastJsonRef.current = json
+            setSnap(JSON.parse(json))
+          }
+        } catch {
+          // ignore malformed messages
+        }
+      }
+
+      ws.onclose = () => {
+        if (cancelled) return
+        setConnected(false)
+        attemptsRef.current += 1
+        const delay = delayRef.current
+        // Double delay for next attempt, capped at MAX_DELAY
+        delayRef.current = Math.min(delay * 2, MAX_DELAY)
+        setTimeout(connect, delay)
+      }
+
       ws.onerror = () => ws.close()
     }
+
     connect()
-    return () => { wsRef.current?.close() }
+
+    return () => {
+      cancelled = true
+      wsRef.current?.close()
+    }
   }, [])
 
-  return { snap, connected }
+  return { snap, connected, connectionFailed: failed }
 }
 
+// ── apiGet (with deduplication) ───────────────────────────────────────────────
 export async function apiGet(path: string) {
-  const r = await fetch(API + path, {
+  const url = API + path
+  // Return the existing in-flight promise if one exists for this URL
+  const existing = _inflight.get(url)
+  if (existing) return existing
+
+  const promise = fetch(url, {
     headers: {
       'Accept': 'application/json',
       'Authorization': BASIC_AUTH,
     },
   })
-  if (!r.ok) throw new Error(r.statusText)
-  return r.json()
+    .then(r => {
+      if (!r.ok) throw new Error(r.statusText)
+      return r.json()
+    })
+    .finally(() => {
+      _inflight.delete(url)
+    })
+
+  _inflight.set(url, promise)
+  return promise
 }
 
 export async function apiPost(path: string, body?: any) {
@@ -96,6 +168,7 @@ export function useSSE(path: string) {
   return data
 }
 
+// ── useApi (with visibility-aware polling) ────────────────────────────────────
 export function useApi<T>(path: string, interval = 30000) {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)
@@ -108,14 +181,48 @@ export function useApi<T>(path: string, interval = 30000) {
       return
     }
 
+    let timerId: ReturnType<typeof setInterval> | null = null
+
     async function load() {
       try { setData(await apiGet(path)) } catch {} finally { setLoading(false) }
     }
+
+    function startPolling() {
+      if (interval > 0 && timerId === null) {
+        timerId = setInterval(load, interval)
+      }
+    }
+
+    function stopPolling() {
+      if (timerId !== null) {
+        clearInterval(timerId)
+        timerId = null
+      }
+    }
+
+    function handleVisibilityChange() {
+      if (document.hidden) {
+        stopPolling()
+      } else {
+        // Immediately re-fetch when tab becomes visible again, then resume polling
+        load()
+        startPolling()
+      }
+    }
+
+    // Initial fetch
     load()
-    // Only set up polling if interval > 0
-    if (interval > 0) {
-      const t = setInterval(load, interval)
-      return () => clearInterval(t)
+
+    // Only set up polling if interval > 0 and tab is currently visible
+    if (interval > 0 && !document.hidden) {
+      startPolling()
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      stopPolling()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
   }, [path, interval])
 

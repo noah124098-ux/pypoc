@@ -485,7 +485,7 @@ function Layout({ darkMode, onToggleDark }: { darkMode: boolean; onToggleDark: (
               <Route path="ai-review" element={<AiReviewTab />} />
               <Route path="controls" element={<ControlsTab snap={snap} />} />
               <Route path="costs" element={<CostsTab />} />
-              <Route path="portfolio" element={<PortfolioTab />} />
+              <Route path="portfolio" element={<PortfolioTab snap={snap} />} />
               <Route path="angel-one" element={<AngelOneTab />} />
               <Route path="analytics" element={<AnalyticsTab />} />
               <Route path="simulator" element={<SimulatorTab snap={snap} />} />

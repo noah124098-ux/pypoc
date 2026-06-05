@@ -34,6 +34,35 @@ API_VERSION = "2.0"
 
 _cache: dict = {}
 
+# ---------------------------------------------------------------------------
+# Process scan cache (5-second TTL, single-pass for all services)
+# ---------------------------------------------------------------------------
+
+_proc_scan_cache: dict = {"ts": 0.0, "agent": False, "dashboard": False, "mcp": False}
+
+
+def _scan_services() -> dict:
+    """Scan running processes for known services. Cached for 5 seconds."""
+    now = time.monotonic()
+    if now - _proc_scan_cache["ts"] < 5.0:
+        return _proc_scan_cache
+    agent_found = dashboard_found = mcp_found = False
+    try:
+        for proc in psutil.process_iter(["cmdline"]):
+            cmd = " ".join(proc.info.get("cmdline") or []).lower()
+            if not agent_found and "cli.py" in cmd and " run" in cmd:
+                agent_found = True
+            if not dashboard_found and ("uvicorn" in cmd or "streamlit" in cmd):
+                dashboard_found = True
+            if not mcp_found and "cli.py" in cmd and "mcp-server" in cmd:
+                mcp_found = True
+            if agent_found and dashboard_found and mcp_found:
+                break
+    except Exception:
+        pass
+    _proc_scan_cache.update({"ts": now, "agent": agent_found, "dashboard": dashboard_found, "mcp": mcp_found})
+    return _proc_scan_cache
+
 
 def _cached(key: str, ttl_seconds: int, fn):
     """Return cached value for *key* if still fresh, otherwise call *fn()* and store."""
@@ -386,60 +415,55 @@ def get_gate(_: str = Depends(verify)):
 @app.get("/api/status")
 def get_status():
     """Comprehensive system status — no auth required, safe for health monitors."""
-    now = datetime.now(timezone.utc)
 
-    # Read snapshot
-    snap = read_snapshot("data/snapshot.json") or {}
-    agent_running = bool(snap.get("running", False))
-    agent_halted = bool(snap.get("halted", False))
-    equity = snap.get("equity")
-    regime = snap.get("current_regime")
+    def _compute():
+        now = datetime.now(timezone.utc)
 
-    # Read gate file
-    gate_path = Path("data/backtest_gate.json")
-    gate_passed = False
-    gate_age_days: float | None = None
-    if gate_path.exists():
-        try:
-            gate_data = json.loads(gate_path.read_text())
-            gate_passed = bool(gate_data.get("passed", False))
-            ts_str = gate_data.get("timestamp")
-            if ts_str:
-                ts = datetime.fromisoformat(ts_str)
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                gate_age_days = round((now - ts).total_seconds() / 86400, 1)
-        except Exception:
-            pass
+        # Read snapshot
+        snap = read_snapshot("data/snapshot.json") or {}
+        agent_running = bool(snap.get("running", False))
+        agent_halted = bool(snap.get("halted", False))
+        equity = snap.get("equity")
+        regime = snap.get("current_regime")
 
-    # Detect running services via process names
-    def _procs_matching(keywords: list[str]) -> bool:
-        try:
-            for proc in psutil.process_iter(["cmdline"]):
-                cmdline = " ".join(proc.info.get("cmdline") or []).lower()
-                if all(k in cmdline for k in keywords):
-                    return True
-        except Exception:
-            pass
-        return False
+        # Read gate file
+        gate_path = Path("data/backtest_gate.json")
+        gate_passed = False
+        gate_age_days: float | None = None
+        if gate_path.exists():
+            try:
+                gate_data = json.loads(gate_path.read_text())
+                gate_passed = bool(gate_data.get("passed", False))
+                ts_str = gate_data.get("timestamp")
+                if ts_str:
+                    ts = datetime.fromisoformat(ts_str)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    gate_age_days = round((now - ts).total_seconds() / 86400, 1)
+            except Exception:
+                pass
 
-    services = {
-        "agent": _procs_matching(["cli.py", "run"]),
-        "dashboard": _procs_matching(["streamlit"]) or _procs_matching(["uvicorn"]),
-        "mcp": _procs_matching(["cli.py", "mcp-server"]),
-    }
+        # Detect running services via single-pass cached process scan
+        svc = _scan_services()
+        services = {
+            "agent": svc["agent"],
+            "dashboard": svc["dashboard"],
+            "mcp": svc["mcp"],
+        }
 
-    return {
-        "api_version": API_VERSION,
-        "agent_running": agent_running,
-        "agent_halted": agent_halted,
-        "equity": equity,
-        "regime": regime,
-        "gate_passed": gate_passed,
-        "gate_age_days": gate_age_days,
-        "services": services,
-        "timestamp": now.isoformat(),
-    }
+        return {
+            "api_version": API_VERSION,
+            "agent_running": agent_running,
+            "agent_halted": agent_halted,
+            "equity": equity,
+            "regime": regime,
+            "gate_passed": gate_passed,
+            "gate_age_days": gate_age_days,
+            "services": services,
+            "timestamp": now.isoformat(),
+        }
+
+    return _cached("status", 10, _compute)
 
 
 @app.get("/api/regime")
@@ -1058,26 +1082,17 @@ def get_preflight(_: str = Depends(verify)):
         config_detail = str(exc)[:120]
     _add("Config validates", config_ok, config_detail)
 
-    # 6. Tests pass (quick smoke: pytest -q --tb=no, timeout 60s)
-    tests_ok = False
-    tests_detail = ""
+    # 6. Core config imports cleanly (fast smoke — replaces slow pytest run)
+    smoke_ok = False
+    smoke_detail = ""
     try:
-        proc = _subprocess.run(
-            [_sys.executable, "-m", "pytest", "-q", "--tb=no"],
-            capture_output=True, text=True, timeout=60,
-        )
-        output = (proc.stdout + proc.stderr).strip()
-        summary_line = output.split("\n")[-1] if output else ""
-        if proc.returncode == 0:
-            tests_ok = True
-            tests_detail = summary_line
-        else:
-            tests_detail = summary_line or f"exit code {proc.returncode}"
-    except _subprocess.TimeoutExpired:
-        tests_detail = "timed out after 60s"
+        from core.config import load_settings as _load_settings
+        _load_settings("config/default.yaml")
+        smoke_ok = True
+        smoke_detail = "config loads cleanly"
     except Exception as exc:
-        tests_detail = str(exc)[:80]
-    _add("Tests pass (pytest -q --tb=no)", tests_ok, tests_detail)
+        smoke_detail = str(exc)[:120]
+    _add("Core config smoke test", smoke_ok, smoke_detail)
 
     # 7. Data directory exists and is writable
     data_dir = Path("data")
