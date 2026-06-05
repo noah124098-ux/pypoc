@@ -236,7 +236,7 @@ function TopBar({ snap, connected, darkMode, onToggleDark, onHamburger }: {
       <button className="hamburger-btn" onClick={onHamburger} aria-label="Toggle navigation">
         &#9776;
       </button>
-      <span className="top-bar-logo">pypoc</span>
+      <span className="top-bar-logo">NSE Agent</span>
       <span className={`top-bar-status ${connected ? 'live' : 'offline'}`}>
         {connected ? '●LIVE' : '○OFFLINE'}
       </span>
@@ -305,7 +305,7 @@ function Sidebar({ snap, connected, onClose }: { snap: any, connected: boolean, 
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
-        <span className="logo">pypoc</span>
+        <span className="logo">NSE Agent</span>
         <span className={connected ? 'dot green' : 'dot red'} title={connected ? 'Live' : 'Disconnected'} />
       </div>
 
