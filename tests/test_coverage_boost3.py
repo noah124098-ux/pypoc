@@ -461,14 +461,11 @@ class TestUniverse:
             pytest.skip("universe not importable")
 
     def test_get_universe_function(self):
-        """get_universe() returns the universe list."""
-        try:
-            from core.data.universe import get_universe
-            result = get_universe()
-            assert isinstance(result, list)
-            assert len(result) > 0
-        except (ImportError, AttributeError):
-            pytest.skip("get_universe not available")
+        """resolve_universe() returns the universe list."""
+        from core.data.universe import resolve_universe
+        result = resolve_universe("nifty50", [])
+        assert isinstance(result, list)
+        assert len(result) > 0
 
 
 # ===========================================================================

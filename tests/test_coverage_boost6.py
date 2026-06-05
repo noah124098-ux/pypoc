@@ -172,56 +172,36 @@ class TestNseFiiDiiBranches:
 class TestGuardrailsEdgePaths:
 
     def _make_state(self, starting_equity=100_000.0, equity=98_000.0, peak=100_000.0):
-        from core.types import PortfolioState
+        from core.risk.guardrails import PortfolioState
         return PortfolioState(
-            cash=90_000.0,
             equity=equity,
-            realized_pnl=-2_000.0,
             starting_equity_today=starting_equity,
             peak_equity=peak,
             open_positions=[],
-            daily_trade_count=0,
-            last_nifty_price=22000.0,
-            last_vix=14.0,
+            realized_pnl_today=-2_000.0,
         )
 
     def test_daily_loss_check_with_zero_starting_equity(self):
         """_check_daily_loss_circuit returns pass when starting_equity_today <= 0 (line 192)."""
         from core.risk.guardrails import Guardrails
-        from tests.conftest import risk_cfg, execution_cfg
-
-        try:
-            from tests.conftest import risk_cfg as _risk_cfg
-            from tests.conftest import execution_cfg as _exec_cfg
-        except ImportError:
-            pytest.skip("conftest not importable")
-
         from core.types import Signal, Side, Regime
         import core.risk.guardrails as g_module
 
-        # Use a state with starting_equity_today = 0
-        try:
-            state = self._make_state(starting_equity=0.0, equity=90_000.0)
-        except Exception:
-            pytest.skip("PortfolioState construction differs")
+        # Use a state with starting_equity_today = 0 — should not raise
+        state = self._make_state(starting_equity=0.0, equity=90_000.0)
+        assert state.starting_equity_today == 0.0
 
     def test_drawdown_check_with_zero_peak_equity(self):
         """_check_drawdown_circuit returns pass when peak_equity <= 0 (line 203)."""
-        # Just a smoke test to confirm the guardrail path is reachable
-        try:
-            from core.risk.guardrails import Guardrails
-            from core.types import PortfolioState, Signal, Side, Regime
-        except ImportError:
-            pytest.skip("guardrails or types not importable")
-        try:
-            state = PortfolioState(
-                cash=0.0, equity=0.0, realized_pnl=0.0,
-                starting_equity_today=0.0, peak_equity=0.0,
-                open_positions=[], daily_trade_count=0,
-                last_nifty_price=22000.0, last_vix=14.0,
-            )
-        except Exception:
-            pytest.skip("PortfolioState construction differs")
+        from core.risk.guardrails import PortfolioState
+        state = PortfolioState(
+            equity=0.0,
+            starting_equity_today=0.0,
+            peak_equity=0.0,
+            open_positions=[],
+            realized_pnl_today=0.0,
+        )
+        assert state.peak_equity == 0.0
 
 
 # ===========================================================================

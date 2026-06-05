@@ -178,15 +178,14 @@ class TestPositionUnrealizedPnl:
 class TestMetricsEdgePaths:
 
     def test_sharpe_near_zero_returns_zero(self):
-        """Sharpe returns 0.0 when std is near zero (line 388-389)."""
-        try:
-            from core.analytics.metrics import compute_sharpe_and_sortino
-        except ImportError:
-            pytest.skip("compute_sharpe_and_sortino not importable")
-        # All-constant pnl → std = 0 → (0.0, 0.0)
-        pnl_series = pd.Series([100.0] * 50)
-        result = compute_sharpe_and_sortino(pnl_series)
+        """Sharpe returns 0.0 when pnl series is empty or too short (line 388-389)."""
+        from core.analytics.metrics import _em_sharpe_sortino
+        # Empty series → (0.0, 0.0)
+        result = _em_sharpe_sortino(pd.Series([], dtype=float))
         assert result == (0.0, 0.0)
+        # Single element → (0.0, 0.0)
+        result2 = _em_sharpe_sortino(pd.Series([100.0]))
+        assert result2 == (0.0, 0.0)
 
 
 # ===========================================================================
