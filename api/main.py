@@ -968,6 +968,201 @@ def refresh_gate(_: str = Depends(verify)):
         return {"returncode": -1, "output": "", "error": "Walk-forward timed out after 600s"}
 
 
+@app.get("/api/preflight")
+def get_preflight(_: str = Depends(verify)):
+    """Run all pre-flight checks and return JSON.
+
+    Returns ``{checks: [{name, passed, message}], all_passed: bool}``.
+    Mirrors the same checks run by ``python cli.py preflight`` but returns
+    structured JSON suitable for the React dashboard.
+    """
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+    from datetime import datetime as _dt, timezone as _tz
+
+    checks: list[dict] = []
+
+    def _add(name: str, passed: bool, message: str = "") -> None:
+        checks.append({"name": name, "passed": passed, "message": message})
+
+    # 1. Virtual environment active
+    in_venv = (
+        _os.getenv("VIRTUAL_ENV") is not None
+        or hasattr(_sys, "real_prefix")
+        or (hasattr(_sys, "base_prefix") and _sys.base_prefix != _sys.prefix)
+    )
+    _add("Virtual environment active", in_venv,
+         "" if in_venv else "activate with: .venv\\Scripts\\Activate.ps1")
+
+    # 2. Angel One credentials present
+    from dotenv import load_dotenv
+    load_dotenv(override=False)
+    creds_required = {
+        "ANGEL_ONE_API_KEY": _os.getenv("ANGEL_ONE_API_KEY", ""),
+        "ANGEL_ONE_CLIENT_CODE": _os.getenv("ANGEL_ONE_CLIENT_CODE", ""),
+        "ANGEL_ONE_PASSWORD": _os.getenv("ANGEL_ONE_PASSWORD", ""),
+        "ANGEL_ONE_TOTP_SECRET": _os.getenv("ANGEL_ONE_TOTP_SECRET", ""),
+    }
+    missing_creds = [k for k, v in creds_required.items() if not v]
+    creds_present = len(missing_creds) == 0
+    _add("Angel One credentials present",
+         creds_present,
+         f"missing: {', '.join(missing_creds)}" if missing_creds else "")
+
+    # 3. Credentials format (not placeholder values)
+    PLACEHOLDER_PATTERNS = {"your_", "<", "xxx", "test", "dummy", "placeholder", "changeme"}
+    bad_creds = [k for k, v in creds_required.items()
+                 if v and any(p in v.lower() for p in PLACEHOLDER_PATTERNS)]
+    creds_format_ok = creds_present and len(bad_creds) == 0
+    _add("Angel One credentials correct format",
+         creds_format_ok,
+         f"likely placeholder: {', '.join(bad_creds)}" if bad_creds
+         else ("credentials missing" if not creds_present else ""))
+
+    # 4. Backtest gate passes
+    try:
+        from backtest.gate import GATE_MAX_AGE_DAYS, is_live_allowed, read_gate_result
+        gate_data = read_gate_result()
+        gate_allowed, gate_reason = is_live_allowed()
+        if gate_data is None:
+            gate_detail = "no gate file — run: python cli.py walk-forward --years 3"
+        elif not gate_data.get("passed", False):
+            failures = gate_data.get("failures", [])
+            gate_detail = f"FAILED: {', '.join(failures)}"
+        else:
+            ts_str = gate_data.get("timestamp", "")
+            gate_age_days_val: float | None = None
+            if ts_str:
+                try:
+                    ts_g = _dt.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    gate_age_days_val = (_dt.now(_tz.utc) - ts_g).total_seconds() / 86400
+                except ValueError:
+                    pass
+            if gate_age_days_val is not None and gate_age_days_val > GATE_MAX_AGE_DAYS:
+                gate_detail = f"EXPIRED ({gate_age_days_val:.0f} days old > {GATE_MAX_AGE_DAYS} day limit)"
+            else:
+                gate_detail = f"{gate_age_days_val:.0f} days old" if gate_age_days_val is not None else ""
+        _add("Backtest gate passes", gate_allowed, gate_detail)
+    except Exception as exc:
+        _add("Backtest gate passes", False, f"error reading gate: {exc}")
+
+    # 5. Config validates
+    config_ok = False
+    config_detail = ""
+    try:
+        from core.config import load_settings
+        load_settings("config/default.yaml")
+        config_ok = True
+    except Exception as exc:
+        config_detail = str(exc)[:120]
+    _add("Config validates", config_ok, config_detail)
+
+    # 6. Tests pass (quick smoke: pytest -q --tb=no, timeout 60s)
+    tests_ok = False
+    tests_detail = ""
+    try:
+        proc = _subprocess.run(
+            [_sys.executable, "-m", "pytest", "-q", "--tb=no"],
+            capture_output=True, text=True, timeout=60,
+        )
+        output = (proc.stdout + proc.stderr).strip()
+        summary_line = output.split("\n")[-1] if output else ""
+        if proc.returncode == 0:
+            tests_ok = True
+            tests_detail = summary_line
+        else:
+            tests_detail = summary_line or f"exit code {proc.returncode}"
+    except _subprocess.TimeoutExpired:
+        tests_detail = "timed out after 60s"
+    except Exception as exc:
+        tests_detail = str(exc)[:80]
+    _add("Tests pass (pytest -q --tb=no)", tests_ok, tests_detail)
+
+    # 7. Data directory exists and is writable
+    data_dir = Path("data")
+    data_exists = data_dir.exists() and data_dir.is_dir()
+    data_writable = False
+    if data_exists:
+        try:
+            probe = data_dir / ".preflight_write_probe"
+            probe.write_text("ok")
+            probe.unlink()
+            data_writable = True
+        except OSError:
+            pass
+    data_ok = data_exists and data_writable
+    if not data_exists:
+        data_detail = "directory does not exist — run: mkdir data"
+    elif not data_writable:
+        data_detail = "directory is not writable"
+    else:
+        data_detail = str(data_dir.resolve())
+    _add("Data directory exists and is writable", data_ok, data_detail)
+
+    # 8. Logs directory exists
+    logs_dir = Path("logs")
+    logs_ok = logs_dir.exists() and logs_dir.is_dir()
+    _add("Logs directory exists", logs_ok,
+         "" if logs_ok else "directory does not exist — run: mkdir logs")
+
+    # 9. Market hours (IST 09:15-15:30 weekdays)
+    try:
+        from zoneinfo import ZoneInfo
+        ist_tz = ZoneInfo("Asia/Kolkata")
+        now_ist = _dt.now(ist_tz)
+        weekday = now_ist.weekday()
+        mkt_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+        mkt_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+        market_open = weekday < 5 and mkt_open <= now_ist <= mkt_close
+        if weekday >= 5:
+            mkt_detail = f"today is {now_ist.strftime('%A')} — market closed on weekends"
+        elif now_ist < mkt_open:
+            opens_in = (mkt_open - now_ist).seconds // 60
+            mkt_detail = f"pre-market — opens in {opens_in}m (IST {now_ist.strftime('%H:%M')})"
+        elif now_ist > mkt_close:
+            mkt_detail = f"post-market (IST {now_ist.strftime('%H:%M')}, closed at 15:30)"
+        else:
+            mkt_detail = f"NSE open (IST {now_ist.strftime('%H:%M')})"
+        _add("Market hours (IST 09:15-15:30 weekdays)", market_open, mkt_detail)
+    except Exception as exc:
+        _add("Market hours (IST 09:15-15:30 weekdays)", False, str(exc)[:80])
+
+    # 10. Snapshot freshness
+    pid_file = Path("data/agent.pid")
+    snapshot_file = Path("data/snapshot.json")
+    snap_ok = True
+    snap_detail = ""
+    if pid_file.exists():
+        if not snapshot_file.exists():
+            snap_ok = False
+            snap_detail = "agent.pid exists but data/snapshot.json missing"
+        else:
+            try:
+                import json as _json_mod
+                snap_data = _json_mod.loads(snapshot_file.read_text(encoding="utf-8"))
+                ts_str = snap_data.get("ts", "")
+                if ts_str:
+                    ts_s = _dt.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    age_s = (_dt.now(_tz.utc) - ts_s).total_seconds()
+                    if age_s > 60:
+                        snap_ok = False
+                        snap_detail = f"snapshot is {age_s:.0f}s old (>60s) — agent may be stuck"
+                    else:
+                        snap_detail = f"snapshot {age_s:.0f}s old — agent running OK"
+                else:
+                    snap_detail = "snapshot has no timestamp field"
+            except Exception as exc:
+                snap_ok = False
+                snap_detail = f"could not read snapshot: {exc}"
+    else:
+        snap_detail = "no agent.pid — agent is not currently running"
+    _add("Snapshot freshness", snap_ok, snap_detail)
+
+    all_passed = all(c["passed"] for c in checks)
+    return {"checks": checks, "all_passed": all_passed}
+
+
 @app.post("/api/command/halt")
 def halt_agent(reason: str = "manual halt via API", _: str = Depends(verify)):
     from core.command_queue import enqueue
@@ -1109,6 +1304,96 @@ def simulator_set_params(body: dict, _: str = Depends(verify)):
         return {"applied": False, "message": "No valid parameters to update"}
 
     return {"applied": True, "message": "Applied: " + ", ".join(applied)}
+
+
+# ---------------------------------------------------------------------------
+# Nifty breadth endpoint  — % of Nifty 50 stocks above their 50-DMA
+# ---------------------------------------------------------------------------
+
+@app.get("/api/nifty-breadth")
+def get_nifty_breadth(_: str = Depends(verify)):
+    """Compute percentage of Nifty 50 stocks above their 50-day moving average.
+
+    This is the same market breadth filter used inside the backtest engine.
+    Results are cached for 30 minutes to avoid slow bhavcopy I/O on every request.
+
+    Response
+    --------
+    ``{above_50dma, below_50dma, total, breadth_pct, cached_at}``
+    """
+    import pandas as pd
+    from backtest.data_loader import HistoricalLoader
+    from core.data.universe import resolve_universe
+
+    def _compute():
+        loader = HistoricalLoader()
+        symbols = resolve_universe("nifty50", [])
+        symbol_data = loader.load_universe(symbols[:50], days=60)
+        above = 0
+        below = 0
+        for sym, df in symbol_data.items():
+            try:
+                dma = df["close"].rolling(50).mean().iloc[-1]
+                if not pd.isna(dma) and df["close"].iloc[-1] > dma:
+                    above += 1
+                else:
+                    below += 1
+            except Exception:
+                below += 1
+        total = above + below
+        return {
+            "above_50dma": above,
+            "below_50dma": below,
+            "total": total,
+            "breadth_pct": round(above / total * 100, 1) if total else 0.0,
+            "cached_at": datetime.now().isoformat(),
+        }
+
+    return _cached("nifty_breadth", 1800, _compute)
+
+
+# ---------------------------------------------------------------------------
+# Upcoming economic calendar events
+# ---------------------------------------------------------------------------
+
+@app.get("/api/calendar/upcoming")
+def get_calendar_upcoming(_: str = Depends(verify)):
+    """Return the next 5 economic blackout events from the built-in calendar.
+
+    Covers RBI MPC meetings, Union Budget, and US FOMC meetings through 2026.
+
+    Response
+    --------
+    List of ``{date, days_away, is_blackout, label}``
+    """
+    from core.data.economic_calendar import _ALL_EVENT_DATES, RBI_MPC_DATES, BUDGET_DATES, FOMC_DATES
+    from datetime import date as _date
+
+    # Build a lookup: date -> human-readable label (first match wins)
+    _rbi = {_date.fromisoformat(d) for d in RBI_MPC_DATES}
+    _budget = {_date.fromisoformat(d) for d in BUDGET_DATES}
+    _fomc = {_date.fromisoformat(d) for d in FOMC_DATES}
+
+    def _label(d: _date) -> str:
+        if d in _rbi:
+            return "RBI MPC"
+        if d in _budget:
+            return "Union Budget"
+        if d in _fomc:
+            return "US FOMC"
+        return "Economic Event"
+
+    today = _date.today()
+    upcoming = sorted(d for d in _ALL_EVENT_DATES if d >= today)[:5]
+    return [
+        {
+            "date": str(d),
+            "days_away": (d - today).days,
+            "is_blackout": True,
+            "label": _label(d),
+        }
+        for d in upcoming
+    ]
 
 
 async def _broadcast_loop() -> None:

@@ -1,10 +1,24 @@
 import { useState } from 'react'
 import { useApi, apiPost } from '../hooks/useSnapshot'
 
+interface PreflightCheck {
+  name: string
+  passed: boolean
+  message: string
+}
+
+interface PreflightResult {
+  checks: PreflightCheck[]
+  all_passed: boolean
+}
+
 export function ControlsTab({ snap }: { snap: any }) {
   const { data: config } = useApi<any>('/api/config', 300000)
   const { data: sys } = useApi<any>('/api/system', 15000)
   const [msg, setMsg] = useState('')
+  const [preflight, setPreflight] = useState<PreflightResult | null>(null)
+  const [preflightLoading, setPreflightLoading] = useState(false)
+  const [preflightError, setPreflightError] = useState('')
 
   const equity = snap?.equity ?? 0
   const startEquity = snap?.starting_equity_today ?? equity
@@ -22,6 +36,29 @@ export function ControlsTab({ snap }: { snap: any }) {
       setMsg('❌ API not reachable — is the agent running?')
     }
     setTimeout(() => setMsg(''), 6000)
+  }
+
+  async function runPreflight() {
+    setPreflightLoading(true)
+    setPreflightError('')
+    setPreflight(null)
+    try {
+      const resp = await fetch('/api/preflight', {
+        headers: {
+          'Authorization': 'Basic ' + btoa('admin:pypoc2024'),
+        },
+      })
+      if (!resp.ok) {
+        setPreflightError(`Server returned ${resp.status}`)
+        return
+      }
+      const data: PreflightResult = await resp.json()
+      setPreflight(data)
+    } catch (e) {
+      setPreflightError('API not reachable — is the backend running?')
+    } finally {
+      setPreflightLoading(false)
+    }
   }
 
   const risk = config?.risk ?? {}
@@ -69,6 +106,57 @@ export function ControlsTab({ snap }: { snap: any }) {
           </div>
         </section>
       </div>
+
+      <section className="section">
+        <h2>Preflight Check</h2>
+        <p className="small" style={{ marginBottom: 10, color: 'var(--text2)' }}>
+          Validates credentials, gate, config, tests, directories, market hours, and snapshot freshness before starting the agent.
+        </p>
+        <button
+          className="btn-success"
+          onClick={runPreflight}
+          disabled={preflightLoading}
+          style={{ marginBottom: 12 }}
+        >
+          {preflightLoading ? '⏳ Running...' : '▶ Run Preflight'}
+        </button>
+
+        {preflightError && (
+          <div className="status-banner red" style={{ marginBottom: 8 }}>{preflightError}</div>
+        )}
+
+        {preflight && (
+          <>
+            <div className={`status-banner ${preflight.all_passed ? 'green' : 'red'}`} style={{ marginBottom: 10 }}>
+              {preflight.all_passed
+                ? '✅ All checks passed — safe to start agent'
+                : `❌ ${preflight.checks.filter(c => !c.passed).length} check(s) failed — fix before starting`}
+            </div>
+            <table className="trade-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 36 }}></th>
+                  <th>Check</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {preflight.checks.map((c, i) => (
+                  <tr key={i}>
+                    <td style={{ textAlign: 'center', fontSize: 16 }}>
+                      {c.passed ? '✅' : '❌'}
+                    </td>
+                    <td>{c.name}</td>
+                    <td className="small" style={{ color: c.passed ? 'var(--text2)' : '#fc8181' }}>
+                      {c.message || (c.passed ? 'OK' : '')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+      </section>
 
       <section className="section">
         <h2>Circuit Breakers</h2>

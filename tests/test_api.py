@@ -1115,3 +1115,150 @@ def test_request_logging_user_none_without_auth(client, caplog):
                     break
             except json.JSONDecodeError:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# /api/nifty-breadth  — market breadth endpoint
+# ---------------------------------------------------------------------------
+
+def test_nifty_breadth_requires_auth(client):
+    """Without credentials the endpoint returns 401."""
+    resp = client.get("/api/nifty-breadth")
+    assert resp.status_code == 401
+
+
+def test_nifty_breadth_returns_expected_shape(tmp_path, monkeypatch):
+    """Breadth endpoint returns above_50dma, below_50dma, total, breadth_pct."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)
+
+    # Mock out the slow loader — pretend 38 of 50 symbols are above their 50-DMA.
+    fake_result = {
+        "above_50dma": 38,
+        "below_50dma": 12,
+        "total": 50,
+        "breadth_pct": 76.0,
+        "cached_at": "2026-06-05T10:00:00",
+    }
+
+    with patch.object(api_main, "_cached", return_value=fake_result):
+        c = TestClient(api_main.app)
+        resp = c.get("/api/nifty-breadth", auth=AUTH)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["above_50dma"] == 38
+    assert body["below_50dma"] == 12
+    assert body["total"] == 50
+    assert body["breadth_pct"] == 76.0
+
+
+def test_nifty_breadth_cache_key_is_nifty_breadth(tmp_path, monkeypatch):
+    """Breadth endpoint uses 'nifty_breadth' cache key with 1800s TTL."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pypoc2024")
+    (tmp_path / "data").mkdir()
+
+    import importlib
+    import api.main as api_main
+    importlib.reload(api_main)
+
+    recorded_calls: list[tuple] = []
+    original_cached = api_main._cached
+
+    def _spy_cached(key, ttl, fn):
+        recorded_calls.append((key, ttl))
+        # Return a minimal valid result so the endpoint doesn't blow up.
+        return {
+            "above_50dma": 25, "below_50dma": 25, "total": 50,
+            "breadth_pct": 50.0, "cached_at": "2026-06-05T10:00:00",
+        }
+
+    with patch.object(api_main, "_cached", side_effect=_spy_cached):
+        c = TestClient(api_main.app)
+        c.get("/api/nifty-breadth", auth=AUTH)
+
+    assert any(k == "nifty_breadth" and ttl == 1800 for k, ttl in recorded_calls), (
+        f"Expected nifty_breadth cache call with 1800s TTL, got: {recorded_calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# /api/calendar/upcoming  — economic calendar endpoint
+# ---------------------------------------------------------------------------
+
+def test_calendar_upcoming_requires_auth(client):
+    """Without credentials the endpoint returns 401."""
+    resp = client.get("/api/calendar/upcoming")
+    assert resp.status_code == 401
+
+
+def test_calendar_upcoming_returns_list(client):
+    """Endpoint returns a list of event dicts."""
+    resp = client.get("/api/calendar/upcoming", auth=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body, list)
+
+
+def test_calendar_upcoming_returns_at_most_5_events(client):
+    """No more than 5 upcoming events are returned."""
+    resp = client.get("/api/calendar/upcoming", auth=AUTH)
+    assert resp.status_code == 200
+    assert len(resp.json()) <= 5
+
+
+def test_calendar_upcoming_event_shape(client):
+    """Each event has date, days_away, is_blackout, label fields."""
+    resp = client.get("/api/calendar/upcoming", auth=AUTH)
+    assert resp.status_code == 200
+    events = resp.json()
+    if events:
+        event = events[0]
+        assert "date" in event
+        assert "days_away" in event
+        assert "is_blackout" in event
+        assert "label" in event
+        assert event["is_blackout"] is True
+        assert isinstance(event["days_away"], int)
+
+
+def test_calendar_upcoming_dates_are_future_or_today(client):
+    """All returned dates must be >= today."""
+    from datetime import date
+    resp = client.get("/api/calendar/upcoming", auth=AUTH)
+    assert resp.status_code == 200
+    today = date.today()
+    for event in resp.json():
+        event_date = date.fromisoformat(event["date"])
+        assert event_date >= today, f"Past date returned: {event_date}"
+
+
+def test_calendar_upcoming_days_away_matches_date(client):
+    """days_away field must equal (event_date - today).days."""
+    from datetime import date
+    resp = client.get("/api/calendar/upcoming", auth=AUTH)
+    assert resp.status_code == 200
+    today = date.today()
+    for event in resp.json():
+        event_date = date.fromisoformat(event["date"])
+        expected_days = (event_date - today).days
+        assert event["days_away"] == expected_days, (
+            f"days_away mismatch for {event_date}: expected {expected_days}, got {event['days_away']}"
+        )
+
+
+def test_calendar_upcoming_label_is_recognized_type(client):
+    """Labels must be one of RBI MPC, Union Budget, US FOMC, or Economic Event."""
+    resp = client.get("/api/calendar/upcoming", auth=AUTH)
+    assert resp.status_code == 200
+    valid_labels = {"RBI MPC", "Union Budget", "US FOMC", "Economic Event"}
+    for event in resp.json():
+        assert event["label"] in valid_labels, (
+            f"Unexpected label '{event['label']}' for {event['date']}"
+        )
