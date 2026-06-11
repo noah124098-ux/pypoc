@@ -3,6 +3,7 @@ import { LineChart, Line, ResponsiveContainer } from 'recharts'
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { useSnapshot, useApi } from './hooks/useSnapshot'
 import { useGuardrailNotifications, useToasts, type Toast } from './hooks/useNotifications'
+import { ErrorBoundary } from './components/ErrorBoundary'
 
 const LiveTab = lazy(() => import('./pages/LiveTab').then(m => ({ default: m.LiveTab })))
 const PnlTab = lazy(() => import('./pages/PnlTab').then(m => ({ default: m.PnlTab })))
@@ -474,24 +475,27 @@ function Layout({ darkMode, onToggleDark }: { darkMode: boolean; onToggleDark: (
         <Sidebar snap={snap} connected={connected} darkMode={darkMode} onToggleDark={onToggleDark} onClose={closeSidebar} />
         <main className="main-content" onClick={sidebarOpen ? closeSidebar : undefined}>
           <Suspense fallback={<div className="loading-tab">Loading...</div>}>
-            <Routes>
-              <Route index element={<Navigate to="/live" replace />} />
-              <Route path="live" element={<LiveTab snap={snap} connected={connected} />} />
-              <Route path="pnl" element={<PnlTab />} />
-              <Route path="positions" element={<PositionsTab snap={snap} />} />
-              <Route path="regime" element={<RegimeTab snap={snap} />} />
-              <Route path="backtest" element={<BacktestTab />} />
-              <Route path="replay" element={<ReplayTab />} />
-              <Route path="ai-review" element={<AiReviewTab />} />
-              <Route path="controls" element={<ControlsTab snap={snap} />} />
-              <Route path="costs" element={<CostsTab />} />
-              <Route path="portfolio" element={<PortfolioTab snap={snap} />} />
-              <Route path="angel-one" element={<AngelOneTab />} />
-              <Route path="analytics" element={<AnalyticsTab />} />
-              <Route path="simulator" element={<SimulatorTab snap={snap} />} />
-              <Route path="status" element={<StatusPage />} />
-              <Route path="api-docs" element={<ApiDocsPage />} />
-            </Routes>
+            <ErrorBoundary>
+              <Routes>
+                <Route index element={<Navigate to="/live" replace />} />
+                <Route path="live" element={<LiveTab snap={snap} connected={connected} />} />
+                <Route path="pnl" element={<PnlTab />} />
+                <Route path="positions" element={<PositionsTab snap={snap} />} />
+                <Route path="regime" element={<RegimeTab snap={snap} />} />
+                <Route path="backtest" element={<BacktestTab />} />
+                <Route path="replay" element={<ReplayTab />} />
+                <Route path="ai-review" element={<AiReviewTab />} />
+                <Route path="controls" element={<ControlsTab snap={snap} />} />
+                <Route path="costs" element={<CostsTab />} />
+                <Route path="portfolio" element={<PortfolioTab snap={snap} />} />
+                <Route path="angel-one" element={<AngelOneTab />} />
+                <Route path="analytics" element={<AnalyticsTab />} />
+                <Route path="simulator" element={<SimulatorTab snap={snap} />} />
+                <Route path="status" element={<StatusPage />} />
+                <Route path="api-docs" element={<ApiDocsPage />} />
+                <Route path="*" element={<Navigate to="/live" replace />} />
+              </Routes>
+            </ErrorBoundary>
           </Suspense>
         </main>
       </div>

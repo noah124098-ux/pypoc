@@ -527,6 +527,10 @@ mark.search-highlight {
     overflow-y: auto;
   }
 
+  /* Sidebar logo: hide text, show icon only on very small screens */
+  .sidebar-header { overflow: hidden; }
+  .logo { font-size: 14px; }
+
   /* Backdrop shown when sidebar is open */
   .sidebar-backdrop {
     display: block;
@@ -554,11 +558,11 @@ mark.search-highlight {
   .regime-chip { display: block; }
   nav { flex-direction: column; gap: 2px; }
   .nav-link { padding: 8px 12px; font-size: 13px; white-space: normal; }
-  .sidebar-footer { display: flex; }
+  .sidebar-footer { display: flex; flex-direction: column; }
 
   .main-content { padding: 0; }
   .tab-content { padding: 12px; }
-  .kpi-row { grid-template-columns: repeat(2, 1fr); }
+  .kpi-row { grid-template-columns: repeat(2, 1fr); gap: 8px; }
 
   /* Position cards stack vertically (already column direction above) */
   .pos-row { flex-direction: column; gap: 4px; }
@@ -584,6 +588,67 @@ mark.search-highlight {
   .chart-section .recharts-responsive-container {
     min-height: 200px !important;
   }
+
+  /* Signals toolbar wraps on mobile */
+  .signals-toolbar { flex-wrap: wrap; gap: 8px; }
+  .search-input { min-width: 140px; max-width: 100%; }
+  .toggle-group { flex-wrap: wrap; }
+
+  /* Section headers wrap text on mobile */
+  .section h2 { font-size: 14px; }
+
+  /* KPI cards responsive sizing */
+  .kpi-card { padding: 10px; }
+  .kpi-label { font-size: 10px; }
+  .kpi-value { font-size: 16px; }
+
+  /* Empty state responsive padding */
+  .empty-card { padding: 24px 12px; }
+  .empty-card h3 { font-size: 16px; }
+}
+
+/* ── Extra-small screens (max-width: 480px) ── */
+@media (max-width: 480px) {
+  .top-bar { padding: 0 8px; gap: 4px; font-size: 12px; }
+  .top-bar-logo { font-size: 12px; display: none; }
+  .top-bar-status { display: none; }
+  .top-bar-item { display: none; }
+
+  .sidebar { width: 100vw; }
+  .sidebar-header { flex-direction: column; }
+
+  .tab-content { padding: 10px; }
+  .kpi-row { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .kpi-card { padding: 8px; }
+  .kpi-label { font-size: 9px; }
+  .kpi-value { font-size: 14px; }
+
+  .section { margin-bottom: 16px; }
+  .section h2 { font-size: 13px; margin-bottom: 10px; }
+
+  .position-card { padding: 8px; margin-bottom: 6px; }
+  .pos-header { flex-wrap: wrap; gap: 4px; }
+  .pnl { margin-left: 0; margin-top: 4px; width: 100%; }
+
+  .badge { font-size: 9px; padding: 1px 6px; }
+
+  .empty-card { padding: 20px 10px; }
+  .empty-card div { font-size: 36px; }
+  .empty-card h3 { font-size: 14px; }
+  .empty-card p { font-size: 12px; }
+
+  /* Notification dropdown becomes full-width on tiny screens */
+  .notif-dropdown { width: calc(100vw - 20px); max-width: 100%; right: -10px; }
+
+  /* Toast positioning on mobile */
+  .toast-container { bottom: 10px; right: 10px; left: 10px; }
+  .toast { min-width: auto; max-width: 100%; }
+
+  /* Controls tab: stack grid items vertically */
+  .control-row { flex-direction: column; }
+
+  /* Simulator controls stack */
+  .console-panel { padding: 12px; }
 }
 
 /* ── Recent Activity Feed ─────────────────────────────────────────────────── */

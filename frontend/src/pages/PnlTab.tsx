@@ -497,6 +497,22 @@ export function PnlTab() {
               <p style={{ marginTop: 8, marginBottom: 8 }}><strong>2. Start agent:</strong></p>
               <code>scripts\service_manager.bat start-agent</code>
             </div>
+            <button
+              onClick={() => window.location.href = '/live'}
+              style={{
+                marginTop: 16,
+                padding: '8px 16px',
+                background: 'rgba(72,187,120,.15)',
+                color: '#48bb78',
+                border: '1px solid rgba(72,187,120,.3)',
+                borderRadius: 6,
+                cursor: 'pointer',
+                fontSize: 13,
+                fontWeight: 600,
+              }}
+            >
+              Go to Live Tab
+            </button>
           </div>
         )}
       </section>

@@ -70,14 +70,10 @@ export function ReplayTab() {
           Loading trades…
         </div>
       ) : tradeList.length === 0 ? (
-        <div className="info-card" style={{ maxWidth: 560, margin: "40px auto" }}>
-          <div style={{ fontSize: 40, textAlign: "center", marginBottom: 12 }}>📭</div>
-          <div style={{ fontWeight: 600, fontSize: 16, textAlign: "center", marginBottom: 8 }}>
-            No trades to replay yet.
-          </div>
-          <p style={{ textAlign: "center", color: "var(--text2)", marginBottom: 16 }}>
-            Start the paper agent and let it trade.
-          </p>
+        <div className="empty-card" style={{ maxWidth: 560, margin: "40px auto" }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>🎬</div>
+          <h3>No trades to replay yet</h3>
+          <p>Start the paper agent and let it complete some trades.</p>
           <div
             style={{
               background: "var(--bg3)",
@@ -86,6 +82,8 @@ export function ReplayTab() {
               fontSize: 13,
               color: "var(--text2)",
               lineHeight: 1.6,
+              marginTop: 12,
+              textAlign: "left",
             }}
           >
             <strong style={{ color: "var(--text)" }}>What you'll see here once trades appear:</strong>

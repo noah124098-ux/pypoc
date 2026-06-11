@@ -91,11 +91,17 @@ export function LiveTab({ snap, connected }: { snap: any; connected: boolean }) 
   const signals: any[] | null = signalsRaw
     ? (Array.isArray(signalsRaw) ? signalsRaw : signalsRaw.data ?? null)
     : null
+
+  // Handle various snap field names
   const equity = snap?.equity ?? 0
-  const dayPnl = equity - (snap?.starting_equity_today ?? equity)
-  const dayPct = snap?.starting_equity_today ? (dayPnl / snap.starting_equity_today * 100) : 0
-  const positions = snap?.open_positions ?? []
-  const vix = snap?.vix ? snap.vix.toFixed(1) : '—'
+  const startEquity = snap?.starting_equity_today ?? snap?.start_equity ?? equity
+  const dayPnl = equity - startEquity
+  const dayPct = startEquity ? (dayPnl / startEquity * 100) : 0
+  const positions = snap?.open_positions ?? snap?.positions ?? []
+  const vixVal = snap?.vix ?? snap?.VIX ?? 0
+  const vix = vixVal ? (typeof vixVal === 'number' ? vixVal.toFixed(1) : String(vixVal)) : '—'
+  const regime = snap?.current_regime ?? snap?.regime ?? '—'
+  const halted = snap?.halted ?? false
 
   return (
     <div className="tab-content">
@@ -105,13 +111,13 @@ export function LiveTab({ snap, connected }: { snap: any; connected: boolean }) 
 
       {snap === null ? <KpiSkeleton /> : (
         <div className="kpi-row">
-          <KpiCard label="Equity" value={`₹${equity.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} />
-          <KpiCard label="Day P&L" value={`₹${Math.abs(dayPnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
-            sub={`${dayPct >= 0 ? '+' : ''}${dayPct.toFixed(2)}%`} color={dayPnl >= 0 ? 'green' : 'red'} />
-          <KpiCard label="Regime" value={snap?.current_regime ?? '—'} />
-          <KpiCard label="VIX" value={vix} color={parseFloat(vix) >= 20 ? 'red' : parseFloat(vix) >= 18 ? 'yellow' : 'green'} />
-          <KpiCard label="Positions" value={`${positions.length}/5`} />
-          <KpiCard label="Status" value={snap?.halted ? '⛔ HALTED' : '✅ Running'} color={snap?.halted ? 'red' : 'green'} />
+          <KpiCard label="Equity" value={`₹${(equity ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} />
+          <KpiCard label="Day P&L" value={`₹${Math.abs(dayPnl ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
+            sub={`${(dayPct ?? 0) >= 0 ? '+' : ''}${(dayPct ?? 0).toFixed(2)}%`} color={(dayPnl ?? 0) >= 0 ? 'green' : 'red'} />
+          <KpiCard label="Regime" value={regime} />
+          <KpiCard label="VIX" value={vix} color={vix !== '—' && parseFloat(vix) >= 20 ? 'red' : vix !== '—' && parseFloat(vix) >= 18 ? 'yellow' : 'green'} />
+          <KpiCard label="Positions" value={`${(positions?.length ?? 0)}/5`} />
+          <KpiCard label="Status" value={halted ? '⛔ HALTED' : '✅ Running'} color={halted ? 'red' : 'green'} />
         </div>
       )}
 

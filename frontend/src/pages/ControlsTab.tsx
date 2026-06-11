@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useApi, apiPost } from '../hooks/useSnapshot'
+import { useToasts } from '../hooks/useNotifications'
 
 interface PreflightCheck {
   name: string
@@ -15,6 +16,7 @@ interface PreflightResult {
 export function ControlsTab({ snap }: { snap: any }) {
   const { data: config } = useApi<any>('/api/config', 300000)
   const { data: sys } = useApi<any>('/api/system', 15000)
+  const { addToast } = useToasts()
   const [msg, setMsg] = useState('')
   const [preflight, setPreflight] = useState<PreflightResult | null>(null)
   const [preflightLoading, setPreflightLoading] = useState(false)
@@ -31,8 +33,15 @@ export function ControlsTab({ snap }: { snap: any }) {
   async function sendCommand(endpoint: string, body?: any) {
     try {
       const d = await apiPost(endpoint, body)
-      setMsg(d.queued ? '✅ Command queued — agent will apply within 1 second' : '❌ Failed: ' + JSON.stringify(d))
+      if (d.queued) {
+        addToast('Command queued — agent will apply within 1 second', 'success')
+        setMsg('')
+      } else {
+        addToast('Failed: ' + JSON.stringify(d), 'error')
+        setMsg('❌ Failed: ' + JSON.stringify(d))
+      }
     } catch {
+      addToast('API not reachable — is the agent running?', 'error')
       setMsg('❌ API not reachable — is the agent running?')
     }
     setTimeout(() => setMsg(''), 6000)

@@ -80,7 +80,11 @@ export function PositionsTab({ snap }: { snap: any }) {
           </div>
         )) : (
           bothEmpty ? null : (
-            <div className="empty-state">No open positions</div>
+            <div className="empty-state">
+              <div style={{ fontSize: 32, marginBottom: 8 }}>📭</div>
+              <strong>No open positions yet</strong>
+              <p style={{ marginTop: 4, fontSize: 12 }}>Accepted signals will create positions here</p>
+            </div>
           )
         )}
       </section>

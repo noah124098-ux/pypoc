@@ -4,11 +4,30 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import { useApi, apiPost } from '../hooks/useSnapshot'
+import { useToasts } from '../hooks/useNotifications'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function fmtRupee(n: number): string {
   return '₹' + n.toLocaleString('en-IN', { maximumFractionDigits: 0 })
+}
+
+function isMarketOpen(): boolean {
+  const now = new Date()
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60000
+  const istMs = utcMs + 5.5 * 3600000
+  const ist = new Date(istMs)
+  const h = ist.getHours()
+  const m = ist.getMinutes()
+  const dow = ist.getDay()
+
+  // Market hours: 09:15 - 15:30, Mon-Fri
+  const isWeekday = dow > 0 && dow < 6
+  const nowMins = h * 60 + m
+  const openMins = 9 * 60 + 15  // 09:15
+  const closeMins = 15 * 60 + 30 // 15:30
+
+  return isWeekday && nowMins >= openMins && nowMins < closeMins
 }
 
 function fmtTime(ts: string | number | undefined): string {
@@ -87,6 +106,8 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
 // ── component ─────────────────────────────────────────────────────────────────
 
 export function SimulatorTab({ snap }: { snap: any }) {
+  const { addToast } = useToasts()
+
   // ── config controls ───────────────────────────────────────────────────────
   const [capital, setCapital] = useState(500000)
   const [riskPct, setRiskPct] = useState(1.0)
@@ -171,6 +192,11 @@ export function SimulatorTab({ snap }: { snap: any }) {
   // ── handlers ──────────────────────────────────────────────────────────────
 
   async function startSimulator() {
+    if (!isMarketOpen()) {
+      addToast('Simulator only runs during market hours (09:15–15:30 IST, Mon–Fri)', 'warning')
+      return
+    }
+
     setActionLoading(true)
     setStatusMsg('')
     try {
@@ -182,11 +208,14 @@ export function SimulatorTab({ snap }: { snap: any }) {
       if (d.started || d.running) {
         setRunning(true)
         setStatusMsg('')
+        addToast('Simulator started', 'success')
       } else {
         setStatusMsg(d.message ?? 'Failed to start')
+        addToast('Failed to start simulator', 'error')
       }
     } catch (e: any) {
       setStatusMsg(e?.message ?? 'API error')
+      addToast('API error: ' + (e?.message ?? 'Unknown error'), 'error')
     } finally {
       setActionLoading(false)
     }
@@ -197,18 +226,29 @@ export function SimulatorTab({ snap }: { snap: any }) {
     try {
       await apiPost('/api/simulator/stop', {})
       setRunning(false)
+      addToast('Simulator stopped', 'success')
     } catch (e: any) {
       setStatusMsg(e?.message ?? 'API error')
+      addToast('Failed to stop simulator', 'error')
     } finally {
       setActionLoading(false)
     }
   }
+
+  // ── derived values ────────────────────────────────────────────────────────
+  const marketOpen = isMarketOpen()
 
   // ── render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="tab-content">
       <div className="tab-title">Autonomous Simulator</div>
+
+      {!marketOpen && (
+        <div className="banner banner-warn" style={{ marginBottom: 16 }}>
+          ⏰ Market hours only (09:15–15:30 IST, Mon–Fri) — simulator is disabled outside these times
+        </div>
+      )}
 
       {/* ── Config + Start/Stop row ──────────────────────────────────────── */}
       <div className="console-panel" style={{ marginBottom: 16 }}>
@@ -267,8 +307,9 @@ export function SimulatorTab({ snap }: { snap: any }) {
               <button
                 className="btn-success"
                 onClick={startSimulator}
-                disabled={actionLoading}
-                style={{ padding: '10px 28px', fontSize: 14, fontWeight: 700 }}
+                disabled={actionLoading || !marketOpen}
+                style={{ padding: '10px 28px', fontSize: 14, fontWeight: 700, opacity: marketOpen ? 1 : 0.6 }}
+                title={marketOpen ? '' : 'Market hours only (09:15–15:30 IST, Mon–Fri)'}
               >
                 {actionLoading ? '...' : 'Start Simulator'}
               </button>
@@ -281,6 +322,9 @@ export function SimulatorTab({ snap }: { snap: any }) {
               >
                 {actionLoading ? '...' : 'Stop'}
               </button>
+            )}
+            {!marketOpen && !running && (
+              <span style={{ fontSize: 11, color: 'var(--text2)' }}>Market hours only</span>
             )}
 
             {/* Status badge */}
