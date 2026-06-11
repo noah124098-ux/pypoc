@@ -591,6 +591,15 @@ class BacktestEngine:
         Conservative: if today's low <= stop, exit at stop (loss locked in).
         Only check target if stop wasn't hit. This mirrors how real markets
         often gap through levels in the worst direction first.
+
+        Trailing stop + breakeven (no look-ahead): before evaluating today's bar,
+        adjust the stop using YESTERDAY's close (pos.last_price was marked to D-1's
+        close at the end of the previous loop iteration):
+          - once unrealized gain reaches +1R (R = original entry-to-stop distance),
+            move the stop to breakeven (entry price);
+          - after breakeven, trail the stop at 1.5R behind yesterday's close
+            (original stop distance is 1.5x ATR, so this trails at ~1.5x ATR);
+          - the stop never moves backwards. Target exit is unchanged.
         """
         for pos in list(broker.get_positions()):
             df = symbol_history.get(pos.symbol)
@@ -600,6 +609,30 @@ class BacktestEngine:
             low = float(row["low"])
             high = float(row["high"])
             is_short = pos.symbol in broker._short_positions
+
+            # --- breakeven move + trailing stop (based on yesterday's close) ---
+            orig_risk = getattr(pos, "_orig_risk", None)
+            if orig_risk is None:
+                # First time we see this position: stop is still the original one.
+                orig_risk = abs(pos.avg_price - pos.stop_loss)
+                pos._orig_risk = orig_risk
+                pos._be_moved = False
+            ref_price = pos.last_price or pos.avg_price  # yesterday's close
+            if orig_risk > 0:
+                if is_short:
+                    if not pos._be_moved and ref_price <= pos.avg_price - orig_risk:
+                        pos.stop_loss = min(pos.stop_loss, pos.avg_price)
+                        pos._be_moved = True
+                    if pos._be_moved:
+                        pos.stop_loss = min(pos.stop_loss, ref_price + 1.5 * orig_risk)
+                else:
+                    if not pos._be_moved and ref_price >= pos.avg_price + orig_risk:
+                        pos.stop_loss = max(pos.stop_loss, pos.avg_price)
+                        pos._be_moved = True
+                    if pos._be_moved:
+                        pos.stop_loss = max(pos.stop_loss, ref_price - 1.5 * orig_risk)
+            # --- end trailing logic ---
+
             if is_short:
                 # Short: stop hits if price rises to stop_loss; target hits if price falls to target
                 if high >= pos.stop_loss:
