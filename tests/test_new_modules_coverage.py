@@ -683,6 +683,14 @@ class TestApiEodReview:
 class TestApiPortfolioEndpoint:
     def test_portfolio_missing_creds(self, api_client, monkeypatch):
         """Without Angel One creds returns disconnected stub."""
+        # api.main loads the repo .env at import and re-reads it per request;
+        # neutralize both so this test never sees real credentials (or makes
+        # a real network call to Angel One).
+        import api.main as api_main
+        monkeypatch.setattr(api_main, "_reload_env", lambda: None)
+        for var in ("ANGEL_ONE_API_KEY", "ANGEL_ONE_CLIENT_CODE",
+                    "ANGEL_ONE_PASSWORD", "ANGEL_ONE_TOTP_SECRET"):
+            monkeypatch.delenv(var, raising=False)
         resp = api_client.get("/api/portfolio/angel-one", auth=AUTH)
         assert resp.status_code == 200
         data = resp.json()
