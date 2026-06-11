@@ -34,13 +34,26 @@ class HistoricalLoader:
         self._nse_client = None
         self._bhav_client = None
 
+    @staticmethod
+    def _tz_naive(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+        """Normalize a DatetimeIndex to tz-naive.
+
+        Sources are mixed: Angel One returns tz-aware (+05:30) indices while
+        Bhavcopy/NSE/yfinance return tz-naive. Mixing them breaks `.loc[:date]`
+        slicing in the engine (pandas refuses tz-naive vs tz-aware comparison).
+        """
+        if df is not None and not df.empty and getattr(df.index, "tz", None) is not None:
+            df = df.copy()
+            df.index = df.index.tz_localize(None)
+        return df
+
     def load(self, symbol: str, days: int) -> Optional[pd.DataFrame]:
         cache_file = self._cache_path(symbol, days)
         if cache_file.exists():
             try:
                 df = pd.read_parquet(cache_file)
                 if not df.empty:
-                    return df
+                    return self._tz_naive(df)
             except Exception as e:
                 log.warning("Cache read failed for %s: %s", symbol, e)
 
@@ -53,7 +66,7 @@ class HistoricalLoader:
             df = fetch_daily_public(symbol, days=days)
         if df is None or df.empty:
             return None
-        df = df.sort_index()
+        df = self._tz_naive(df.sort_index())
         try:
             df.to_parquet(cache_file)
         except Exception as e:
@@ -87,20 +100,20 @@ class HistoricalLoader:
         """Best-effort Nifty 50 index. Try Angel One -> Bhavcopy -> NSE direct -> yfinance/ETF."""
         df = self._fetch_nifty_index_from_angel(days)
         if df is not None and not df.empty:
-            return df
+            return self._tz_naive(df)
         try:
             df = self._bhav().fetch_index_daily("Nifty 50", days=days)
             if df is not None and not df.empty:
-                return df
+                return self._tz_naive(df)
         except Exception as e:
             log.debug("Bhavcopy index fetch failed: %s", e)
         df = self._fetch_nifty_index_from_nse(days)
         if df is not None and not df.empty:
-            return df
+            return self._tz_naive(df)
         for sym in ("^NSEI", "NIFTYBEES"):
             df = self.load(sym, days)
             if df is not None and not df.empty:
-                return df
+                return self._tz_naive(df)
         return None
 
     # ---------- internals ----------

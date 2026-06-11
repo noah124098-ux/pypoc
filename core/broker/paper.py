@@ -252,6 +252,43 @@ class PaperBroker(IBroker):
         else:
             pos.qty -= qty
 
+    def partial_exit(self, symbol: str, qty: int, exit_price: float, reason: str = "partial_target") -> None:
+        """Close `qty` of an open position at `exit_price` (slippage + charges applied).
+
+        Used by the backtest engine for partial profit booking (e.g. half off at +1R).
+        Works for both long and short positions; no-op if there is no open position.
+        Accounting mirrors `_auto_exit` / `_auto_exit_short` but for a partial qty.
+        """
+        pos = self._positions.get(symbol)
+        if pos is not None:
+            qty = min(qty, pos.qty)
+            if qty <= 0:
+                return
+            fill = self._apply_slippage(exit_price, Side.SELL)
+            charges = compute_charges(
+                side=Side.SELL, qty=qty, price=fill,
+                brokerage_per_order_inr=self._exec.brokerage_per_order_inr,
+                stt_pct=self._exec.stt_pct, exchange_txn_pct=self._exec.exchange_txn_pct,
+                gst_pct=self._exec.gst_pct,
+            ).total
+            self._close_long(symbol, qty, fill, charges, exit_reason=reason)
+            self._cash += qty * fill - charges
+            return
+        spos = self._short_positions.get(symbol)
+        if spos is not None:
+            qty = min(qty, spos.qty)
+            if qty <= 0:
+                return
+            fill = self._apply_slippage(exit_price, Side.BUY)
+            charges = compute_charges(
+                side=Side.BUY, qty=qty, price=fill,
+                brokerage_per_order_inr=self._exec.brokerage_per_order_inr,
+                stt_pct=self._exec.stt_pct, exchange_txn_pct=self._exec.exchange_txn_pct,
+                gst_pct=self._exec.gst_pct,
+                is_short_cover=True,
+            ).total
+            self._cover_short(symbol, qty, fill, charges, exit_reason=reason)
+
     def _maybe_exit_on_stop_or_target(self, pos: Position) -> None:
         """Auto-exit long on stop-loss or target hit."""
         if pos.last_price <= pos.stop_loss:
@@ -286,8 +323,8 @@ class PaperBroker(IBroker):
         pos = self._short_positions[symbol]
         pnl = (pos.avg_price - price) * qty - charges  # profit when price falls
         self.realized_pnl += pnl
-        # Return held margin + unrealised P&L
-        self._cash += pos.qty * pos.avg_price + pnl
+        # Return held margin (proportional to covered qty) + unrealised P&L
+        self._cash += qty * pos.avg_price + pnl
         self.trade_log.append(TradeRecord(
             symbol=symbol, side=Side.BUY, qty=qty,
             entry_price=pos.avg_price, exit_price=price,

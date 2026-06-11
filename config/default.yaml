@@ -151,7 +151,11 @@ execution:
   exchange_txn_pct: 0.0030699 # NSE equity: 0.0030699% both sides (Angel One published)
   gst_pct: 18.0               # 18% on (brokerage + exchange txn + SEBI)
   stamp_duty_pct: 0.003       # intraday stamp duty, buy side only
-  intraday_leverage: 4.0      # Angel One MIS: ~4x intraday buying power (SEBI 20% upfront margin)
+  # Angel One MIS allows ~4x intraday buying power. KEEP AT 1.0 for backtests/gate:
+  # leverage is an amplifier, and the current walk-forward window (W3 correction) has
+  # negative edge — 4x collapsed the gate control from 0.12 to -1.72 Sharpe. Raise to
+  # 4.0 only for live paper trading once the gate passes (positive edge to amplify).
+  intraday_leverage: 1.0
   signal_cooldown_minutes: 30 # same symbol cannot be re-entered for 30 min after exit
 
 backtest_gate:
