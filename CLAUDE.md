@@ -31,7 +31,10 @@ An automated, regime-aware **paper-trading agent for NSE Nifty 50** that consume
 
 **Status:** v3 — React+FastAPI deployed. Phases 3/4/5/5b/6b/7/7b/7c complete. 1251 tests passing. Gate at 0.152 Sharpe (failing; thresholds: Sharpe ≥ 1.2, WR ≥ 45%, PF ≥ 1.5 — stable baseline was 0.32 on May 29 data; see Open issues). No live broker active. React+FastAPI dashboard at http://localhost:8502 (11 tabs, auth: admin/pypoc2024, mobile-responsive, code-splitting).
 
-**Model:** claude-opus-4-8 (default for all sessions). effortLevel: max.
+**Model policy (tiered):** Master/orchestrator session + judge agents + hardest tasks: **fable**.
+Worker tiers via `model` param on agent()/Agent: haiku = mechanical (reads, deploys, run-and-report),
+sonnet = standard implementation, fable = judgment/merge decisions/complex debugging.
+opus = fallback if fable unavailable. effortLevel: max.
 
 **Repo:** https://github.com/noah124098-ux/pypoc
 
