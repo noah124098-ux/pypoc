@@ -3,7 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer,
 } from 'recharts'
-import { useApi, apiPost } from '../hooks/useSnapshot'
+import { useApi, apiGet, apiPost } from '../hooks/useSnapshot'
 import { useToasts } from '../hooks/useNotifications'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -159,7 +159,7 @@ export function SimulatorTab({ snap }: { snap: any }) {
 
   // ── on first mount: check current status once ────────────────────────────
   useEffect(() => {
-    apiPost('/api/simulator/status', undefined)
+    apiGet('/api/simulator/status')
       .then((d: SimStatus) => {
         setSimStatus(d)
         setRunning(d.running)
@@ -169,7 +169,12 @@ export function SimulatorTab({ snap }: { snap: any }) {
 
   // ── derived values ────────────────────────────────────────────────────────
   const effectiveCapital = simStatus?.capital ?? capital
-  const equity = simStatus?.equity ?? effectiveCapital
+  // API gives pnl_inr; equity may be absent — derive from last curve point or capital + pnl
+  const lastCurvePoint: any = simStatus?.equity_curve?.length
+    ? simStatus.equity_curve[simStatus.equity_curve.length - 1]
+    : null
+  const pnlInr = (simStatus as any)?.pnl_inr ?? simStatus?.total_pnl ?? 0
+  const equity = simStatus?.equity ?? (lastCurvePoint ? (lastCurvePoint.equity ?? lastCurvePoint.v) : effectiveCapital + pnlInr)
   const pnlAbs = equity - effectiveCapital
   const pnlSign = pnlAbs >= 0 ? '+' : ''
   const pnlColor = pnlAbs >= 0 ? '#48bb78' : '#fc8181'
@@ -177,17 +182,25 @@ export function SimulatorTab({ snap }: { snap: any }) {
   const totalTrades = simStatus?.total_trades ?? 0
   const winTrades = simStatus?.win_trades ?? 0
   const winRate = totalTrades > 0 ? ((winTrades / totalTrades) * 100).toFixed(1) : '—'
-  const maxDD = simStatus?.max_drawdown_pct ?? 0
+  // Compute max drawdown from the equity curve if the API doesn't supply it
+  const maxDD = simStatus?.max_drawdown_pct ?? (() => {
+    const pts = (simStatus?.equity_curve ?? []).map((p: any) => p.equity ?? p.v).filter((v: any) => typeof v === 'number')
+    let peak = -Infinity, dd = 0
+    for (const v of pts) { peak = Math.max(peak, v); if (peak > 0) dd = Math.max(dd, (peak - v) / peak * 100) }
+    return dd
+  })()
   const ddColor = maxDD > 10 ? '#fc8181' : maxDD > 5 ? '#ecc94b' : '#48bb78'
 
-  const positions = simStatus?.open_positions ?? (snap?.open_positions ?? snap?.positions ?? [])
-  const closedTrades = [...(simStatus?.closed_trades ?? [])].reverse().slice(0, 50)
+  // API returns current_positions / recent_trades; older shape used open_positions / closed_trades
+  const positions = (simStatus as any)?.current_positions ?? simStatus?.open_positions ?? (snap?.open_positions ?? snap?.positions ?? [])
+  const rawTrades = (simStatus as any)?.recent_trades ?? simStatus?.closed_trades ?? []
+  const closedTrades = [...rawTrades].reverse().slice(0, 50)
 
-  const equityCurve = (simStatus?.equity_curve ?? []).map(pt => ({
-    ts: pt.ts,
-    label: fmtHHMM(pt.ts),
-    equity: pt.equity,
-  }))
+  // equity_curve points may be {t, v} (API) or {ts, equity} (legacy)
+  const equityCurve = (simStatus?.equity_curve ?? []).map((pt: any) => {
+    const ts = pt.ts ?? pt.t
+    return { ts, label: fmtHHMM(ts), equity: pt.equity ?? pt.v }
+  })
 
   // ── handlers ──────────────────────────────────────────────────────────────
 
@@ -540,7 +553,7 @@ export function SimulatorTab({ snap }: { snap: any }) {
               const tPnl = t.pnl ?? 0
               const pnlC = tPnl >= 0 ? '#48bb78' : '#fc8181'
               const side = (t.side ?? '').toUpperCase()
-              const ts = t.closed_at ?? t.opened_at ?? ''
+              const ts = t.closed_at ?? t.opened_at ?? t.ts ?? ''
               return (
                 <div
                   key={tid}
