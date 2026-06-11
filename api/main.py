@@ -1355,6 +1355,11 @@ class _SimulatorState:
     risk_pct: float = 1.0
     max_positions: int = 5
     use_live_data: bool = False
+    # Replay mode: simulate a specific past trading day using real Bhavcopy data
+    replay_date: str = ""          # "YYYY-MM-DD"; empty = live/synthetic mode
+    replay_progress_pct: float = 0.0
+    replay_regime: str = ""        # regime classified from real data for that day
+    replay_day_summary: dict = _dc_field(default_factory=dict)
     equity_curve: list = _dc_field(default_factory=list)
     trade_log: list = _dc_field(default_factory=list)
     # background task handle
@@ -1636,33 +1641,330 @@ async def _simulator_loop(state: _SimulatorState) -> None:
             state.equity_curve = state.equity_curve[-2000:]
 
 
+async def _replay_loop(state: _SimulatorState) -> None:
+    """Replay a past trading day using REAL Bhavcopy data.
+
+    Loads 90 days of real history up to the chosen date for warmup, classifies
+    the actual regime for that day, then replays the day as ~100 intraday steps.
+    Each symbol's intraday path is a Brownian bridge anchored to the day's real
+    open/high/low/close, so prices touch the real extremes and end at the real
+    close. Signals run through the same strategies + guardrails as live.
+    """
+    import math
+    from datetime import date as _date, timedelta as _td
+    import pandas as pd
+    from core.config import load_settings
+    from core.broker.paper import PaperBroker
+    from core.risk.guardrails import Guardrails, MarketContext, PortfolioState
+    from core.types import Regime, Side, OrderType
+    from core.data.universe import resolve_universe
+    from core.data.bhavcopy import BhavcopyHistory
+    from core.regime.classifier import RegimeClassifier
+    from core.strategies.mean_reversion import MeanReversion
+    from core.strategies.trend_breakout import TrendBreakout
+    from core.strategies.volatility_compression import VolatilityCompression
+    from core.strategies.rsi_bounce import RsiBounce
+    from core.strategies.ema_crossover import EmaCrossover
+    from core.strategies.rsi_momentum import RsiMomentum
+    from core.strategies.bb_squeeze import BbSqueeze
+    from core.strategies.obv_trend import ObvTrend
+
+    try:
+        replay_d = _date.fromisoformat(state.replay_date)
+    except ValueError:
+        state.replay_day_summary = {"error": f"Invalid date: {state.replay_date}"}
+        state.running = False
+        return
+
+    settings = load_settings()
+    settings.risk.per_trade_risk_pct = state.risk_pct
+    settings.risk.max_open_positions = state.max_positions
+
+    broker = PaperBroker(starting_cash=state.capital, exec_cfg=settings.execution)
+    guardrails = Guardrails(settings.risk, settings.market, settings.execution)
+    symbols = resolve_universe("nifty50", [])
+
+    # ── Load real history: 90 calendar days before replay date through replay date
+    bhav = BhavcopyHistory()
+    hist_start = replay_d - _td(days=120)
+    loop = asyncio.get_event_loop()
+    state.replay_day_summary = {"phase": "loading", "message": "Loading historical data..."}
+    await loop.run_in_executor(None, bhav.warmup_range, hist_start, replay_d)
+
+    sym_history: dict[str, pd.DataFrame] = {}
+    day_ohlc: dict[str, dict] = {}     # real OHLC for the replay day
+    for sym in symbols:
+        if not state.running:
+            return
+        df = await loop.run_in_executor(
+            None, bhav._build_symbol_frame, sym, hist_start, replay_d
+        )
+        if df is None or len(df) < 55:
+            continue
+        ts_replay = pd.Timestamp(replay_d)
+        if ts_replay not in df.index:
+            continue  # symbol didn't trade that day
+        row = df.loc[ts_replay]
+        day_ohlc[sym] = {
+            "open": float(row["open"]), "high": float(row["high"]),
+            "low": float(row["low"]), "close": float(row["close"]),
+            "volume": int(row["volume"]),
+        }
+        sym_history[sym] = df[df.index < ts_replay]  # warmup excludes replay day
+
+    if not day_ohlc:
+        state.replay_day_summary = {
+            "error": f"No Bhavcopy data for {state.replay_date} — not a trading day or data unavailable"
+        }
+        state.running = False
+        return
+
+    # ── Classify the REAL regime from Nifty index data up to the replay date
+    regime = Regime.RANGE
+    regime_rationale = "default RANGE (no index data)"
+    try:
+        nifty_df = await loop.run_in_executor(
+            None,
+            lambda: bhav.fetch_index_daily("Nifty 50", 200),
+        )
+        if nifty_df is not None:
+            nifty_upto = nifty_df[nifty_df.index <= pd.Timestamp(replay_d)]
+            if len(nifty_upto) >= 30:
+                classifier = RegimeClassifier(settings.regime)
+                snap_r = classifier.classify(nifty_upto, vix=15.0)
+                regime = snap_r.regime
+                regime_rationale = snap_r.rationale
+    except Exception as exc:
+        logger.warning("Replay regime classification failed: %s", exc)
+    state.replay_regime = regime.value
+
+    # Same strategy set as the live agent (TREND strategies matter most —
+    # replay days classified TREND would otherwise generate no signals)
+    strategies = [
+        MeanReversion(), TrendBreakout(), VolatilityCompression(), RsiBounce(),
+        EmaCrossover(), RsiMomentum(), BbSqueeze(), ObvTrend(),
+    ]
+
+    # ── Brownian-bridge intraday paths anchored to real OHLC
+    N_STEPS = 100
+    def _bridge(o: float, h: float, l: float, c: float, n: int) -> list[float]:
+        """Random intraday path from open to close that touches high and low."""
+        # Base bridge: linear o→c plus scaled Brownian bridge noise
+        sigma = max(h - l, abs(c - o), o * 0.001) / math.sqrt(n)
+        path = [o]
+        for i in range(1, n):
+            t = i / n
+            drift = o + (c - o) * t
+            remaining = (1 - t)
+            noise = random.gauss(0, sigma) * math.sqrt(remaining)
+            path.append(drift + noise)
+        path.append(c)
+        # Rescale so the path's max/min hit the real high/low
+        p_max, p_min = max(path), min(path)
+        if p_max > p_min:
+            scale = (h - l) / (p_max - p_min)
+            mid_real, mid_path = (h + l) / 2, (p_max + p_min) / 2
+            path = [mid_real + (p - mid_path) * scale for p in path]
+        # Pin the endpoints back to real open/close after rescale
+        path[0], path[-1] = o, c
+        return [max(p, 0.05) for p in path]
+
+    paths = {sym: _bridge(d["open"], d["high"], d["low"], d["close"], N_STEPS)
+             for sym, d in day_ohlc.items()}
+
+    # Simulated market clock: 09:15 → 15:30 IST on the replay date
+    sim_day_start = datetime(replay_d.year, replay_d.month, replay_d.day, 9, 15)
+    sim_minutes_total = (15 * 60 + 30) - (9 * 60 + 15)  # 375 minutes
+
+    open_tick: dict[str, int] = {}
+    state.replay_day_summary = {
+        "phase": "replaying", "date": state.replay_date,
+        "regime": regime.value, "regime_rationale": regime_rationale,
+        "symbols_loaded": len(day_ohlc),
+    }
+
+    for step in range(N_STEPS + 1):
+        if not state.running:
+            break
+        await asyncio.sleep(1.0)  # ~100s total replay duration
+        state.replay_progress_pct = round(step / N_STEPS * 100, 1)
+
+        sim_now = sim_day_start + timedelta(minutes=sim_minutes_total * step / N_STEPS)
+        prices = {sym: paths[sym][step] for sym in paths}
+        broker.update_market_prices(prices)
+
+        # Sync broker auto-exits (SL/target) into the trade log
+        open_in_log = {tr["symbol"] for tr in state.trade_log if tr["status"] == "OPEN"}
+        broker_syms = {p.symbol for p in broker.get_positions()}
+        for sym in open_in_log - broker_syms:
+            exit_px = prices.get(sym, 0.0)
+            for tr in state.trade_log:
+                if tr["symbol"] == sym and tr["status"] == "OPEN":
+                    pnl = (exit_px - tr["entry_price"]) * tr["qty"] if tr["side"] == "BUY" else (tr["entry_price"] - exit_px) * tr["qty"]
+                    tr.update(exit_price=round(exit_px, 2), pnl=round(pnl, 2),
+                              status="CLOSED", reason="sl_or_target")
+                    break
+            open_tick.pop(sym, None)
+
+        # Square off everything in the last 4 steps (mimics 15:15 EOD square-off)
+        if step >= N_STEPS - 4:
+            for pos in list(broker.get_positions()):
+                exit_px = prices.get(pos.symbol, pos.last_price)
+                is_long = pos.symbol in broker._positions
+                broker.place_order(
+                    symbol=pos.symbol,
+                    side=Side.SELL if is_long else Side.BUY,
+                    qty=abs(pos.qty), order_type=OrderType.MARKET,
+                    stop_loss=exit_px * 0.99, target=None, strategy=pos.strategy,
+                )
+                for tr in state.trade_log:
+                    if tr["symbol"] == pos.symbol and tr["status"] == "OPEN":
+                        pnl = (exit_px - tr["entry_price"]) * tr["qty"] if tr["side"] == "BUY" else (tr["entry_price"] - exit_px) * tr["qty"]
+                        tr.update(exit_price=round(exit_px, 2), pnl=round(pnl, 2),
+                                  status="CLOSED", reason="eod_squareoff")
+                        break
+            state.equity_curve.append({"t": int(time.time()), "v": round(broker.equity(), 2)})
+            continue
+
+        # Evaluate strategies on real history + current replay price
+        equity = broker.equity()
+        portfolio = PortfolioState(
+            equity=equity, starting_equity_today=state.capital,
+            peak_equity=max((pt["v"] for pt in state.equity_curve), default=equity),
+            open_positions=broker.get_positions(),
+            realized_pnl_today=broker.realized_pnl,
+            last_exit_by_symbol={}, halted=False, halt_reason="",
+        )
+        market_ctx = MarketContext(
+            now=sim_now,
+            nifty_ltp=prices.get("RELIANCE", 0.0),
+            nifty_change_pct_15m=0.0, vix=15.0, vix_change_pct_15m=0.0,
+            last_tick_age_seconds=2.0,
+            avg_daily_volumes={s: max(day_ohlc[s]["volume"], 100_000) for s in day_ohlc},
+            spread_pct_by_symbol={s: 0.05 for s in day_ohlc},
+        )
+
+        for sym in paths:
+            if sym in broker._positions or sym in broker._short_positions:
+                continue
+            hist_df = sym_history.get(sym)
+            if hist_df is None:
+                continue
+            # Append current replay price as a forming candle
+            seen = paths[sym][:step + 1]
+            forming = pd.DataFrame([{
+                "open": paths[sym][0], "high": max(seen),
+                "low": min(seen), "close": prices[sym],
+                "volume": day_ohlc[sym]["volume"],
+            }], index=[pd.Timestamp(replay_d)])
+            df_eval = pd.concat([hist_df.tail(80), forming])
+            for strat in strategies:
+                if not strat.supports(regime):
+                    continue
+                try:
+                    sig = strat.evaluate(sym, df_eval, regime)
+                except Exception:
+                    sig = None
+                if sig is None:
+                    continue
+                stop_dist = abs(sig.entry_price - sig.stop_loss)
+                qty = max(1, int(equity * (state.risk_pct / 100.0) / stop_dist)) if stop_dist > 0 else 1
+                decision = guardrails.check(sig, qty, portfolio, market_ctx)
+                if not decision.allow:
+                    continue
+                broker._latest_prices[sym] = prices[sym]
+                order = broker.place_order(
+                    symbol=sym, side=sig.side, qty=qty, order_type=OrderType.MARKET,
+                    stop_loss=sig.stop_loss, target=sig.target, strategy=sig.strategy,
+                )
+                if order.status.value == "FILLED":
+                    state.trade_log.append({
+                        "id": str(_uuid.uuid4()), "symbol": sym, "side": sig.side.value,
+                        "qty": qty, "entry_price": round(order.filled_price, 2),
+                        "exit_price": None, "pnl": None, "strategy": sig.strategy,
+                        "status": "OPEN", "ts": int(sim_now.timestamp()),
+                        "reason": sig.rationale or "",
+                    })
+                    open_tick[sym] = 0
+                    portfolio = PortfolioState(
+                        equity=broker.equity(), starting_equity_today=state.capital,
+                        peak_equity=max((pt["v"] for pt in state.equity_curve), default=broker.equity()),
+                        open_positions=broker.get_positions(),
+                        realized_pnl_today=broker.realized_pnl,
+                        last_exit_by_symbol={}, halted=False, halt_reason="",
+                    )
+                break
+
+        state.equity_curve.append({"t": int(time.time()), "v": round(broker.equity(), 2)})
+
+    # ── Final summary
+    closed = [t for t in state.trade_log if t["status"] == "CLOSED"]
+    wins = [t for t in closed if (t["pnl"] or 0) > 0]
+    state.replay_progress_pct = 100.0
+    state.replay_day_summary = {
+        "phase": "done", "date": state.replay_date,
+        "regime": regime.value, "regime_rationale": regime_rationale,
+        "symbols_loaded": len(day_ohlc),
+        "total_trades": len(closed),
+        "wins": len(wins), "losses": len(closed) - len(wins),
+        "win_rate_pct": round(len(wins) / len(closed) * 100, 1) if closed else 0.0,
+        "final_equity": round(broker.equity(), 2),
+        "day_pnl": round(broker.equity() - state.capital, 2),
+        "day_pnl_pct": round((broker.equity() - state.capital) / state.capital * 100, 2),
+    }
+    state.running = False
+
+
 @app.post("/api/simulator/start")
 async def simulator_start(body: dict, _: str = Depends(verify)):
     """Start the autonomous simulator loop.
 
-    Body: ``{capital?, risk_pct?, max_positions?, use_live_data?}``
+    Body: ``{capital?, risk_pct?, max_positions?, use_live_data?, replay_date?}``
+    When ``replay_date`` (YYYY-MM-DD) is given, replays that past trading day
+    using real Bhavcopy data instead of synthetic live simulation.
     Returns: ``{started: bool, running: bool, message: str}``
     """
     state = _get_or_create_sim()
     if state.running:
         return {"started": False, "running": True, "message": "Already running"}
 
+    replay_date = str(body.get("replay_date") or "").strip()
+    if replay_date:
+        from datetime import date as _date
+        try:
+            d = _date.fromisoformat(replay_date)
+        except ValueError:
+            return {"started": False, "running": False,
+                    "message": f"Invalid replay_date '{replay_date}' — use YYYY-MM-DD"}
+        if d >= _date.today():
+            return {"started": False, "running": False,
+                    "message": "Replay date must be in the past"}
+        if d.weekday() >= 5:
+            return {"started": False, "running": False,
+                    "message": f"{replay_date} is a weekend — market closed"}
+
     state.capital = float(body.get("capital") or 500_000.0)
     state.risk_pct = float(body.get("risk_pct") or 1.0)
     state.max_positions = int(body.get("max_positions") or 5)
     state.use_live_data = bool(body.get("use_live_data", False))
+    state.replay_date = replay_date
+    state.replay_progress_pct = 0.0
+    state.replay_regime = ""
+    state.replay_day_summary = {}
     state.running = True
     state.start_time = time.time()
     state.equity_curve = [{"t": int(time.time()), "v": round(state.capital, 2)}]
     state.trade_log = []
 
-    task = asyncio.get_event_loop().create_task(_simulator_loop(state))
+    loop_fn = _replay_loop if replay_date else _simulator_loop
+    task = asyncio.get_event_loop().create_task(loop_fn(state))
     state._task = task
     logger.info(
-        "Simulator started: capital=%.0f risk_pct=%.2f max_pos=%d",
-        state.capital, state.risk_pct, state.max_positions,
+        "Simulator started: capital=%.0f risk_pct=%.2f max_pos=%d replay=%s",
+        state.capital, state.risk_pct, state.max_positions, replay_date or "live",
     )
-    return {"started": True, "running": True, "message": "Simulator started"}
+    mode = f"Replaying {replay_date}" if replay_date else "Simulator started"
+    return {"started": True, "running": True, "message": mode}
 
 
 @app.post("/api/simulator/stop")
@@ -1738,6 +2040,10 @@ def simulator_status(_: str = Depends(verify)):
         "equity_curve": eq_tail,
         "recent_trades": recent_trades,
         "current_positions": current_positions,
+        "replay_date": state.replay_date,
+        "replay_progress_pct": state.replay_progress_pct,
+        "replay_regime": state.replay_regime,
+        "replay_summary": state.replay_day_summary,
     }
 
 

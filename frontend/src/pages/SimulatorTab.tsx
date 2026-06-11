@@ -113,6 +113,15 @@ export function SimulatorTab({ snap }: { snap: any }) {
   const [riskPct, setRiskPct] = useState(1.0)
   const [maxPos, setMaxPos] = useState(5)
 
+  // ── mode: live simulation vs historical replay ───────────────────────────
+  const [mode, setMode] = useState<'live' | 'replay'>('live')
+  const [replayDate, setReplayDate] = useState(() => {
+    // default: yesterday (or Friday if today is Sun/Mon)
+    const d = new Date()
+    d.setDate(d.getDate() - (d.getDay() === 1 ? 3 : d.getDay() === 0 ? 2 : 1))
+    return d.toISOString().slice(0, 10)
+  })
+
   // ── simulator state ───────────────────────────────────────────────────────
   const [running, setRunning] = useState(false)
   const [statusMsg, setStatusMsg] = useState('')
@@ -205,8 +214,12 @@ export function SimulatorTab({ snap }: { snap: any }) {
   // ── handlers ──────────────────────────────────────────────────────────────
 
   async function startSimulator() {
-    if (!isMarketOpen()) {
-      addToast('Simulator only runs during market hours (09:15–15:30 IST, Mon–Fri)', 'warning')
+    if (mode === 'live' && !isMarketOpen()) {
+      addToast('Live simulation needs market hours (09:15–15:30 IST) — use Replay mode for past dates', 'warning')
+      return
+    }
+    if (mode === 'replay' && !replayDate) {
+      addToast('Pick a date to replay', 'warning')
       return
     }
 
@@ -217,14 +230,15 @@ export function SimulatorTab({ snap }: { snap: any }) {
         capital,
         risk_pct: riskPct,
         max_positions: maxPos,
+        ...(mode === 'replay' ? { replay_date: replayDate } : {}),
       })
       if (d.started || d.running) {
         setRunning(true)
         setStatusMsg('')
-        addToast('Simulator started', 'success')
+        addToast(mode === 'replay' ? `Replaying ${replayDate}...` : 'Simulator started', 'success')
       } else {
         setStatusMsg(d.message ?? 'Failed to start')
-        addToast('Failed to start simulator', 'error')
+        addToast(d.message ?? 'Failed to start simulator', 'error')
       }
     } catch (e: any) {
       setStatusMsg(e?.message ?? 'API error')
@@ -250,6 +264,12 @@ export function SimulatorTab({ snap }: { snap: any }) {
 
   // ── derived values ────────────────────────────────────────────────────────
   const marketOpen = isMarketOpen()
+  const replayInfo: any = (simStatus as any)?.replay_summary ?? {}
+  const replayProgress: number = (simStatus as any)?.replay_progress_pct ?? 0
+  const isReplayRun = Boolean((simStatus as any)?.replay_date)
+  const replayDone = replayInfo?.phase === 'done'
+  const replayError = replayInfo?.error
+  const canStart = mode === 'replay' ? true : marketOpen
 
   // ── render ────────────────────────────────────────────────────────────────
 
@@ -257,9 +277,93 @@ export function SimulatorTab({ snap }: { snap: any }) {
     <div className="tab-content">
       <div className="tab-title">Autonomous Simulator</div>
 
-      {!marketOpen && (
+      {/* Mode toggle */}
+      <div className="toggle-group" style={{ marginBottom: 16, display: 'inline-flex' }}>
+        <button
+          className={`toggle-btn${mode === 'live' ? ' active' : ''}`}
+          onClick={() => !running && setMode('live')}
+          disabled={running}
+        >
+          🔴 Live Simulation
+        </button>
+        <button
+          className={`toggle-btn${mode === 'replay' ? ' active' : ''}`}
+          onClick={() => !running && setMode('replay')}
+          disabled={running}
+        >
+          📅 Historical Replay
+        </button>
+      </div>
+
+      {mode === 'live' && !marketOpen && (
         <div className="banner banner-warn" style={{ marginBottom: 16 }}>
-          ⏰ Market hours only (09:15–15:30 IST, Mon–Fri) — simulator is disabled outside these times
+          ⏰ Live simulation needs market hours (09:15–15:30 IST, Mon–Fri) — switch to <strong>Historical Replay</strong> to test the agent on any past trading day
+        </div>
+      )}
+      {mode === 'replay' && !running && !replayDone && (
+        <div className="banner" style={{ marginBottom: 16, background: 'rgba(66,153,225,.08)', border: '1px solid rgba(66,153,225,.25)', color: 'var(--text2)' }}>
+          📅 Replay mode loads <strong style={{ color: '#63b3ed' }}>real NSE Bhavcopy data</strong> for the chosen day — the agent classifies that day's actual regime, runs the same strategies and guardrails as live, and replays the session in ~2 minutes
+        </div>
+      )}
+
+      {/* Replay progress bar */}
+      {running && isReplayRun && (
+        <div className="console-panel" style={{ marginBottom: 16, padding: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 12 }}>
+            <span style={{ color: '#4fc3f7', fontWeight: 700 }}>
+              {replayInfo?.phase === 'loading' ? '⏳ Loading historical data...' : `▶ Replaying ${(simStatus as any)?.replay_date}`}
+              {(simStatus as any)?.replay_regime && (
+                <span style={{ marginLeft: 10, color: 'var(--text2)', fontWeight: 400 }}>
+                  regime: <strong style={{ color: '#ecc94b' }}>{(simStatus as any).replay_regime}</strong>
+                </span>
+              )}
+            </span>
+            <span style={{ color: 'var(--text2)' }}>{replayProgress.toFixed(0)}%</span>
+          </div>
+          <div className="progress-bar" style={{ height: 8 }}>
+            <div className="progress-fill" style={{ width: `${replayProgress}%`, background: '#4fc3f7' }} />
+          </div>
+        </div>
+      )}
+
+      {/* Replay error */}
+      {replayError && (
+        <div className="banner" style={{ marginBottom: 16, background: 'rgba(252,129,129,.1)', border: '1px solid rgba(252,129,129,.3)', color: '#fc8181' }}>
+          ❌ {replayError}
+        </div>
+      )}
+
+      {/* Replay result summary */}
+      {replayDone && !replayError && (
+        <div className="console-panel" style={{ marginBottom: 16, border: '1px solid rgba(72,187,120,.3)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#4fc3f7', marginBottom: 10, letterSpacing: '.06em' }}>
+            📊 REPLAY RESULT — {replayInfo.date}
+            <span style={{ marginLeft: 10, fontSize: 11, fontWeight: 400, color: 'var(--text2)' }}>
+              regime: {replayInfo.regime} · {replayInfo.symbols_loaded} symbols · {replayInfo.regime_rationale}
+            </span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10 }}>
+            <div className="kpi-card" style={{ padding: 8 }}>
+              <div className="kpi-label">Day P&L</div>
+              <div className="kpi-value" style={{ fontSize: 16, color: (replayInfo.day_pnl ?? 0) >= 0 ? '#48bb78' : '#fc8181' }}>
+                {(replayInfo.day_pnl ?? 0) >= 0 ? '+' : ''}{fmtRupee(replayInfo.day_pnl ?? 0)}
+              </div>
+              <div className="kpi-sub">{(replayInfo.day_pnl_pct ?? 0) >= 0 ? '+' : ''}{replayInfo.day_pnl_pct ?? 0}%</div>
+            </div>
+            <div className="kpi-card" style={{ padding: 8 }}>
+              <div className="kpi-label">Trades</div>
+              <div className="kpi-value" style={{ fontSize: 16 }}>{replayInfo.total_trades ?? 0}</div>
+            </div>
+            <div className="kpi-card" style={{ padding: 8 }}>
+              <div className="kpi-label">Win Rate</div>
+              <div className="kpi-value" style={{ fontSize: 16, color: '#4fc3f7' }}>{replayInfo.win_rate_pct ?? 0}%</div>
+              <div className="kpi-sub">{replayInfo.wins ?? 0}W / {replayInfo.losses ?? 0}L</div>
+            </div>
+            <div className="kpi-card" style={{ padding: 8 }}>
+              <div className="kpi-label">Final Equity</div>
+              <div className="kpi-value" style={{ fontSize: 16 }}>{fmtRupee(replayInfo.final_equity ?? 0)}</div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -314,17 +418,34 @@ export function SimulatorTab({ snap }: { snap: any }) {
             </div>
           </div>
 
+          {/* Replay date picker (replay mode only) */}
+          {mode === 'replay' && (
+            <div style={{ minWidth: 160 }}>
+              <div className="sim-label">Replay Date</div>
+              <input
+                className="sim-input"
+                type="date"
+                value={replayDate}
+                disabled={running}
+                max={new Date(Date.now() - 86400000).toISOString().slice(0, 10)}
+                min="2023-01-01"
+                onChange={e => setReplayDate(e.target.value)}
+                style={{ opacity: running ? 0.6 : 1, colorScheme: 'dark' }}
+              />
+            </div>
+          )}
+
           {/* Start / Stop + status badge */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
             {!running ? (
               <button
                 className="btn-success"
                 onClick={startSimulator}
-                disabled={actionLoading || !marketOpen}
-                style={{ padding: '10px 28px', fontSize: 14, fontWeight: 700, opacity: marketOpen ? 1 : 0.6 }}
-                title={marketOpen ? '' : 'Market hours only (09:15–15:30 IST, Mon–Fri)'}
+                disabled={actionLoading || !canStart}
+                style={{ padding: '10px 28px', fontSize: 14, fontWeight: 700, opacity: canStart ? 1 : 0.6 }}
+                title={canStart ? '' : 'Live mode needs market hours — or switch to Historical Replay'}
               >
-                {actionLoading ? '...' : 'Start Simulator'}
+                {actionLoading ? '...' : mode === 'replay' ? `▶ Replay ${replayDate}` : 'Start Simulator'}
               </button>
             ) : (
               <button
@@ -336,7 +457,7 @@ export function SimulatorTab({ snap }: { snap: any }) {
                 {actionLoading ? '...' : 'Stop'}
               </button>
             )}
-            {!marketOpen && !running && (
+            {mode === 'live' && !marketOpen && !running && (
               <span style={{ fontSize: 11, color: 'var(--text2)' }}>Market hours only</span>
             )}
 
