@@ -646,6 +646,22 @@ class BacktestEngine:
                 elif pos.target is not None and high >= pos.target:
                     broker.update_market_prices({pos.symbol: pos.target})
 
+            # --- time-based exit: force-close positions older than 21 trading days ---
+            # Stagnant positions tie up the limited position slots; freeing them
+            # admits fresher signals. Stop/target on today's bar take priority above.
+            still_open = (
+                pos.symbol in broker._short_positions
+                if is_short
+                else pos.symbol in broker._positions
+            )
+            if still_open:
+                idx_now = df.index.searchsorted(date)
+                idx_open = df.index.searchsorted(pd.Timestamp(pos.opened_at).normalize())
+                if idx_now - idx_open > 21:
+                    broker.partial_exit(
+                        pos.symbol, pos.qty, float(row["close"]), reason="manual"
+                    )
+
     def _check_guardrails(
         self,
         signal: Signal,
