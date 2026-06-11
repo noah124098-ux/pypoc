@@ -10,7 +10,15 @@
       "WebFetch(*)",
       "WebSearch(*)",
       "NotebookEdit(*)",
-      "mcp__nse-trading-agent__*"
+      "mcp__nse-trading-agent__*",
+      "Workflow(*)",
+      "Agent(*)",
+      "Task(*)",
+      "TaskOutput(*)",
+      "TaskStop(*)",
+      "TodoWrite(*)",
+      "Skill(*)",
+      "ToolSearch(*)"
     ]
   }
 }
