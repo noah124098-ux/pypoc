@@ -112,6 +112,7 @@ export function SimulatorTab({ snap }: { snap: any }) {
   const [capital, setCapital] = useState(500000)
   const [riskPct, setRiskPct] = useState(1.0)
   const [maxPos, setMaxPos] = useState(5)
+  const [leverage, setLeverage] = useState(4)
 
   // ── mode: live simulation vs historical replay ───────────────────────────
   const [mode, setMode] = useState<'live' | 'replay'>('live')
@@ -230,6 +231,7 @@ export function SimulatorTab({ snap }: { snap: any }) {
         capital,
         risk_pct: riskPct,
         max_positions: maxPos,
+        leverage,
         ...(mode === 'replay' ? { replay_date: replayDate } : {}),
       })
       if (d.started || d.running) {
@@ -415,6 +417,26 @@ export function SimulatorTab({ snap }: { snap: any }) {
             />
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text2)' }}>
               <span>1</span><span>10</span>
+            </div>
+          </div>
+
+          {/* MIS leverage slider */}
+          <div style={{ minWidth: 170 }}>
+            <div className="sim-label">
+              MIS Leverage: {leverage}x
+              <span style={{ marginLeft: 6, color: '#4fc3f7', fontWeight: 700 }}>
+                = {fmtRupee(capital * leverage)} buying power
+              </span>
+            </div>
+            <input
+              type="range" min={1} max={5} step={1}
+              value={leverage}
+              disabled={running}
+              onChange={e => setLeverage(Number(e.target.value))}
+              style={{ width: '100%', accentColor: '#4fc3f7', opacity: running ? 0.6 : 1 }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text2)' }}>
+              <span>1x cash</span><span>4x = Angel One MIS</span><span>5x</span>
             </div>
           </div>
 

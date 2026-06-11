@@ -1354,6 +1354,9 @@ class _SimulatorState:
     capital: float = 500_000.0
     risk_pct: float = 1.0
     max_positions: int = 5
+    # Angel One MIS gives ~4x intraday buying power — simulator mirrors the real
+    # broker by default so it tests what live trading would actually do
+    leverage: float = 4.0
     use_live_data: bool = False
     # Replay mode: simulate a specific past trading day using real Bhavcopy data
     replay_date: str = ""          # "YYYY-MM-DD"; empty = live/synthetic mode
@@ -1402,6 +1405,8 @@ async def _simulator_loop(state: _SimulatorState) -> None:
     # Override risk params from user-supplied values
     settings.risk.per_trade_risk_pct = state.risk_pct
     settings.risk.max_open_positions = state.max_positions
+    # Simulator mirrors Angel One MIS intraday margin (~4x buying power)
+    settings.execution.intraday_leverage = state.leverage
 
     exec_cfg = settings.execution
     broker = PaperBroker(starting_cash=state.capital, exec_cfg=exec_cfg)
@@ -1679,6 +1684,8 @@ async def _replay_loop(state: _SimulatorState) -> None:
     settings = load_settings()
     settings.risk.per_trade_risk_pct = state.risk_pct
     settings.risk.max_open_positions = state.max_positions
+    # Replay mirrors Angel One MIS intraday margin (~4x buying power)
+    settings.execution.intraday_leverage = state.leverage
 
     broker = PaperBroker(starting_cash=state.capital, exec_cfg=settings.execution)
     guardrails = Guardrails(settings.risk, settings.market, settings.execution)
@@ -1946,6 +1953,8 @@ async def simulator_start(body: dict, _: str = Depends(verify)):
     state.capital = float(body.get("capital") or 500_000.0)
     state.risk_pct = float(body.get("risk_pct") or 1.0)
     state.max_positions = int(body.get("max_positions") or 5)
+    # MIS leverage: clamp to [1, 5] — Angel One offers ~4x on Nifty 50 equity
+    state.leverage = max(1.0, min(5.0, float(body.get("leverage") or 4.0)))
     state.use_live_data = bool(body.get("use_live_data", False))
     state.replay_date = replay_date
     state.replay_progress_pct = 0.0
@@ -2044,6 +2053,8 @@ def simulator_status(_: str = Depends(verify)):
         "replay_progress_pct": state.replay_progress_pct,
         "replay_regime": state.replay_regime,
         "replay_summary": state.replay_day_summary,
+        "leverage": state.leverage,
+        "buying_power": round(state.capital * state.leverage, 2),
     }
 
 
