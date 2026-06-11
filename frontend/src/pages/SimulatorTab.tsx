@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer,
 } from 'recharts'
 import { useApi, apiPost } from '../hooks/useSnapshot'
@@ -418,7 +418,13 @@ export function SimulatorTab({ snap }: { snap: any }) {
             </div>
           ) : (
             <ResponsiveContainer width="100%" height={160}>
-              <LineChart data={equityCurve} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+              <AreaChart data={equityCurve} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+                <defs>
+                  <linearGradient id="simEqGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#4fc3f7" stopOpacity={0.35} />
+                    <stop offset="100%" stopColor="#4fc3f7" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1a2035" />
                 <XAxis
                   dataKey="label"
@@ -436,21 +442,21 @@ export function SimulatorTab({ snap }: { snap: any }) {
                   width={52}
                 />
                 <Tooltip
-                  contentStyle={{ background: '#0a0e1a', border: '1px solid #2d3748', fontSize: 11 }}
+                  contentStyle={{ background: '#0a0e1a', border: '1px solid #2d3748', fontSize: 11, borderRadius: 8 }}
                   labelStyle={{ color: '#94a3b8' }}
                   formatter={(v: unknown) => [fmtRupee(Number(v ?? 0)), 'Equity'] as [string, string]}
                 />
-                {/* baseline = starting capital */}
-                <Line
+                <Area
                   type="monotone"
                   dataKey="equity"
                   stroke="#4fc3f7"
                   strokeWidth={2}
+                  fill="url(#simEqGrad)"
                   dot={false}
                   activeDot={{ r: 4, fill: '#4fc3f7' }}
                   isAnimationActive={false}
                 />
-              </LineChart>
+              </AreaChart>
             </ResponsiveContainer>
           )}
         </div>

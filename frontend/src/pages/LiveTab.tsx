@@ -1,11 +1,29 @@
 import { useApi } from '../hooks/useSnapshot'
 import { useNavigate } from 'react-router-dom'
+import { useRef, useEffect, useState } from 'react'
 
 function KpiCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
+  // Flash the value green/red briefly when it changes
+  const prevRef = useRef(value)
+  const [flash, setFlash] = useState('')
+  useEffect(() => {
+    if (prevRef.current !== value && prevRef.current !== undefined) {
+      const prevNum = parseFloat(prevRef.current.replace(/[^\d.-]/g, ''))
+      const currNum = parseFloat(value.replace(/[^\d.-]/g, ''))
+      if (!isNaN(prevNum) && !isNaN(currNum) && prevNum !== currNum) {
+        setFlash(currNum > prevNum ? 'value-flash-up' : 'value-flash-down')
+        const id = setTimeout(() => setFlash(''), 850)
+        prevRef.current = value
+        return () => clearTimeout(id)
+      }
+    }
+    prevRef.current = value
+  }, [value])
+
   return (
     <div className="kpi-card">
       <div className="kpi-label">{label}</div>
-      <div className={`kpi-value ${color ?? ''}`}>{value}</div>
+      <div className={`kpi-value ${color ?? ''} ${flash}`}>{value}</div>
       {sub && <div className="kpi-sub">{sub}</div>}
     </div>
   )
@@ -106,13 +124,13 @@ export function LiveTab({ snap, connected }: { snap: any; connected: boolean }) 
   return (
     <div className="tab-content">
       <div className={`status-banner ${connected ? 'green' : 'red'}`}>
-        {connected ? '🟢 WebSocket connected — live 1s updates' : '⚫ Disconnected — start: service_manager.bat start-agent'}
+        {connected ? '🟢 Live feed connected — streaming updates every 2s' : '⚫ Live feed disconnected — agent may be starting up, or market is closed'}
       </div>
 
       {snap === null ? <KpiSkeleton /> : (
         <div className="kpi-row">
           <KpiCard label="Equity" value={`₹${(equity ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} />
-          <KpiCard label="Day P&L" value={`₹${Math.abs(dayPnl ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
+          <KpiCard label="Day P&L" value={`${(dayPnl ?? 0) >= 0 ? '▲' : '▼'} ₹${Math.abs(dayPnl ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
             sub={`${(dayPct ?? 0) >= 0 ? '+' : ''}${(dayPct ?? 0).toFixed(2)}%`} color={(dayPnl ?? 0) >= 0 ? 'green' : 'red'} />
           <KpiCard label="Regime" value={regime} />
           <KpiCard label="VIX" value={vix} color={vix !== '—' && parseFloat(vix) >= 20 ? 'red' : vix !== '—' && parseFloat(vix) >= 18 ? 'yellow' : 'green'} />

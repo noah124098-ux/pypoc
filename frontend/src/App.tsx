@@ -218,6 +218,23 @@ function CopyApiButton() {
   )
 }
 
+function useISTClock(): string {
+  const [time, setTime] = useState('')
+  useEffect(() => {
+    function tick() {
+      const now = new Date()
+      const utcMs = now.getTime() + now.getTimezoneOffset() * 60000
+      const ist = new Date(utcMs + 5.5 * 3600000)
+      const pad = (n: number) => String(n).padStart(2, '0')
+      setTime(`${pad(ist.getHours())}:${pad(ist.getMinutes())}:${pad(ist.getSeconds())} IST`)
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [])
+  return time
+}
+
 function TopBar({ snap, connected, onHamburger }: {
   snap: any
   connected: boolean
@@ -231,6 +248,7 @@ function TopBar({ snap, connected, onHamburger }: {
   const positions: any[] = snap?.positions ?? []
   const posCount = positions.length
   const marketLabel = useMarketCountdown()
+  const istClock = useISTClock()
 
   return (
     <div className="top-bar">
@@ -239,8 +257,9 @@ function TopBar({ snap, connected, onHamburger }: {
       </button>
       <span className="top-bar-logo">NSE Agent</span>
       <span className={`top-bar-status ${connected ? 'live' : 'offline'}`}>
-        {connected ? '●LIVE' : '○OFFLINE'}
+        {connected ? 'LIVE' : '○OFFLINE'}
       </span>
+      <span className="top-bar-clock" title="Indian Standard Time">{istClock}</span>
       <span
         className="top-bar-item clickable"
         onClick={() => navigate('/pnl')}
@@ -474,7 +493,18 @@ function Layout({ darkMode, onToggleDark }: { darkMode: boolean; onToggleDark: (
         <div className="sidebar-backdrop" onClick={closeSidebar} />
         <Sidebar snap={snap} connected={connected} darkMode={darkMode} onToggleDark={onToggleDark} onClose={closeSidebar} />
         <main className="main-content" onClick={sidebarOpen ? closeSidebar : undefined}>
-          <Suspense fallback={<div className="loading-tab">Loading...</div>}>
+          <Suspense fallback={
+            <div className="tab-content">
+              <div className="kpi-row">
+                {[...Array(4)].map((_, i) => (
+                  <div key={i} className="kpi-card kpi-card-skeleton">
+                    <div className="skeleton-line skeleton-label" />
+                    <div className="skeleton-line skeleton-value" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          }>
             <ErrorBoundary>
               <Routes>
                 <Route index element={<Navigate to="/live" replace />} />
