@@ -51,6 +51,11 @@ class ExecutionCfg(BaseModel):
     exchange_txn_pct: float
     gst_pct: float
     signal_cooldown_minutes: int
+    # Angel One MIS intraday margin: ~4x buying power (SEBI floor: 20% upfront margin).
+    # 1.0 = cash-only (no leverage). Position sizing stays risk-based; leverage only
+    # widens the cash constraint, never the risk budget.
+    intraday_leverage: float = 1.0
+    stamp_duty_pct: float = 0.003
 
 
 class BacktestGateCfg(BaseModel):

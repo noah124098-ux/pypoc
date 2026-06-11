@@ -146,10 +146,12 @@ strategies:
 
 execution:
   slippage_bps: 5            # 5 basis points slippage assumption for paper
-  brokerage_per_order_inr: 20
-  stt_pct: 0.025              # securities transaction tax on sell
-  exchange_txn_pct: 0.00345
-  gst_pct: 18.0               # 18% on (brokerage + exchange txn charges)
+  brokerage_per_order_inr: 20 # Angel One: lower of Rs 20 or 0.1%/order, min Rs 5
+  stt_pct: 0.025              # STT intraday: 0.025% sell side only
+  exchange_txn_pct: 0.0030699 # NSE equity: 0.0030699% both sides (Angel One published)
+  gst_pct: 18.0               # 18% on (brokerage + exchange txn + SEBI)
+  stamp_duty_pct: 0.003       # intraday stamp duty, buy side only
+  intraday_leverage: 4.0      # Angel One MIS: ~4x intraday buying power (SEBI 20% upfront margin)
   signal_cooldown_minutes: 30 # same symbol cannot be re-entered for 30 min after exit
 
 backtest_gate:

@@ -31,12 +31,12 @@ def _make_mock_smart_api(*, login_ok=True, positions=None, rms=None):
         else {"status": False, "message": "bad credentials"}
     )
 
-    mock.getPosition.return_value = {
+    mock.position.return_value = {
         "status": True,
         "data": positions if positions is not None else [],
     }
 
-    mock.getRMS.return_value = {
+    mock.rmsLimit.return_value = {
         "status": True,
         "data": rms if rms is not None else {
             "net": "100000",
@@ -148,7 +148,7 @@ class TestFailureHandling:
 
     def test_returns_none_when_get_position_raises(self, monkeypatch):
         mock_api = _make_mock_smart_api()
-        mock_api.getPosition.side_effect = RuntimeError("server error")
+        mock_api.position.side_effect = RuntimeError("server error")
         _patch_smart_connect(mock_api, monkeypatch)
 
         result = fetch_live_portfolio(**CREDS)
@@ -262,7 +262,7 @@ class TestHappyPath:
             positions=[self._raw_position("RELIANCE")],
             rms=None,
         )
-        mock_api.getRMS.return_value = {"status": False, "message": "error"}
+        mock_api.rmsLimit.return_value = {"status": False, "message": "error"}
         _patch_smart_connect(mock_api, monkeypatch)
 
         result = fetch_live_portfolio(**CREDS)

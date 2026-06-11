@@ -49,6 +49,21 @@ class PaperBroker(IBroker):
     def _now(self) -> datetime:
         return self.sim_time if self.sim_time is not None else datetime.utcnow()
 
+    def buying_power(self) -> float:
+        """Intraday buying power under MIS margin (Angel One: ~4x).
+
+        With leverage 1.0 this is just available cash. With leverage L, total
+        exposure may reach equity * L; cash can go negative intraday (broker
+        funds the difference) and everything settles at EOD square-off.
+        """
+        lev = getattr(self._exec, "intraday_leverage", 1.0) or 1.0
+        if lev <= 1.0:
+            return max(0.0, self._cash)
+        exposure = sum(p.market_value for p in self._positions.values()) + sum(
+            p.avg_price * p.qty for p in self._short_positions.values()
+        )
+        return max(0.0, self.equity() * lev - exposure)
+
     # ---------- IBroker API ----------
 
     def place_order(
@@ -93,6 +108,7 @@ class PaperBroker(IBroker):
             exchange_txn_pct=self._exec.exchange_txn_pct,
             gst_pct=self._exec.gst_pct,
             is_short_cover=_is_short_cover,
+            stamp_duty_pct=getattr(self._exec, "stamp_duty_pct", 0.003),
         ).total
 
         if side == Side.BUY:
@@ -103,8 +119,8 @@ class PaperBroker(IBroker):
                 self._cover_short(symbol, qty, fill_price, charges, exit_reason="manual")
                 self._cash -= qty * fill_price + charges
             else:
-                # Opening / adding to a long position
-                if self._cash < cost + charges:
+                # Opening / adding to a long position — gated by MIS buying power
+                if self.buying_power() < cost + charges:
                     order.status = OrderStatus.REJECTED
                     order.rejection_reason = "insufficient_cash"
                     self._orders[order.id] = order
@@ -123,8 +139,8 @@ class PaperBroker(IBroker):
                 self._close_long(symbol, qty, fill_price, charges, exit_reason="manual")
                 self._cash += qty * fill_price - charges
             else:
-                # Opening a short position — margin = cost (simplified: full notional held)
-                if self._cash < cost + charges:
+                # Opening a short position — margin gated by MIS buying power
+                if self.buying_power() < cost + charges:
                     order.status = OrderStatus.REJECTED
                     order.rejection_reason = "insufficient_cash"
                     self._orders[order.id] = order

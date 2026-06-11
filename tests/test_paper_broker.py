@@ -124,3 +124,103 @@ def test_on_exit_callback_not_set_does_not_raise(broker):
     broker.update_market_prices({"RELIANCE": 1279.0})  # trigger stop loss
     # No exception; position is gone
     assert broker.get_position("RELIANCE") is None
+
+
+# ── MIS intraday leverage (Angel One ~4x buying power) ──────────────────────
+
+def _leveraged_cfg(leverage: float = 4.0):
+    from core.config import ExecutionCfg
+    return ExecutionCfg(
+        slippage_bps=5,
+        brokerage_per_order_inr=20,
+        stt_pct=0.025,
+        exchange_txn_pct=0.0030699,
+        gst_pct=18.0,
+        signal_cooldown_minutes=30,
+        intraday_leverage=leverage,
+        stamp_duty_pct=0.003,
+    )
+
+
+def test_buying_power_without_leverage_equals_cash(execution_cfg):
+    b = PaperBroker(starting_cash=100_000.0, exec_cfg=execution_cfg)
+    assert b.buying_power() == pytest.approx(100_000.0)
+
+
+def test_buying_power_with_4x_leverage():
+    b = PaperBroker(starting_cash=100_000.0, exec_cfg=_leveraged_cfg(4.0))
+    assert b.buying_power() == pytest.approx(400_000.0)
+
+
+def test_leverage_allows_position_beyond_cash():
+    """1.5x-cash notional order fills under 4x MIS margin."""
+    b = PaperBroker(starting_cash=100_000.0, exec_cfg=_leveraged_cfg(4.0))
+    b.update_market_prices({"TCS": 1000.0})
+    order = b.place_order("TCS", Side.BUY, 150, OrderType.MARKET, 950, 1100)
+    assert order.status == OrderStatus.FILLED
+    assert b.cash() < 0  # broker funds the difference intraday
+
+
+def test_leverage_caps_total_exposure_at_4x():
+    b = PaperBroker(starting_cash=100_000.0, exec_cfg=_leveraged_cfg(4.0))
+    b.update_market_prices({"TCS": 1000.0})
+    b.place_order("TCS", Side.BUY, 150, OrderType.MARKET, 950, 1100)
+    # Another 300k notional would push total exposure to ~4.5x equity
+    order2 = b.place_order("TCS", Side.BUY, 300, OrderType.MARKET, 950, 1100)
+    assert order2.status == OrderStatus.REJECTED
+    assert order2.rejection_reason == "insufficient_cash"
+
+
+def test_no_leverage_still_rejects_beyond_cash():
+    b = PaperBroker(starting_cash=100_000.0, exec_cfg=_leveraged_cfg(1.0))
+    b.update_market_prices({"TCS": 1000.0})
+    order = b.place_order("TCS", Side.BUY, 150, OrderType.MARKET, 950, 1100)
+    assert order.status == OrderStatus.REJECTED
+
+
+def test_short_with_leverage():
+    b = PaperBroker(starting_cash=100_000.0, exec_cfg=_leveraged_cfg(4.0))
+    b.update_market_prices({"TCS": 1000.0})
+    order = b.place_order("TCS", Side.SELL, 200, OrderType.MARKET, 1050, 900)
+    assert order.status == OrderStatus.FILLED
+
+
+# ── Angel One charge model ───────────────────────────────────────────────────
+
+def test_charges_match_angel_one_rates():
+    """Round-trip 100 shares @ Rs 1000: verify each component vs published rates."""
+    from core.broker.charges import compute_charges
+    buy = compute_charges(
+        side=Side.BUY, qty=100, price=1000.0, brokerage_per_order_inr=20,
+        stt_pct=0.025, exchange_txn_pct=0.0030699, gst_pct=18.0, stamp_duty_pct=0.003,
+    )
+    sell = compute_charges(
+        side=Side.SELL, qty=100, price=1000.0, brokerage_per_order_inr=20,
+        stt_pct=0.025, exchange_txn_pct=0.0030699, gst_pct=18.0, stamp_duty_pct=0.003,
+    )
+    assert buy.brokerage == pytest.approx(20.0)        # min(20, 100) = 20
+    assert buy.stt == 0.0                               # STT buy side: zero intraday
+    assert buy.stamp_duty == pytest.approx(3.0)         # 0.003% of 1L
+    assert buy.exchange_txn == pytest.approx(3.0699)
+    assert buy.clearing == 0.0                          # Angel One: zero
+    assert sell.stt == pytest.approx(25.0)              # 0.025% of 1L
+    assert sell.stamp_duty == 0.0
+    # GST = 18% on (brokerage + txn + sebi)
+    assert sell.gst == pytest.approx((20.0 + 3.0699 + 0.1) * 0.18, rel=1e-3)
+
+
+def test_brokerage_pct_cap_small_order():
+    """Small order: brokerage = max(0.1% of turnover, Rs 5 minimum)."""
+    from core.broker.charges import compute_charges
+    # 2 shares @ 100 = Rs 200 turnover → 0.1% = 0.2 → floored to Rs 5
+    c = compute_charges(
+        side=Side.BUY, qty=2, price=100.0, brokerage_per_order_inr=20,
+        stt_pct=0.025, exchange_txn_pct=0.0030699, gst_pct=18.0,
+    )
+    assert c.brokerage == pytest.approx(5.0)
+    # 100 shares @ 100 = 10k turnover → 0.1% = Rs 10 < Rs 20 flat
+    c2 = compute_charges(
+        side=Side.BUY, qty=100, price=100.0, brokerage_per_order_inr=20,
+        stt_pct=0.025, exchange_txn_pct=0.0030699, gst_pct=18.0,
+    )
+    assert c2.brokerage == pytest.approx(10.0)
