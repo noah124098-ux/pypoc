@@ -1,0 +1,194 @@
+# Nifty 200 agent profile — run with: python cli.py --config config/nifty200.yaml run
+#
+# STATUS: EXPERIMENTAL. Untuned Nifty 200 walk-forward scored Sharpe -0.68 / MaxDD 24.7%
+# (vs 0.83 / 12.25% on Nifty 50) — strategy parameters are tuned for large-cap behavior.
+# This profile is the starting point for the mid-cap tuning effort. Do NOT use for the
+# backtest gate or live trading until a walk-forward on this profile beats the gate.
+#
+# Differences vs default.yaml (mid-cap adjustments, first iteration):
+#   - universe: nifty200
+#   - max_open_positions: 8 (wider universe needs more slots so mid-cap signals
+#     don't crowd out large-cap ones — root cause of the -0.68 failure)
+#   - per_trade_risk_pct: 0.75 (smaller per-trade risk, more positions)
+#   - liquidity_max_pct_of_adv: 0.5 (mid-caps are thinner; halve participation)
+#   - max_spread_pct: 0.5 (mid-caps quote wider spreads)
+#   - volume confirmation ratios raised (mid-cap breakouts need stronger confirmation)
+
+mode: paper
+timezone: Asia/Kolkata
+
+capital:
+  initial_inr: 500000
+  currency: INR
+
+market:
+  exchange: NSE
+  segment: EQ
+  trading_start: "09:15"
+  trading_end: "15:30"
+  no_new_entries_after: "14:45"
+  intraday_squareoff_at: "15:15"
+
+universe:
+  source: nifty200
+  symbols: []
+
+risk:
+  per_trade_risk_pct: 0.75
+  max_position_pct: 15.0
+  max_open_positions: 8
+  daily_loss_circuit_pct: 3.0
+  drawdown_circuit_pct: 10.0
+  liquidity_max_pct_of_adv: 0.5
+  max_spread_pct: 0.5
+  black_swan_nifty_move_pct: 2.0
+  black_swan_vix_jump_pct: 20.0
+  stale_tick_seconds: 10
+
+regime:
+  adx_period: 14
+  adx_trend_threshold: 20
+  bb_width_range_threshold: 0.06
+  vix_volatile_threshold: 20
+
+strategies:
+  trend_breakout:
+    enabled: true
+    regimes: [TREND]
+    donchian_period: 15
+    atr_period: 14
+    atr_stop_multiplier: 1.5
+    target_r_multiple: 2.0
+    volume_confirm_ratio: 1.5      # raised from 1.2 — mid-cap breakouts need stronger volume
+  mean_reversion:
+    enabled: true
+    regimes: [RANGE]
+    rsi_period: 14
+    rsi_oversold: 35
+    rsi_overbought: 65
+    bb_period: 20
+    bb_std: 2.0
+    stock_dma_period: 50
+  volatility_compression:
+    enabled: true
+    regimes: [VOLATILE]
+    nr_lookback: 7
+  ema_crossover:
+    enabled: true
+    regimes: [TREND]
+    fast_period: 9
+    slow_period: 21
+    atr_period: 14
+    atr_stop_multiplier: 1.5
+    target_r_multiple: 2.0
+    volume_confirmation: true
+  rsi_momentum:
+    enabled: true
+    regimes: [TREND]
+    rsi_period: 14
+    rsi_pullback_low: 40
+    rsi_pullback_high: 55
+    trend_ema_period: 50
+    atr_period: 14
+    atr_stop_multiplier: 1.5
+    target_r_multiple: 2.0
+    volume_confirm_ratio: 1.3      # raised from 1.1
+  bb_squeeze:
+    enabled: true
+    regimes: [TREND, RANGE]
+    bb_period: 20
+    bb_std: 2.0
+    squeeze_lookback: 20
+    atr_period: 14
+    atr_stop_multiplier: 1.5
+    target_r_multiple: 3.0
+    stock_dma_period: 50
+  rsi_bounce:
+    enabled: false
+    regimes: [RANGE, VOLATILE]
+    rsi_period: 14
+    rsi_oversold_threshold: 30
+    dma_period: 200
+    atr_period: 14
+    atr_stop_multiplier: 1.5
+    target_r_multiple: 2.0
+    volume_ratio_min: 1.2
+  supertrend:
+    enabled: false
+    regimes: [TREND, VOLATILE]
+    atr_period: 10
+    multiplier: 3.0
+    target_r_multiple: 2.0
+  obv_trend:
+    enabled: true
+    regimes: [TREND]
+    breakout_period: 15
+    atr_period: 14
+    atr_stop_multiplier: 1.5
+    target_r_multiple: 2.5
+  vix_spike_bounce:
+    enabled: true
+    regimes: [VOLATILE]
+    rsi_period: 14
+    rsi_oversold_threshold: 35.0
+    dma_period: 200
+    atr_period: 14
+    atr_stop_multiplier: 2.0
+    target_r_multiple: 1.5
+    volume_ratio_min: 1.5
+  supertrend_short:
+    enabled: false
+    regimes: [VOLATILE, TREND]
+    atr_period: 10
+    multiplier: 3.0
+    target_r_multiple: 2.0
+    stock_dma_period: 50
+    dma_falling_lookback: 10
+    return_threshold: -0.03
+    volume_spike_min: 1.5
+
+execution:
+  slippage_bps: 8              # mid-caps slip more than large caps (5 -> 8)
+  brokerage_per_order_inr: 20
+  stt_pct: 0.025
+  exchange_txn_pct: 0.0030699
+  gst_pct: 18.0
+  stamp_duty_pct: 0.003
+  intraday_leverage: 1.0       # keep 1x until this profile has positive edge
+  signal_cooldown_minutes: 30
+
+backtest_gate:
+  min_sharpe: 1.2
+  max_drawdown_pct: 15.0
+  min_win_rate: 45.0
+  min_profit_factor: 1.5
+  min_trades: 100
+  walk_forward_years: 3
+
+data:
+  primary_feed: angelone
+  reconnect_max_attempts: 5
+  reconnect_backoff_seconds: 2
+
+persistence:
+  sqlite_path: data/agent_n200.db    # separate DB — don't mix with nifty50 agent
+  tick_parquet_dir: data/ticks_n200
+
+llm:
+  eod_reviewer_model: claude-opus-4-7
+  news_scorer_model: claude-haiku-4-5-20251001
+  enable_eod_review: true
+  auto_apply_within_safe_bounds: false
+
+notifications:
+  telegram_enabled: false
+  email_enabled: false
+  dashboard_enabled: true
+  dashboard_port: 8501
+
+logging:
+  level: INFO
+  file: logs/agent_n200.log
+  json_log_file: logs/events_n200.jsonl
+  max_bytes: 10485760
+  backup_count: 5

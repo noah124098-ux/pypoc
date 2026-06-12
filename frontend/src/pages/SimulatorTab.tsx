@@ -113,6 +113,7 @@ export function SimulatorTab({ snap }: { snap: any }) {
   const [riskPct, setRiskPct] = useState(1.0)
   const [maxPos, setMaxPos] = useState(5)
   const [leverage, setLeverage] = useState(4)
+  const [universe, setUniverse] = useState<'nifty50' | 'nifty200'>('nifty50')
 
   // ── mode: live simulation vs historical replay ───────────────────────────
   const [mode, setMode] = useState<'live' | 'replay'>('live')
@@ -232,6 +233,7 @@ export function SimulatorTab({ snap }: { snap: any }) {
         risk_pct: riskPct,
         max_positions: maxPos,
         leverage,
+        universe,
         ...(mode === 'replay' ? { replay_date: replayDate } : {}),
       })
       if (d.started || d.running) {
@@ -418,6 +420,26 @@ export function SimulatorTab({ snap }: { snap: any }) {
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text2)' }}>
               <span>1</span><span>10</span>
             </div>
+          </div>
+
+          {/* Universe selector */}
+          <div style={{ minWidth: 140 }}>
+            <div className="sim-label">Universe</div>
+            <select
+              className="sim-input"
+              value={universe}
+              disabled={running}
+              onChange={e => setUniverse(e.target.value as 'nifty50' | 'nifty200')}
+              style={{ opacity: running ? 0.6 : 1 }}
+            >
+              <option value="nifty50">Nifty 50 (50 stocks)</option>
+              <option value="nifty200">Nifty 200 (200 stocks)</option>
+            </select>
+            {universe === 'nifty200' && (
+              <div style={{ fontSize: 10, color: '#ecc94b', marginTop: 2 }}>
+                ⚠ experimental — params tuned for Nifty 50
+              </div>
+            )}
           </div>
 
           {/* MIS leverage slider */}

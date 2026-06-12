@@ -1357,6 +1357,7 @@ class _SimulatorState:
     # Angel One MIS gives ~4x intraday buying power — simulator mirrors the real
     # broker by default so it tests what live trading would actually do
     leverage: float = 4.0
+    universe: str = "nifty50"   # nifty50 | nifty200
     use_live_data: bool = False
     # Replay mode: simulate a specific past trading day using real Bhavcopy data
     replay_date: str = ""          # "YYYY-MM-DD"; empty = live/synthetic mode
@@ -1412,7 +1413,7 @@ async def _simulator_loop(state: _SimulatorState) -> None:
     broker = PaperBroker(starting_cash=state.capital, exec_cfg=exec_cfg)
     guardrails = Guardrails(settings.risk, settings.market, settings.execution)
 
-    symbols = resolve_universe("nifty50", [])
+    symbols = resolve_universe(state.universe or "nifty50", [])
 
     # Initialise synthetic prices (realistic NSE mid-caps: 500–3000 range)
     _price_seeds = {
@@ -1689,7 +1690,7 @@ async def _replay_loop(state: _SimulatorState) -> None:
 
     broker = PaperBroker(starting_cash=state.capital, exec_cfg=settings.execution)
     guardrails = Guardrails(settings.risk, settings.market, settings.execution)
-    symbols = resolve_universe("nifty50", [])
+    symbols = resolve_universe(state.universe or "nifty50", [])
 
     # ── Load real history: 90 calendar days before replay date through replay date
     bhav = BhavcopyHistory()
@@ -1955,6 +1956,8 @@ async def simulator_start(body: dict, _: str = Depends(verify)):
     state.max_positions = int(body.get("max_positions") or 5)
     # MIS leverage: clamp to [1, 5] — Angel One offers ~4x on Nifty 50 equity
     state.leverage = max(1.0, min(5.0, float(body.get("leverage") or 4.0)))
+    _uni = str(body.get("universe") or "nifty50").lower()
+    state.universe = _uni if _uni in ("nifty50", "nifty200") else "nifty50"
     state.use_live_data = bool(body.get("use_live_data", False))
     state.replay_date = replay_date
     state.replay_progress_pct = 0.0
@@ -2055,6 +2058,7 @@ def simulator_status(_: str = Depends(verify)):
         "replay_summary": state.replay_day_summary,
         "leverage": state.leverage,
         "buying_power": round(state.capital * state.leverage, 2),
+        "universe": state.universe,
     }
 
 
