@@ -86,19 +86,14 @@ def cmd_run(args):
     signal.signal(signal.SIGTERM, _shutdown_handler)
 
     if settings.mode == "live":
-        try:
-            from core.broker.angelone_live import AngelOneLiveBroker
+        # NOTE: reaching here means is_live_allowed() already passed the gate check at
+        # startup (see top of cmd_run). AngelOneLiveBroker is fully implemented and
+        # self-validates credential separation (rejects reuse of the data-feed key).
+        from core.broker.angelone_live import AngelOneLiveBroker
 
-            broker = AngelOneLiveBroker.from_env(settings.execution)
-            log.warning(
-                "AngelOneLiveBroker constructed — STUB, all order methods raise NotImplementedError. "
-                "Falling through to PaperBroker until live implementation is complete."
-            )
-            # Fall back to PaperBroker because the stub raises on every call.
-            broker = PaperBroker(settings.capital.initial_inr, settings.execution)
-        except ValueError as exc:
-            log.warning("Live broker creds not configured (%s); using PaperBroker.", exc)
-            broker = PaperBroker(settings.capital.initial_inr, settings.execution)
+        broker = AngelOneLiveBroker.from_env(settings.execution)
+        broker.connect()  # establish + validate the live session before trading starts
+        log.warning("LIVE BROKER ACTIVE — real orders will be placed through Angel One.")
     else:
         broker = PaperBroker(settings.capital.initial_inr, settings.execution)
     feed = _build_feed(settings, secrets)

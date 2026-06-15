@@ -470,3 +470,51 @@ def test_on_position_exit_silent_when_telegram_disabled(tmp_path):
     orch.telegram = None  # explicitly disabled
     # Should not raise
     orch._on_position_exit("HDFC", -500.0, "target", "mean_reversion")
+
+
+# ---------------------------------------------------------------------------
+# Test 10: closed trades are PERSISTED to SQLite (survives restart)
+# Regression guard for the Phase 8 audit finding: record_trade was never
+# called in production, so a 30-day proof lost all trades on any restart.
+# ---------------------------------------------------------------------------
+
+def test_closed_trade_is_persisted_to_sqlite(tmp_path):
+    """A stop-loss exit must write a row to the trades table via the real Store."""
+    from core.broker.paper import PaperBroker
+    from core.config import ExecutionCfg
+    from core.persistence.store import Store
+    from core.types import OrderType, Side
+
+    db_path = str(tmp_path / "agent.db")
+    store = Store(db_path)
+
+    s = _settings()
+    exec_cfg = ExecutionCfg(
+        slippage_bps=5, brokerage_per_order_inr=20,
+        stt_pct=0.025, exchange_txn_pct=0.0030699, gst_pct=18.0,
+        signal_cooldown_minutes=30,
+    )
+    broker = PaperBroker(starting_cash=500_000.0, exec_cfg=exec_cfg)
+    broker.update_market_prices({"RELIANCE": 2500.0})
+
+    feed = _make_mock_feed()
+    events = _make_mock_events(tmp_path)
+    with patch("core.execution.orchestrator.write_snapshot"), \
+         patch("core.execution.orchestrator.get_vix", return_value=None), \
+         patch("core.execution.orchestrator.get_nifty_pcr", return_value=None):
+        Orchestrator(settings=s, feed=feed, broker=broker, store=store, events=events)
+
+    # Open a long, then drive price down through the stop → auto-exit fires on_exit
+    broker.place_order("RELIANCE", Side.BUY, 10, OrderType.MARKET,
+                       stop_loss=2450.0, target=2600.0, strategy="trend_breakout")
+    broker.update_market_prices({"RELIANCE": 2449.0})  # triggers stop_loss exit
+
+    # The trade must now be durably in SQLite — query directly to prove persistence
+    with store.connect() as c:
+        rows = c.execute(
+            "SELECT symbol, exit_reason, strategy FROM trades ORDER BY closed_at DESC"
+        ).fetchall()
+    assert len(rows) == 1, f"expected 1 persisted trade, got {len(rows)}"
+    assert rows[0]["symbol"] == "RELIANCE"
+    assert rows[0]["exit_reason"] == "stop_loss"
+    assert rows[0]["strategy"] == "trend_breakout"

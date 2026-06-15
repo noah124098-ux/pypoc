@@ -510,7 +510,34 @@ class Orchestrator:
                 log.warning("Telegram entry alert failed: %s", _e)
 
     def _on_position_exit(self, symbol: str, pnl: float, exit_reason: str, strategy: str) -> None:
-        """Called by PaperBroker whenever a position is auto-closed (stop/target/EOD)."""
+        """Called by PaperBroker whenever a position is closed (stop/target/EOD/manual).
+
+        Persists the closed trade to SQLite so it survives restarts — without this the
+        30-day paper proof would lose all trade history on any restart (equity snapshots
+        are written every tick, but trades were never persisted).
+        """
+        # --- Durable trade persistence (the broker appends the full TradeRecord to
+        #     trade_log immediately before invoking this callback, so trade_log[-1] is
+        #     the trade that just closed). ---
+        try:
+            tr = self.broker.trade_log[-1] if getattr(self.broker, "trade_log", None) else None
+            if tr is not None and tr.symbol == symbol:
+                self.store.record_trade(
+                    symbol=tr.symbol,
+                    side=tr.side.value if hasattr(tr.side, "value") else str(tr.side),
+                    qty=tr.qty,
+                    entry_price=tr.entry_price,
+                    exit_price=tr.exit_price,
+                    pnl=tr.pnl,
+                    charges=tr.charges,
+                    strategy=tr.strategy,
+                    exit_reason=tr.exit_reason,
+                    opened_at=tr.opened_at.isoformat() if tr.opened_at else None,
+                    closed_at=tr.closed_at.isoformat() if tr.closed_at else None,
+                )
+        except Exception as _e:
+            log.error("Trade persistence FAILED for %s — proof integrity at risk: %s", symbol, _e)
+
         if self.telegram and self.s.notifications.telegram_enabled:
             try:
                 self.telegram.send_trade_alert(
