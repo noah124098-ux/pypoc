@@ -131,6 +131,11 @@ class Orchestrator:
         # Wire exit callback so PaperBroker auto-exits fire Telegram alerts.
         if isinstance(self.broker, PaperBroker):
             self.broker.on_exit = self._on_position_exit
+            # Crash-safe restart: restore same-day open positions BEFORE wiring the
+            # persist callback (so the restore itself doesn't trigger a redundant write),
+            # then re-baseline circuits to the restored equity.
+            self._restore_broker_state_if_same_day()
+            self.broker.on_state_change = self._persist_broker_state
 
         # Track previous regime for change detection
         self._prev_regime_value: str = Regime.UNKNOWN.value
@@ -576,6 +581,44 @@ class Orchestrator:
             )
         except Exception as e:
             log.warning("Could not persist daily_state: %s", e)
+
+    def _restore_broker_state_if_same_day(self) -> None:
+        """Rehydrate PaperBroker open positions from SQLite on a SAME-DAY restart.
+
+        Prior-day state is ignored (load_broker_state filters by trade_date) — those
+        positions would be stale phantoms since a real intraday agent squares off at
+        EOD. Restoring same-day positions prevents double-entry (re-buying a symbol the
+        agent already holds) and restores stop-loss/target tracking after a crash."""
+        if not isinstance(self.broker, PaperBroker):
+            return  # live broker reads positions from the exchange, not our DB
+        try:
+            state = self.store.load_broker_state(self._ist_trade_date())
+        except Exception as e:
+            log.warning("Could not load broker_state (%s); starting flat.", e)
+            return
+        if not state:
+            return
+        try:
+            self.broker.restore_state(state)
+            n_long = len(state.get("longs", []))
+            n_short = len(state.get("shorts", []))
+            log.warning(
+                "Restored %d long + %d short position(s) from same-day broker_state "
+                "(crash recovery) — cash=%.2f realized=%.2f",
+                n_long, n_short, state.get("cash", 0.0), state.get("realized_pnl", 0.0),
+            )
+        except Exception as e:
+            log.error("Broker state restore FAILED (%s) — starting flat to avoid corruption.", e)
+
+    def _persist_broker_state(self) -> None:
+        """Persist live broker positions+cash after any mutation. Never raises."""
+        try:
+            self.store.save_broker_state(
+                trade_date=self._ist_trade_date(),
+                state=self.broker.snapshot_state(),
+            )
+        except Exception as e:
+            log.warning("Could not persist broker_state: %s", e)
 
     def _on_position_exit(self, symbol: str, pnl: float, exit_reason: str, strategy: str) -> None:
         """Called by PaperBroker whenever a position is closed (stop/target/EOD/manual).

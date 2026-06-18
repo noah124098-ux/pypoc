@@ -45,6 +45,53 @@ class PaperBroker(IBroker):
         self.realized_pnl: float = 0.0
         self.sim_time: datetime | None = None  # set by backtest engine to override wall-clock
         self.on_exit: Optional[Callable[[str, float, str, str], None]] = None  # set by orchestrator
+        # Fired after any position/cash mutation so the orchestrator can persist broker
+        # state for crash-safe restart. Left None in backtests (no persistence overhead).
+        self.on_state_change: Optional[Callable[[], None]] = None
+
+    def _notify_state_change(self) -> None:
+        if self.on_state_change is not None:
+            try:
+                self.on_state_change()
+            except Exception:
+                pass  # persistence must never break trading
+
+    def snapshot_state(self) -> dict:
+        """Serialize live broker state for durable persistence (restart recovery)."""
+        def _pos(p: "Position") -> dict:
+            return {
+                "symbol": p.symbol, "qty": p.qty, "avg_price": p.avg_price,
+                "stop_loss": p.stop_loss, "target": p.target, "strategy": p.strategy,
+                "opened_at": p.opened_at.isoformat() if p.opened_at else None,
+                "last_price": p.last_price,
+            }
+        return {
+            "cash": self._cash,
+            "realized_pnl": self.realized_pnl,
+            "longs": [_pos(p) for p in self._positions.values()],
+            "shorts": [_pos(p) for p in self._short_positions.values()],
+        }
+
+    def restore_state(self, state: dict) -> None:
+        """Rehydrate positions + cash + realized P&L from a snapshot_state() dict.
+
+        Used only on a same-day restart; the orchestrator decides eligibility. Does
+        NOT fire on_state_change (restore is not a new mutation)."""
+        from datetime import datetime as _dt
+
+        def _mk(d: dict) -> "Position":
+            return Position(
+                symbol=d["symbol"], qty=int(d["qty"]), avg_price=float(d["avg_price"]),
+                stop_loss=float(d["stop_loss"]),
+                target=(float(d["target"]) if d.get("target") is not None else None),
+                strategy=d.get("strategy", ""),
+                opened_at=_dt.fromisoformat(d["opened_at"]) if d.get("opened_at") else self._now(),
+                last_price=float(d.get("last_price", 0.0)),
+            )
+        self._cash = float(state.get("cash", self._cash))
+        self.realized_pnl = float(state.get("realized_pnl", 0.0))
+        self._positions = {d["symbol"]: _mk(d) for d in state.get("longs", [])}
+        self._short_positions = {d["symbol"]: _mk(d) for d in state.get("shorts", [])}
 
     def _now(self) -> datetime:
         return self.sim_time if self.sim_time is not None else datetime.utcnow()
@@ -152,6 +199,7 @@ class PaperBroker(IBroker):
         order.filled_price = fill_price
         order.filled_qty = qty
         self._orders[order.id] = order
+        self._notify_state_change()  # persist after every fill (open/add/close/cover)
         return order
 
     def cancel_order(self, order_id: str) -> bool:
@@ -273,6 +321,7 @@ class PaperBroker(IBroker):
             ).total
             self._close_long(symbol, qty, fill, charges, exit_reason=reason)
             self._cash += qty * fill - charges
+            self._notify_state_change()
             return
         spos = self._short_positions.get(symbol)
         if spos is not None:
@@ -288,6 +337,7 @@ class PaperBroker(IBroker):
                 is_short_cover=True,
             ).total
             self._cover_short(symbol, qty, fill, charges, exit_reason=reason)
+            self._notify_state_change()
 
     def _maybe_exit_on_stop_or_target(self, pos: Position) -> None:
         """Auto-exit long on stop-loss or target hit."""
@@ -306,6 +356,7 @@ class PaperBroker(IBroker):
         ).total
         self._close_long(pos.symbol, pos.qty, fill, charges, exit_reason=reason)
         self._cash += pos.qty * fill - charges
+        self._notify_state_change()
 
     def _open_short(
         self, symbol: str, qty: int, price: float,
@@ -355,3 +406,4 @@ class PaperBroker(IBroker):
             is_short_cover=True,
         ).total
         self._cover_short(pos.symbol, pos.qty, fill, charges, exit_reason=reason)
+        self._notify_state_change()

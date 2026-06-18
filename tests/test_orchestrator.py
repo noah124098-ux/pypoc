@@ -589,3 +589,107 @@ def test_peak_equity_persists_high_water_mark(tmp_path):
     assert orch2.peak_equity == 530_000.0, (
         f"peak not restored: {orch2.peak_equity} (should be 530000)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 12: open positions survive a same-day restart (broker_state persistence)
+# Regression guard for Phase 8 audit finding: a mid-session crash wiped open
+# positions, risking double-entry + lost stop-loss tracking.
+# ---------------------------------------------------------------------------
+
+def _orch_with_real_broker_and_store(tmp_path, store):
+    """Construct an Orchestrator wired to a REAL PaperBroker + REAL Store."""
+    from core.broker.paper import PaperBroker
+    from core.config import ExecutionCfg
+
+    s = _settings()
+    exec_cfg = ExecutionCfg(
+        slippage_bps=5, brokerage_per_order_inr=20,
+        stt_pct=0.025, exchange_txn_pct=0.0030699, gst_pct=18.0,
+        signal_cooldown_minutes=30,
+    )
+    broker = PaperBroker(starting_cash=500_000.0, exec_cfg=exec_cfg)
+    broker.update_market_prices({"RELIANCE": 2500.0})
+    feed = _make_mock_feed()
+    events = _make_mock_events(tmp_path)
+    with patch("core.execution.orchestrator.write_snapshot"), \
+         patch("core.execution.orchestrator.get_vix", return_value=None), \
+         patch("core.execution.orchestrator.get_nifty_pcr", return_value=None):
+        orch = Orchestrator(settings=s, feed=feed, broker=broker, store=store, events=events)
+    return orch, broker
+
+
+def test_open_positions_survive_same_day_restart(tmp_path):
+    """A position open in session 1 must be restored (not lost) in a same-day session 2."""
+    from core.broker.paper import PaperBroker
+    from core.config import ExecutionCfg
+    from core.persistence.store import Store
+    from core.types import OrderType, Side
+
+    db_path = str(tmp_path / "agent.db")
+    store = Store(db_path)
+
+    # Session 1: open a long position (fires on_state_change → persists broker_state)
+    orch1, broker1 = _orch_with_real_broker_and_store(tmp_path, store)
+    broker1.place_order("RELIANCE", Side.BUY, 10, OrderType.MARKET,
+                        stop_loss=2450.0, target=2600.0, strategy="trend_breakout")
+    assert broker1.get_position("RELIANCE") is not None
+
+    # Session 2: simulate crash + restart — fresh broker, fresh orchestrator, SAME store
+    exec_cfg = ExecutionCfg(
+        slippage_bps=5, brokerage_per_order_inr=20,
+        stt_pct=0.025, exchange_txn_pct=0.0030699, gst_pct=18.0,
+        signal_cooldown_minutes=30,
+    )
+    broker2 = PaperBroker(starting_cash=500_000.0, exec_cfg=exec_cfg)
+    broker2.update_market_prices({"RELIANCE": 2500.0})
+    feed = _make_mock_feed()
+    events = _make_mock_events(tmp_path)
+    s = _settings()
+    with patch("core.execution.orchestrator.write_snapshot"), \
+         patch("core.execution.orchestrator.get_vix", return_value=None), \
+         patch("core.execution.orchestrator.get_nifty_pcr", return_value=None):
+        Orchestrator(settings=s, feed=feed, broker=broker2, store=store, events=events)
+
+    # The position MUST have been restored from broker_state
+    restored = broker2.get_position("RELIANCE")
+    assert restored is not None, "open position was NOT restored after restart"
+    assert restored.qty == 10
+    assert restored.stop_loss == 2450.0
+    assert restored.strategy == "trend_breakout"
+
+
+def test_prior_day_broker_state_is_not_restored(tmp_path):
+    """Broker state tagged with a different (prior) date must be ignored on restart."""
+    from core.broker.paper import PaperBroker
+    from core.config import ExecutionCfg
+    from core.persistence.store import Store
+
+    db_path = str(tmp_path / "agent.db")
+    store = Store(db_path)
+    # Manually persist broker state under a prior date
+    store.save_broker_state(
+        trade_date="2020-01-01",
+        state={"cash": 400_000.0, "realized_pnl": 0.0,
+               "longs": [{"symbol": "INFY", "qty": 5, "avg_price": 1500.0,
+                          "stop_loss": 1450.0, "target": 1600.0, "strategy": "x",
+                          "opened_at": None, "last_price": 1500.0}],
+               "shorts": []},
+    )
+    exec_cfg = ExecutionCfg(
+        slippage_bps=5, brokerage_per_order_inr=20,
+        stt_pct=0.025, exchange_txn_pct=0.0030699, gst_pct=18.0,
+        signal_cooldown_minutes=30,
+    )
+    broker = PaperBroker(starting_cash=500_000.0, exec_cfg=exec_cfg)
+    feed = _make_mock_feed()
+    events = _make_mock_events(tmp_path)
+    s = _settings()
+    with patch("core.execution.orchestrator.write_snapshot"), \
+         patch("core.execution.orchestrator.get_vix", return_value=None), \
+         patch("core.execution.orchestrator.get_nifty_pcr", return_value=None):
+        Orchestrator(settings=s, feed=feed, broker=broker, store=store, events=events)
+
+    # Prior-day position must NOT be restored — agent starts flat
+    assert broker.get_position("INFY") is None
+    assert broker.cash() == 500_000.0

@@ -4,6 +4,7 @@ Schema is intentionally simple (one row per event). Used by dashboard and EOD re
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from contextlib import contextmanager
@@ -13,7 +14,7 @@ from typing import Any, Iterator, Optional
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4  # increment when schema changes
+SCHEMA_VERSION = 5  # increment when schema changes
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades (
@@ -84,6 +85,17 @@ CREATE TABLE IF NOT EXISTS daily_state (
     updated_at TEXT NOT NULL
 );
 
+-- Live broker state (open positions + cash + realized P&L) for crash-safe restart.
+-- Single row (id=1), stored as JSON, tagged with the IST trade date so the orchestrator
+-- only restores positions from the SAME trading day (prior-day positions are stale —
+-- a real broker squares off intraday at 3:20pm).
+CREATE TABLE IF NOT EXISTS broker_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    trade_date TEXT NOT NULL,
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_trades_closed_at ON trades(closed_at);
 CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts);
 """
@@ -136,6 +148,19 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             """
         )
         _set_schema_version(conn, 4)
+    if current < 5:
+        # v5: broker_state table for crash-safe open-position persistence.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS broker_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                trade_date TEXT NOT NULL,
+                state_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        _set_schema_version(conn, 5)
 
 
 class Store:
@@ -250,6 +275,35 @@ class Store:
             "starting_equity_today": row["starting_equity_today"],
             "peak_equity": row["peak_equity"],
         }
+
+    def save_broker_state(self, *, trade_date: str, state: dict) -> None:
+        """Persist the live broker's open positions + cash (single row, id=1)."""
+        with self.connect() as c:
+            c.execute(
+                """
+                INSERT INTO broker_state (id, trade_date, state_json, updated_at)
+                VALUES (1, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    trade_date = excluded.trade_date,
+                    state_json = excluded.state_json,
+                    updated_at = excluded.updated_at
+                """,
+                (trade_date, json.dumps(state), datetime.utcnow().isoformat()),
+            )
+
+    def load_broker_state(self, trade_date: str) -> Optional[dict]:
+        """Return the saved broker state ONLY if it was written for `trade_date`
+        (same-day restart). Prior-day state is ignored — those positions are stale."""
+        with self.connect() as c:
+            row = c.execute(
+                "SELECT trade_date, state_json FROM broker_state WHERE id = 1"
+            ).fetchone()
+        if row is None or row["trade_date"] != trade_date:
+            return None
+        try:
+            return json.loads(row["state_json"])
+        except (ValueError, TypeError):
+            return None
 
     # ----- reads -----
 
