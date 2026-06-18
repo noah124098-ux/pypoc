@@ -117,6 +117,60 @@ def test_spread_too_wide_rejected(guardrails, base_signal, portfolio, market_ctx
     assert decision.rule == "spread"
 
 
+# ---------------------------------------------------------------------------
+# LIVE-mode fail-closed: missing ADV/spread data must REJECT in live, but the
+# default (paper/backtest) Guardrails stays permissive so the gate is unaffected.
+# ---------------------------------------------------------------------------
+
+def _live_guardrails(risk_cfg, market_cfg, execution_cfg):
+    from core.risk.guardrails import Guardrails
+    return Guardrails(risk_cfg, market_cfg, execution_cfg, live_mode=True)
+
+
+def test_paper_mode_permissive_on_missing_adv(guardrails, base_signal, portfolio, market_ctx):
+    """Default (paper) Guardrails must ALLOW when ADV data is absent — gate relies on this."""
+    market_ctx.avg_daily_volumes = {}            # no ADV
+    market_ctx.spread_pct_by_symbol = {"RELIANCE": 0.05}
+    decision = guardrails.check(base_signal, qty=10, portfolio=portfolio, market=market_ctx)
+    assert decision.allow, decision
+
+
+def test_paper_mode_permissive_on_missing_spread(guardrails, base_signal, portfolio, market_ctx):
+    """Default (paper) Guardrails must ALLOW when spread data is absent."""
+    market_ctx.spread_pct_by_symbol = {}         # no spread tick
+    decision = guardrails.check(base_signal, qty=10, portfolio=portfolio, market=market_ctx)
+    assert decision.allow, decision
+
+
+def test_live_mode_rejects_missing_adv(risk_cfg, market_cfg, execution_cfg, base_signal, portfolio, market_ctx):
+    """LIVE Guardrails must REJECT when ADV data is missing (can't size safely)."""
+    g = _live_guardrails(risk_cfg, market_cfg, execution_cfg)
+    market_ctx.avg_daily_volumes = {}            # no ADV
+    market_ctx.spread_pct_by_symbol = {"RELIANCE": 0.05}
+    decision = g.check(base_signal, qty=10, portfolio=portfolio, market=market_ctx)
+    assert not decision.allow
+    assert decision.rule == "liquidity"
+
+
+def test_live_mode_rejects_missing_spread(risk_cfg, market_cfg, execution_cfg, base_signal, portfolio, market_ctx):
+    """LIVE Guardrails must REJECT when spread data is missing (book unknown)."""
+    g = _live_guardrails(risk_cfg, market_cfg, execution_cfg)
+    market_ctx.avg_daily_volumes = {"RELIANCE": 10_000_000}  # ample ADV so only spread fires
+    market_ctx.spread_pct_by_symbol = {}         # no spread tick
+    decision = g.check(base_signal, qty=10, portfolio=portfolio, market=market_ctx)
+    assert not decision.allow
+    assert decision.rule == "spread"
+
+
+def test_live_mode_allows_when_data_present(risk_cfg, market_cfg, execution_cfg, base_signal, portfolio, market_ctx):
+    """LIVE Guardrails must ALLOW normally when both ADV and spread are present and OK."""
+    g = _live_guardrails(risk_cfg, market_cfg, execution_cfg)
+    market_ctx.avg_daily_volumes = {"RELIANCE": 10_000_000}
+    market_ctx.spread_pct_by_symbol = {"RELIANCE": 0.05}
+    decision = g.check(base_signal, qty=10, portfolio=portfolio, market=market_ctx)
+    assert decision.allow, decision
+
+
 def test_daily_loss_circuit_rejected(guardrails, base_signal, portfolio, market_ctx):
     portfolio.equity = 96_000  # -4% from 100k
     decision = guardrails.check(base_signal, qty=10, portfolio=portfolio, market=market_ctx)

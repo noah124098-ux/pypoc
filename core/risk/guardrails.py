@@ -51,10 +51,20 @@ class PortfolioState:
 class Guardrails:
     """All hard limits live here. Order is meaningful — fast/cheap rules first."""
 
-    def __init__(self, risk_cfg: RiskCfg, market_cfg: MarketCfg, execution_cfg: ExecutionCfg):
+    def __init__(
+        self,
+        risk_cfg: RiskCfg,
+        market_cfg: MarketCfg,
+        execution_cfg: ExecutionCfg,
+        live_mode: bool = False,
+    ):
         self.r = risk_cfg
         self.m = market_cfg
         self.e = execution_cfg
+        # In LIVE mode, liquidity/spread checks fail-CLOSED when data is missing
+        # (reject rather than allow). Backtests/paper keep the permissive default:
+        # historical bhavcopy has no live spread, and the gate baseline relies on it.
+        self.live_mode = live_mode
 
     def check(
         self,
@@ -169,7 +179,15 @@ class Guardrails:
     def _check_liquidity(self, s, q, p, m) -> GuardrailDecision:
         adv = m.avg_daily_volumes.get(s.symbol)
         if adv is None or adv == 0:
-            return GuardrailDecision(True)  # missing ADV — let it pass; data gap, not policy violation
+            # LIVE: fail-closed — no liquidity data means we can't size safely against a
+            # real order book (could hit an illiquid name with huge slippage). Backtest/
+            # paper: permissive (historical data gap, not a real-money risk).
+            if self.live_mode:
+                return GuardrailDecision(
+                    False, "liquidity",
+                    f"no ADV data for {s.symbol} (live mode requires it)"
+                )
+            return GuardrailDecision(True)
         max_qty = int(adv * (self.r.liquidity_max_pct_of_adv / 100.0))
         if q > max_qty:
             return GuardrailDecision(
@@ -180,7 +198,16 @@ class Guardrails:
 
     def _check_spread(self, s, q, p, m) -> GuardrailDecision:
         spread = m.spread_pct_by_symbol.get(s.symbol)
-        if spread is not None and spread > self.r.max_spread_pct:
+        if spread is None:
+            # LIVE: fail-closed — no spread tick means the book is unknown (could be a
+            # halted/illiquid stock with a 10% spread). Backtest/paper: permissive.
+            if self.live_mode:
+                return GuardrailDecision(
+                    False, "spread",
+                    f"no spread data for {s.symbol} (live mode requires a recent tick)"
+                )
+            return GuardrailDecision(True)
+        if spread > self.r.max_spread_pct:
             return GuardrailDecision(
                 False, "spread",
                 f"spread {spread:.2f}% > max {self.r.max_spread_pct}%"

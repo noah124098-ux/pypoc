@@ -73,7 +73,10 @@ class Orchestrator:
         self.symbols = resolve_universe(settings.universe.source, settings.universe.symbols)
         self.aggregator = CandleAggregator(intervals=["1m", "5m", "15m"])
         self.regime_classifier = RegimeClassifier(settings.regime)
-        self.guardrails = Guardrails(settings.risk, settings.market, settings.execution)
+        self.guardrails = Guardrails(
+            settings.risk, settings.market, settings.execution,
+            live_mode=(settings.mode == "live"),
+        )
         self.strategies: list[IStrategy] = self._build_strategies(settings)
 
         # Mutable runtime state
@@ -220,7 +223,10 @@ class Orchestrator:
                 self.s.risk.max_open_positions = new_settings.risk.max_open_positions
                 self.s.risk.daily_loss_circuit_pct = new_settings.risk.daily_loss_circuit_pct
                 self.s.risk.drawdown_circuit_pct = new_settings.risk.drawdown_circuit_pct
-                self.guardrails = Guardrails(self.s.risk, self.s.market, self.s.execution)
+                self.guardrails = Guardrails(
+                    self.s.risk, self.s.market, self.s.execution,
+                    live_mode=(self.s.mode == "live"),
+                )
                 log.debug("Config reloaded from disk")
             except Exception as e:
                 log.warning("Config reload failed: %s", e)
@@ -769,7 +775,10 @@ class Orchestrator:
                             self.s.risk.max_open_positions = new_settings.risk.max_open_positions
                             self.s.risk.daily_loss_circuit_pct = new_settings.risk.daily_loss_circuit_pct
                             self.s.risk.drawdown_circuit_pct = new_settings.risk.drawdown_circuit_pct
-                            self.guardrails = Guardrails(self.s.risk, self.s.market, self.s.execution)
+                            self.guardrails = Guardrails(
+                                self.s.risk, self.s.market, self.s.execution,
+                                live_mode=(self.s.mode == "live"),
+                            )
                             self._last_config_reload = time.time()
                             log.info("Config reloaded via command queue")
                             update_status(cmd.id, "done", "config reloaded")
