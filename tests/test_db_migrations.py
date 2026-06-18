@@ -203,7 +203,7 @@ def test_upgrade_from_v1_preserves_existing_rows(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_schema_version_constant_value():
-    assert SCHEMA_VERSION == 3
+    assert SCHEMA_VERSION == 4  # v4 added daily_state (circuit-baseline persistence)
 
 
 # ---------------------------------------------------------------------------

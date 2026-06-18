@@ -13,7 +13,7 @@ from typing import Any, Iterator, Optional
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3  # increment when schema changes
+SCHEMA_VERSION = 4  # increment when schema changes
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades (
@@ -73,6 +73,17 @@ CREATE TABLE IF NOT EXISTS guardrail_events (
     detail TEXT
 );
 
+-- Per-trading-day circuit baselines. One row per IST trading date. Lets the agent
+-- restore starting_equity_today / peak_equity after a mid-day restart so the
+-- daily-loss and drawdown circuits keep the correct baseline (else a restart
+-- silently re-baselines and the circuits stop protecting the day's true P&L).
+CREATE TABLE IF NOT EXISTS daily_state (
+    trade_date TEXT PRIMARY KEY,
+    starting_equity_today REAL NOT NULL,
+    peak_equity REAL NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_trades_closed_at ON trades(closed_at);
 CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts);
 """
@@ -111,6 +122,20 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass  # column already exists
         _set_schema_version(conn, 3)
+    if current < 4:
+        # v4: daily_state table for circuit-baseline persistence (created by SCHEMA
+        # above on fresh DBs; this ensures existing DBs get it too).
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS daily_state (
+                trade_date TEXT PRIMARY KEY,
+                starting_equity_today REAL NOT NULL,
+                peak_equity REAL NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        _set_schema_version(conn, 4)
 
 
 class Store:
@@ -194,6 +219,37 @@ class Store:
                 "INSERT INTO guardrail_events (ts, rule, symbol, detail) VALUES (?, ?, ?, ?)",
                 (datetime.utcnow().isoformat(), rule, symbol, detail),
             )
+
+    def save_daily_state(
+        self, *, trade_date: str, starting_equity_today: float, peak_equity: float
+    ) -> None:
+        """Upsert the circuit baselines for a trading day (keyed by IST date string)."""
+        with self.connect() as c:
+            c.execute(
+                """
+                INSERT INTO daily_state (trade_date, starting_equity_today, peak_equity, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(trade_date) DO UPDATE SET
+                    starting_equity_today = excluded.starting_equity_today,
+                    peak_equity = excluded.peak_equity,
+                    updated_at = excluded.updated_at
+                """,
+                (trade_date, starting_equity_today, peak_equity, datetime.utcnow().isoformat()),
+            )
+
+    def load_daily_state(self, trade_date: str) -> Optional[dict]:
+        """Return {starting_equity_today, peak_equity} for trade_date, or None if absent."""
+        with self.connect() as c:
+            row = c.execute(
+                "SELECT starting_equity_today, peak_equity FROM daily_state WHERE trade_date = ?",
+                (trade_date,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "starting_equity_today": row["starting_equity_today"],
+            "peak_equity": row["peak_equity"],
+        }
 
     # ----- reads -----
 

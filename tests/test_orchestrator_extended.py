@@ -121,6 +121,9 @@ def _make_orchestrator(
     feed.last_tick_age_seconds.return_value = 0.5
     feed.is_connected.return_value = True
     store = MagicMock()
+    # Return None so the orchestrator takes the fresh circuit-baseline path
+    # (a bare MagicMock is truthy and would corrupt starting_equity_today/peak_equity).
+    store.load_daily_state.return_value = None
     events = MagicMock()
 
     with patch("core.execution.orchestrator.write_snapshot"), \

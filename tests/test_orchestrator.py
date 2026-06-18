@@ -105,7 +105,11 @@ def _make_mock_feed() -> MagicMock:
 
 
 def _make_mock_store() -> MagicMock:
-    return MagicMock()
+    store = MagicMock()
+    # daily_state: return None so orchestrator init takes the fresh-baseline path
+    # (a bare MagicMock would be truthy and corrupt starting_equity_today).
+    store.load_daily_state.return_value = None
+    return store
 
 
 def _make_mock_events(tmp_path: Path) -> MagicMock:
@@ -518,3 +522,70 @@ def test_closed_trade_is_persisted_to_sqlite(tmp_path):
     assert rows[0]["symbol"] == "RELIANCE"
     assert rows[0]["exit_reason"] == "stop_loss"
     assert rows[0]["strategy"] == "trend_breakout"
+
+
+# ---------------------------------------------------------------------------
+# Test 11: circuit baselines survive a mid-day restart (daily_state persistence)
+# Regression guard for Phase 8 audit finding: starting_equity_today re-baselined
+# on every restart, silently disabling the daily-loss circuit.
+# ---------------------------------------------------------------------------
+
+def _build_orch_with_real_store(tmp_path, store, equity):
+    """Construct an Orchestrator with a real Store and a mock broker at `equity`."""
+    s = _settings()
+    broker = _make_mock_broker(equity)
+    feed = _make_mock_feed()
+    events = _make_mock_events(tmp_path)
+    with patch("core.execution.orchestrator.write_snapshot"), \
+         patch("core.execution.orchestrator.get_vix", return_value=None), \
+         patch("core.execution.orchestrator.get_nifty_pcr", return_value=None):
+        orch = Orchestrator(settings=s, feed=feed, broker=broker, store=store, events=events)
+    orch.broker = broker
+    return orch
+
+
+def test_circuit_baseline_survives_restart(tmp_path):
+    """A same-day restart must restore starting_equity_today, not re-baseline it."""
+    from core.persistence.store import Store
+
+    db_path = str(tmp_path / "agent.db")
+    store = Store(db_path)
+
+    # Session 1: starts at 500k (morning open)
+    orch1 = _build_orch_with_real_store(tmp_path, store, equity=500_000.0)
+    assert orch1.starting_equity_today == 500_000.0
+
+    # Simulate intraday loss to 480k, then a crash + restart mid-day
+    orch2 = _build_orch_with_real_store(tmp_path, store, equity=480_000.0)
+
+    # Restart MUST keep the morning baseline (500k), NOT re-baseline to 480k —
+    # otherwise the daily-loss circuit would measure from 480k and allow a deeper loss.
+    assert orch2.starting_equity_today == 500_000.0, (
+        f"baseline re-set on restart: {orch2.starting_equity_today} (should be 500000)"
+    )
+    # Peak carries forward as max(persisted peak, current)
+    assert orch2.peak_equity == 500_000.0
+
+
+def test_peak_equity_persists_high_water_mark(tmp_path):
+    """A new equity high must be persisted so a later restart restores the true peak."""
+    from core.persistence.store import Store
+
+    db_path = str(tmp_path / "agent.db")
+    store = Store(db_path)
+
+    orch1 = _build_orch_with_real_store(tmp_path, store, equity=500_000.0)
+    # Equity rises to 530k → tick_lifecycle should persist the new peak
+    orch1.broker.equity.return_value = 530_000.0
+    orch1.broker.cash.return_value = 530_000.0
+    with patch("core.execution.orchestrator.write_snapshot"), \
+         patch("core.execution.orchestrator.get_vix", return_value=None), \
+         patch("core.execution.orchestrator.get_nifty_pcr", return_value=None):
+        orch1.tick_lifecycle()
+    assert orch1.peak_equity == 530_000.0
+
+    # Restart at a lower equity (520k) — peak must restore to 530k, not drop
+    orch2 = _build_orch_with_real_store(tmp_path, store, equity=520_000.0)
+    assert orch2.peak_equity == 530_000.0, (
+        f"peak not restored: {orch2.peak_equity} (should be 530000)"
+    )

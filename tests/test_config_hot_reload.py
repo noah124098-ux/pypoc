@@ -97,6 +97,7 @@ def _make_orchestrator(tmp_path: Path, settings: Settings | None = None) -> Orch
     feed.is_connected.return_value = True
 
     store = MagicMock()
+    store.load_daily_state.return_value = None  # take fresh circuit-baseline path
     events = MagicMock()
 
     with patch("core.execution.orchestrator.write_snapshot"), \

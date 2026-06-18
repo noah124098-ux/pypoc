@@ -81,8 +81,11 @@ class Orchestrator:
         self.nifty_ohlc_daily: Optional[pd.DataFrame] = None
         self.adv_by_symbol: dict[str, int] = {}
         self.last_tick_age_seconds: float = float("inf")
-        self.starting_equity_today = broker.equity()
-        self.peak_equity = broker.equity()
+        # Circuit baselines: restore from SQLite if a row exists for today (mid-day
+        # restart), else initialize from current equity (first start of the day).
+        # Without this, a restart silently re-baselines and the daily-loss/drawdown
+        # circuits stop protecting the day's true P&L.
+        self._restore_or_init_daily_state(broker.equity())
         self.last_exit_by_symbol: dict[str, datetime] = {}
         self.spread_pct_by_symbol: dict[str, float] = {}
         self.nifty_ltp = 0.0
@@ -186,7 +189,10 @@ class Orchestrator:
         self._process_command_queue()
         self.last_tick_age_seconds = self.feed.last_tick_age_seconds()
         equity = self.broker.equity()
-        self.peak_equity = max(self.peak_equity, equity)
+        self._maybe_rollover_trade_date(equity)  # reset baseline if ran across midnight
+        if equity > self.peak_equity:
+            self.peak_equity = equity
+            self._persist_daily_state()  # persist new high-water mark for restart safety
 
         # Refresh India VIX from NSE every 60 seconds.  get_vix() is fail-open:
         # returns None on network/parse errors, in which case we keep the last
@@ -508,6 +514,68 @@ class Orchestrator:
                 )
             except Exception as _e:
                 log.warning("Telegram entry alert failed: %s", _e)
+
+    @staticmethod
+    def _ist_trade_date() -> str:
+        """Current trading date in IST (UTC+5:30) as YYYY-MM-DD.
+
+        Uses a fixed +5:30 offset rather than a tz database so it works identically
+        on the dev box and EC2 regardless of system timezone.
+        """
+        from datetime import timezone, timedelta
+        ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+        return ist.date().isoformat()
+
+    def _restore_or_init_daily_state(self, current_equity: float) -> None:
+        """Restore today's circuit baselines from SQLite, or initialize + persist them.
+
+        Safety-critical: starting_equity_today and peak_equity drive the daily-loss
+        and drawdown circuits. On a same-day restart we MUST restore the morning's
+        baseline, not re-baseline to mid-day equity (which would silently widen the
+        loss the circuit allows)."""
+        td = self._ist_trade_date()
+        restored = None
+        try:
+            restored = self.store.load_daily_state(td)
+        except Exception as e:
+            log.warning("Could not load daily_state (%s); initializing fresh.", e)
+        if restored is not None:
+            self.starting_equity_today = restored["starting_equity_today"]
+            # peak is the max of the persisted peak and current equity
+            self.peak_equity = max(restored["peak_equity"], current_equity)
+            log.info(
+                "Restored daily circuit baseline for %s: start=%.2f peak=%.2f",
+                td, self.starting_equity_today, self.peak_equity,
+            )
+        else:
+            self.starting_equity_today = current_equity
+            self.peak_equity = current_equity
+            log.info("Initialized daily circuit baseline for %s: %.2f", td, current_equity)
+        self._current_trade_date = td
+        self._persist_daily_state()
+
+    def _maybe_rollover_trade_date(self, current_equity: float) -> None:
+        """If the IST trading date has advanced (agent ran across midnight), re-baseline
+        the circuits for the new day. Drawdown peak carries forward (peak is all-time,
+        not per-day), but the daily-loss baseline resets to the new day's open equity."""
+        td = self._ist_trade_date()
+        if td != getattr(self, "_current_trade_date", td):
+            log.info("Trade date rollover %s -> %s; resetting daily-loss baseline.",
+                     self._current_trade_date, td)
+            self.starting_equity_today = current_equity
+            self._current_trade_date = td
+            self._persist_daily_state()
+
+    def _persist_daily_state(self) -> None:
+        """Write the current circuit baselines for today. Cheap upsert; never raises."""
+        try:
+            self.store.save_daily_state(
+                trade_date=self._ist_trade_date(),
+                starting_equity_today=self.starting_equity_today,
+                peak_equity=self.peak_equity,
+            )
+        except Exception as e:
+            log.warning("Could not persist daily_state: %s", e)
 
     def _on_position_exit(self, symbol: str, pnl: float, exit_reason: str, strategy: str) -> None:
         """Called by PaperBroker whenever a position is closed (stop/target/EOD/manual).
