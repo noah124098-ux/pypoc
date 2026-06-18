@@ -882,13 +882,27 @@ def get_eod_review(_: str = Depends(verify)):
 # Portfolio endpoint
 # ---------------------------------------------------------------------------
 
+_CRED_PATTERNS = {
+    # field -> (regex, max_len, human description)
+    "api_key": (r"^[A-Za-z0-9_\-]{1,64}$", 64, "alphanumeric/underscore/hyphen, <=64 chars"),
+    "client_code": (r"^[A-Za-z0-9]{1,20}$", 20, "alphanumeric, <=20 chars"),
+    "password": (r"^[^\r\n\x00]{1,128}$", 128, "no newlines/null, <=128 chars"),
+    "totp_secret": (r"^[A-Z2-7]{16,64}$", 64, "base32 (A-Z,2-7), 16-64 chars"),
+}
+
+
 @app.post("/api/credentials/save-angel-one")
-def save_angel_one_creds(body: dict, _: str = Depends(verify)):
+@limiter.limit("5/hour")
+def save_angel_one_creds(request: Request, body: dict, user: str = Depends(verify)):
     """Save Angel One credentials to the .env file (append or update).
 
     Accepts: {api_key, client_code, password, totp_secret}
-    Security: requires HTTP Basic Auth (same auth as all other endpoints).
+    Security: HTTP Basic Auth + input validation + 5/hour rate limit + audit log.
+    Prevents .env injection (newlines in values would inject arbitrary env vars).
     """
+    import re
+    from core.audit_log import audit
+
     api_key = body.get("api_key", "").strip()
     client_code = body.get("client_code", "").strip()
     password = body.get("password", "").strip()
@@ -896,6 +910,15 @@ def save_angel_one_creds(body: dict, _: str = Depends(verify)):
 
     if not all([api_key, client_code, password, totp_secret]):
         raise HTTPException(status_code=400, detail="All four credential fields are required")
+
+    # Validate each field against its format — rejects .env injection (newlines) and junk.
+    values = {"api_key": api_key, "client_code": client_code,
+              "password": password, "totp_secret": totp_secret}
+    for fld, (pattern, _maxlen, desc) in _CRED_PATTERNS.items():
+        if not re.match(pattern, values[fld]):
+            audit("save_angel_one_rejected", user=user,
+                  ip=request.client.host if request.client else None, field=fld)
+            raise HTTPException(status_code=400, detail=f"Invalid {fld}: expected {desc}")
 
     env_path = Path(".env")
     lines: list[str] = []
@@ -930,8 +953,13 @@ def save_angel_one_creds(body: dict, _: str = Depends(verify)):
         if key not in updated_keys:
             new_lines.append(f"{key}={val}")
 
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    # Atomic write: write to .env.tmp then replace, so a crash mid-write can't corrupt .env.
+    tmp_path = Path(".env.tmp")
+    tmp_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    tmp_path.replace(env_path)
     logger.info("Angel One credentials saved to .env by authenticated user")
+    audit("save_angel_one", user=user, ip=request.client.host if request.client else None,
+          fields=list(updates.keys()))  # field names only — never the values
     return {"saved": True, "message": "Credentials saved. Restart the agent to use new credentials."}
 
 
@@ -1196,16 +1224,22 @@ def get_preflight(_: str = Depends(verify)):
 
 
 @app.post("/api/command/halt")
-def halt_agent(reason: str = "manual halt via API", _: str = Depends(verify)):
+def halt_agent(request: Request, reason: str = "manual halt via API", user: str = Depends(verify)):
     from core.command_queue import enqueue
+    from core.audit_log import audit
     cmd = enqueue("halt_agent", {"reason": reason})
+    audit("halt_agent", user=user, ip=request.client.host if request.client else None,
+          reason=reason, command_id=cmd.id)
     return {"queued": True, "command_id": cmd.id}
 
 
 @app.post("/api/command/resume")
-def resume_agent(_: str = Depends(verify)):
+def resume_agent(request: Request, user: str = Depends(verify)):
     from core.command_queue import enqueue
+    from core.audit_log import audit
     cmd = enqueue("resume_agent", {})
+    audit("resume_agent", user=user, ip=request.client.host if request.client else None,
+          command_id=cmd.id)
     return {"queued": True, "command_id": cmd.id}
 
 

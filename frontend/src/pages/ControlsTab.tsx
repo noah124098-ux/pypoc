@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useApi, apiPost } from '../hooks/useSnapshot'
+import { useApi, apiPost, apiGet } from '../hooks/useSnapshot'
 import { useToasts } from '../hooks/useNotifications'
 
 interface PreflightCheck {
@@ -52,16 +52,8 @@ export function ControlsTab({ snap }: { snap: any }) {
     setPreflightError('')
     setPreflight(null)
     try {
-      const resp = await fetch('/api/preflight', {
-        headers: {
-          'Authorization': 'Basic ' + btoa('admin:pypoc2024'),
-        },
-      })
-      if (!resp.ok) {
-        setPreflightError(`Server returned ${resp.status}`)
-        return
-      }
-      const data: PreflightResult = await resp.json()
+      // Use the shared apiGet helper (configurable auth) — no hardcoded password.
+      const data: PreflightResult = await apiGet('/api/preflight')
       setPreflight(data)
     } catch (e) {
       setPreflightError('API not reachable — is the backend running?')
